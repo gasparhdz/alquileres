@@ -1,0 +1,43 @@
+# Dependencias
+node_modules/
+package-lock.json
+
+# Archivos de entorno
+.env
+.env.local
+.env.development.local
+.env.production.local
+
+# Builds y dist
+dist/
+build/
+*.log
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Base de datos
+*.db
+*.sqlite
+
+# Archivos temporales
+*.tmp
+*.temp
+
+# Logs
+logs/
+*.log
+
+# Coverage
+coverage/
+
+# Archivos de Prisma generados (opcional, según necesidad)
+# prisma/migrations/
+
