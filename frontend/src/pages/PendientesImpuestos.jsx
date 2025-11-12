@@ -100,16 +100,6 @@ export default function PendientesImpuestos() {
       if (parametro.labelCodigo2 && parametro.labelCodigo2.trim() !== '') {
         columnas.push({ label: parametro.labelCodigo2, campo: 'codigo2' });
       }
-      
-      // Debug temporal
-      if (columnas.length === 0 && parametro) {
-        console.log('Parámetro encontrado pero sin etiquetas:', {
-          codigo: parametro.codigo,
-          labelCodigo1: parametro.labelCodigo1,
-          labelCodigo2: parametro.labelCodigo2
-        });
-      }
-      
       return columnas;
     };
   }, [tipoImpuestoMap?.lista]);
