@@ -10,6 +10,11 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum AjusteOrigen {
+  manual
+  automatico
+}
+
 // ============================================
 // AUTENTICACIÓN Y USUARIOS
 // ============================================
@@ -69,17 +74,20 @@ model Categoria {
 }
 
 model Parametro {
-  id          String      @id @default(uuid())
-  categoriaId String      @map("categoria_id")
-  codigo      String
-  descripcion String
-  abreviatura String?
-  activo      Boolean     @default(true)
-  orden       Int         @default(0)
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
+  id                  String      @id @default(uuid())
+  categoriaId         String      @map("categoria_id")
+  codigo              String
+  descripcion         String
+  abreviatura         String?
+  labelCodigo1        String?     @map("label_codigo_1")
+  labelCodigo2        String?     @map("label_codigo_2")
+  periodicidadPorDefecto String?  @map("periodicidad_por_defecto")
+  activo              Boolean     @default(true)
+  orden               Int         @default(0)
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
 
-  categoria   Categoria   @relation(fields: [categoriaId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  categoria           Categoria   @relation(fields: [categoriaId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([categoriaId, codigo])
   @@map("parametros")
@@ -139,21 +147,24 @@ model Propietario {
 
 model Unidad {
   id            String              @id @default(uuid())
-  propietarioId String              @map("propietario_id")
+  propietarioId String?             @map("propietario_id")
   direccion     String
   localidad     String
   tipo          String?             // Parametro categoria: tipo_unidad
   estado        String?             // Parametro categoria: estado_unidad
   codigoInterno String?             @map("codigo_interno")
+  ambientes     String?
+  descripcion   String?             @db.Text
   createdAt     DateTime            @default(now()) @map("created_at")
   updatedAt     DateTime            @updatedAt @map("updated_at")
   deletedAt     DateTime?           @map("deleted_at")
   isDeleted     Boolean             @default(false) @map("is_deleted")
 
-  propietario   Propietario         @relation(fields: [propietarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  propietario   Propietario?        @relation(fields: [propietarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   cuentas       CuentaTributaria[]
   contratos     Contrato[]
   liquidaciones Liquidacion[]
+  documentos    PropiedadDocumento[]
 
   @@unique([propietarioId, direccion, localidad], name: "unique_unidad")
   @@map("unidades")
@@ -166,6 +177,10 @@ model CuentaTributaria {
   codigo1       String?     @map("codigo_1")
   codigo2       String?     @map("codigo_2")
   periodicidad  String?     // Parametro categoria: periodicidad
+  usuarioEmail  String?     @map("usuario_email")
+  usuarioPortal String?     @map("usuario_portal") // Username de la oficina virtual (si no es email)
+  password      String?     // Contraseña de la oficina virtual (se podría encriptar en el futuro)
+  activo        Boolean     @default(true) // Habilita/inhabilita para generación mensual
   observaciones String?
   createdAt     DateTime    @default(now()) @map("created_at")
   updatedAt     DateTime    @updatedAt @map("updated_at")
@@ -176,6 +191,7 @@ model CuentaTributaria {
   items         LiquidacionItem[]
 
   @@unique([unidadId, tipoImpuesto], name: "unique_cuenta_tributaria")
+  @@index([activo])
   @@map("cuentas_tributarias")
 }
 
@@ -188,12 +204,29 @@ model Contrato {
   fechaFin              DateTime?               @map("fecha_fin")
   duracionMeses         Int?                    @map("duracion_meses")
   montoInicial          Decimal                 @map("monto_inicial") @db.Decimal(10, 2)
-  gastosAdministrativos Decimal?                @map("gastos_administrativos") @db.Decimal(10, 2)
+  montoActual           Decimal                 @map("monto_actual") @db.Decimal(10, 2)
+  ultimoAjusteAt        DateTime?               @map("ultimo_ajuste_at")
+  indiceAumento         String?                 @map("indice_aumento")
+  periodoAumento        Int?                    @map("periodo_aumento")
+  gastosAdministrativos Decimal?                @map("gastos_administrativos") @db.Decimal(5, 2)
+  honorariosPropietario Decimal?                @map("honorarios_propietario") @db.Decimal(5, 2)
   metodoAjuste          String?                 @map("metodo_ajuste") // Parametro categoria: metodo_ajuste
   frecuenciaAjusteMeses Int?                    @map("frecuencia_ajuste_meses")
-  topeAjuste            Decimal?                @map("tope_ajuste") @db.Decimal(5, 2)
   registradoAfip        Boolean                 @default(false) @map("registrado_afip")
   moneda                String?                 @default("ARS") // Parametro categoria: moneda
+  estado                String?                 @default("borrador") // Parametro categoria: estado_contrato
+  // Campos para gestión de estados avanzados
+  fechaFirma            DateTime?               @map("fecha_firma")
+  rescisionAt           DateTime?               @map("rescision_at")
+  motivoRescisionId     String?                 @map("motivo_rescision_id") // Parametro categoria: motivo_rescision
+  prorrogaHasta         DateTime?               @map("prorroga_hasta")
+  prorrogaDeId          String?                 @map("prorroga_de_id") // ID del contrato original prorrogado
+  renovadoPorId         String?                 @map("renovado_por_id") // ID del nuevo contrato que reemplaza este
+  renovacionDeId        String?                 @map("renovacion_de_id") // ID del contrato anterior que fue renovado
+  suspendidoDesde       DateTime?               @map("suspendido_desde")
+  suspendidoHasta       DateTime?               @map("suspendido_hasta")
+  motivoSuspensionId    String?                 @map("motivo_suspension_id") // Parametro categoria: motivo_suspension
+  enMora                Boolean                 @default(false) @map("en_mora") // Flag calculado: tiene períodos impagos
   createdAt             DateTime                @default(now()) @map("created_at")
   updatedAt             DateTime                @updatedAt @map("updated_at")
   deletedAt             DateTime?               @map("deleted_at")
@@ -201,10 +234,18 @@ model Contrato {
 
   unidad                Unidad                  @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   inquilino             Inquilino               @relation(fields: [inquilinoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Relaciones para prórrogas y renovaciones
+  prorrogaDe            Contrato?               @relation("ContratoProrroga", fields: [prorrogaDeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  prorrogas              Contrato[]             @relation("ContratoProrroga")
+  renovadoPor           Contrato?               @relation("ContratoRenovacion", fields: [renovadoPorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  renovaciones          Contrato[]              @relation("ContratoRenovacion")
+  renovacionDe          Contrato?               @relation("ContratoRenovacionDe", fields: [renovacionDeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  renovacionesDe        Contrato[]              @relation("ContratoRenovacionDe")
   responsabilidades     ContratoResponsabilidad[]
   garantias             Garantia[]
   gastosIniciales       ContratoGastoInicial[]
   liquidaciones         Liquidacion[]
+  ajustes               ContratoAjuste[]
 
   @@unique([unidadId, inquilinoId, fechaInicio], name: "unique_contrato")
   @@map("contratos")
@@ -248,6 +289,7 @@ model ContratoGastoInicial {
   id              String      @id @default(uuid())
   contratoId      String      @map("contrato_id")
   tipoGastoInicial String     @map("tipo_gasto_inicial") // Parametro categoria: tipo_gasto_inicial
+  valorCalculo   Decimal?    @map("valor_calculo") @db.Decimal(10, 2) // Porcentaje para sellado/honorarios, meses para deposito, cantidad para averiguacion
   importe         Decimal     @db.Decimal(10, 2)
   estado          String?     // Parametro categoria: estado_gasto
   observaciones   String?
@@ -261,7 +303,7 @@ model ContratoGastoInicial {
 
 model Liquidacion {
   id          String            @id @default(uuid())
-  contratoId  String            @map("contrato_id")
+  contratoId  String?           @map("contrato_id") // Opcional: las liquidaciones pueden generarse desde propiedades sin contrato
   unidadId    String            @map("unidad_id")
   periodo     String            // Formato: YYYY-MM
   estado      String            @default("borrador") // Parametro categoria: estado_liquidacion
@@ -270,15 +312,32 @@ model Liquidacion {
   numeracion  String?
   observaciones String?
   emisionAt   DateTime?         @map("emision_at")
+  autoGenerada Boolean          @default(false) @map("auto_generada") // Marca si fue creada por el cron del 1°
   createdAt   DateTime          @default(now()) @map("created_at")
   updatedAt   DateTime          @updatedAt @map("updated_at")
 
-  contrato    Contrato          @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  contrato    Contrato?         @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   unidad      Unidad            @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   items       LiquidacionItem[]
 
-  @@unique([contratoId, periodo], name: "unique_liquidacion")
+  @@unique([unidadId, periodo], name: "unique_liquidacion") // Cambiar a unidadId_periodo ya que contratoId es opcional
+  @@index([periodo, estado])
   @@map("liquidaciones")
+}
+
+model PropiedadDocumento {
+  id              String    @id @default(uuid())
+  unidadId        String    @map("unidad_id")
+  tipoDocumentoId String    @map("tipo_documento_id") // ID del parametro de categoria: documentacion
+  necesario       Boolean   @default(false)
+  recibido        Boolean   @default(false)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  unidad          Unidad    @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([unidadId, tipoDocumentoId])
+  @@map("propiedad_documento")
 }
 
 model LiquidacionItem {
@@ -287,18 +346,62 @@ model LiquidacionItem {
   tipoCargo           String            @map("tipo_cargo") // Parametro categoria: tipo_cargo
   cuentaTributariaId  String?           @map("cuenta_tributaria_id")
   periodoRef          String?           @map("periodo_ref")
-  importe             Decimal           @db.Decimal(10, 2)
+  importe             Decimal?          @db.Decimal(10, 2) // Nullable para items pendientes
   quienPaga           String            @map("quien_paga") // Parametro categoria: quien_paga
   fuente              String?           // Parametro categoria: fuente (manual/automatico)
   refExterna          String?           @map("ref_externa")
   observaciones       String?
   orden               Int               @default(0)
+  estado              String            @default("pendiente") @map("estado") // Parametro categoria: estado_item {pendiente, completado, no_aplica}
+  importeAnterior     Decimal?          @map("importe_anterior") @db.Decimal(10, 2) // Valor del último item completado de esta cuenta/tipo
+  completadoAt        DateTime?         @map("completado_at")
+  completadoBy        String?           @map("completado_by") // Usuario que completó (opcional FK a Usuario en el futuro)
   createdAt           DateTime          @default(now()) @map("created_at")
   updatedAt           DateTime          @updatedAt @map("updated_at")
 
   liquidacion         Liquidacion       @relation(fields: [liquidacionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   cuentaTributaria    CuentaTributaria? @relation(fields: [cuentaTributariaId], references: [id], onDelete: SetNull, onUpdate: Cascade)
 
+  @@index([estado, tipoCargo])
+  @@index([cuentaTributariaId, estado])
   @@map("liquidacion_items")
+}
+
+model IndiceAjuste {
+  id               Int       @id @default(autoincrement())
+  codigo           String
+  descripcion      String
+  periodo          String
+  valor            Decimal   @db.Decimal(12, 6)
+  variacion        Decimal?  @db.Decimal(10, 6)
+  fuente           String?
+  fechaPublicacion DateTime  @map("fecha_publicacion")
+  activo           Boolean   @default(true)
+  createdBy        String?   @map("created_by")
+  updatedBy        String?   @map("updated_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@unique([codigo, periodo], name: "unique_indice_periodo")
+  @@map("indice_ajuste")
+}
+
+model ContratoAjuste {
+  id                Int       @id @default(autoincrement())
+  contratoId        String    @map("contrato_id")
+  fechaAjuste       DateTime  @map("fecha_ajuste")
+  indiceUsado       String    @map("indice_usado")
+  valorIndice       Decimal   @map("valor_indice") @db.Decimal(12, 6)
+  montoAnterior     Decimal   @map("monto_anterior") @db.Decimal(10, 2)
+  montoNuevo        Decimal   @map("monto_nuevo") @db.Decimal(10, 2)
+  porcentajeAumento Decimal   @map("porcentaje_aumento") @db.Decimal(10, 4)
+  origen            AjusteOrigen
+  observaciones     String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  contrato          Contrato  @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@map("contrato_ajuste")
 }
 

@@ -34,7 +34,21 @@ export const useParametrosMap = (categoriaCodigo) => {
     });
   }
 
-  return { descripciones: parametrosMap, codigos: idToCodigoMap, abreviaturas: idToAbreviaturaMap };
+  // Crear mapa de IDs a objetos completos de parámetros
+  const idToParametroMap = {};
+  if (parametros) {
+    parametros.forEach((param) => {
+      idToParametroMap[param.id] = param;
+    });
+  }
+
+  return { 
+    descripciones: parametrosMap, 
+    codigos: idToCodigoMap, 
+    abreviaturas: idToAbreviaturaMap,
+    parametros: idToParametroMap,
+    lista: parametros || []
+  };
 };
 
 /**

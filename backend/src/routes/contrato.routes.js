@@ -17,6 +17,12 @@ import {
   updateGastoInicial,
   deleteGastoInicial
 } from '../controllers/contrato.controller.js';
+import {
+  getContratoAjustes,
+  generarAjusteAutomatico,
+  registrarAjusteManual,
+  calcularAjustesProyectados
+} from '../controllers/contratoAjuste.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
 const router = express.Router();
@@ -27,6 +33,10 @@ router.get('/', getAllContratos);
 router.get('/unidad/:unidadId', getContratosByUnidad);
 router.get('/inquilino/:inquilinoId', getContratosByInquilino);
 router.get('/:id', getContratoById);
+router.get('/:id/ajustes', getContratoAjustes);
+router.post('/:id/ajustes/generar', generarAjusteAutomatico);
+router.post('/:id/ajustes/manual', registrarAjusteManual);
+router.post('/:id/ajustes/calcular', calcularAjustesProyectados);
 router.post('/', createContrato);
 router.put('/:id', updateContrato);
 router.delete('/:id', deleteContrato);

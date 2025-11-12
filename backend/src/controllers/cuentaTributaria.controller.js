@@ -130,6 +130,8 @@ export const createCuentaTributaria = async (req, res) => {
     if (data.codigo1 === '') data.codigo1 = null;
     if (data.codigo2 === '') data.codigo2 = null;
     if (data.periodicidad === '') data.periodicidad = null;
+    if (data.usuarioEmail === '') data.usuarioEmail = null;
+    if (data.password === '') data.password = null;
     if (data.observaciones === '') data.observaciones = null;
 
     // Verificar si existe una cuenta activa con la misma unidad y tipo de impuesto
@@ -218,20 +220,21 @@ export const updateCuentaTributaria = async (req, res) => {
     const { id } = req.params;
     const { id: _, createdAt, updatedAt, deletedAt, isDeleted, unidad, items, ...data } = req.body;
 
-    const cuenta = await prisma.cuentaTributaria.findFirst({
-      where: { id, isDeleted: false }
+    // Verificar que la cuenta existe y no está eliminada
+    const cuenta = await prisma.cuentaTributaria.findUnique({
+      where: { id }
     });
 
-    if (!cuenta) {
+    if (!cuenta || cuenta.isDeleted) {
       return res.status(404).json({ error: 'Cuenta tributaria no encontrada' });
     }
 
-    // Validar que unidad y tipoImpuesto existen si se están actualizando
+    // Validar que unidad existe si se está actualizando
     if (data.unidadId) {
-      const unidad = await prisma.unidad.findFirst({
-        where: { id: data.unidadId, isDeleted: false }
+      const unidad = await prisma.unidad.findUnique({
+        where: { id: data.unidadId }
       });
-      if (!unidad) {
+      if (!unidad || unidad.isDeleted) {
         return res.status(404).json({ error: 'Unidad no encontrada' });
       }
     }
@@ -240,6 +243,8 @@ export const updateCuentaTributaria = async (req, res) => {
     if (data.codigo1 === '') data.codigo1 = null;
     if (data.codigo2 === '') data.codigo2 = null;
     if (data.periodicidad === '') data.periodicidad = null;
+    if (data.usuarioEmail === '') data.usuarioEmail = null;
+    if (data.password === '') data.password = null;
     if (data.observaciones === '') data.observaciones = null;
 
     const updated = await prisma.cuentaTributaria.update({

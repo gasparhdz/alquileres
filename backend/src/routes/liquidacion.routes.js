@@ -7,7 +7,11 @@ import {
   deleteLiquidacion,
   generateLiquidacion,
   emitirLiquidacion,
-  generatePDF
+  generatePDF,
+  generarLiquidacionesAutomaticas,
+  getPendientesItems,
+  completarItem,
+  reabrirItem
 } from '../controllers/liquidacion.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
@@ -16,9 +20,13 @@ const router = express.Router();
 router.use(authenticateToken);
 
 router.get('/', getAllLiquidaciones);
+router.get('/pendientes-items', getPendientesItems);
+router.post('/cron/generar', generarLiquidacionesAutomaticas);
 router.get('/:id', getLiquidacionById);
 router.post('/', createLiquidacion);
 router.post('/generar', generateLiquidacion);
+router.post('/items/:id/completar', completarItem);
+router.post('/items/:id/reabrir', reabrirItem);
 router.put('/:id', updateLiquidacion);
 router.put('/:id/emitir', emitirLiquidacion);
 router.delete('/:id', deleteLiquidacion);

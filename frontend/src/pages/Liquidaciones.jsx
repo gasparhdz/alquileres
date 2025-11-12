@@ -861,7 +861,7 @@ function LiquidacionForm({ onClose }) {
                     <TableCell colSpan={5} align="center">
                       <Typography variant="body2" color="text.secondary">
                         {formData.contratoId 
-                          ? 'No hay cuentas tributarias asociadas a esta unidad. Agregue cuentas tributarias en la sección de Unidades.'
+                          ? 'No hay cuentas tributarias asociadas a esta propiedad. Agregue cuentas tributarias en la sección de Propiedades.'
                           : 'Seleccione un contrato para cargar los impuestos'}
                       </Typography>
                     </TableCell>

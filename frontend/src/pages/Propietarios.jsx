@@ -309,7 +309,7 @@ export default function Propietarios() {
               <TableCell>DNI</TableCell>
               <TableCell>CUIT</TableCell>
               <TableCell>Email</TableCell>
-              <TableCell>Unidades</TableCell>
+              <TableCell>Propiedades</TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
           </TableHead>
@@ -410,7 +410,7 @@ export default function Propietarios() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <HomeIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                       <Typography variant="body2">
-                        <strong>Unidades:</strong> {propietario.unidades?.length || 0}
+                        <strong>Propiedades:</strong> {propietario.unidades?.length || 0}
                       </Typography>
                     </Box>
                   </Box>

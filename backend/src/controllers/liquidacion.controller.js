@@ -219,8 +219,18 @@ export const createLiquidacion = async (req, res) => {
     const { contratoId, unidadId, periodo, items, vencimiento, observaciones, estado } = req.body;
 
     // Validaciones básicas
-    if (!contratoId || !unidadId || !periodo) {
-      return res.status(400).json({ error: 'Contrato, unidad y período son requeridos' });
+    if (!unidadId || !periodo) {
+      return res.status(400).json({ error: 'Unidad y período son requeridos' });
+    }
+    
+    // contratoId es opcional, pero si se proporciona, debe ser válido
+    if (contratoId) {
+      const contrato = await prisma.contrato.findUnique({
+        where: { id: contratoId }
+      });
+      if (!contrato) {
+        return res.status(400).json({ error: 'Contrato no encontrado' });
+      }
     }
 
     // Validar formato de período (YYYY-MM)
@@ -388,6 +398,14 @@ export const emitirLiquidacion = async (req, res) => {
 
     if (liquidacion.estado === 'emitida') {
       return res.status(400).json({ error: 'La liquidación ya está emitida' });
+    }
+
+    // Validar que la liquidación esté lista para emitir
+    if (liquidacion.estado !== 'lista_para_emitir') {
+      return res.status(400).json({ 
+        error: 'La liquidación no está lista para emitir',
+        detalles: `El estado actual es: ${liquidacion.estado}. Todos los items deben estar completados.`
+      });
     }
 
     // Generar numeración si no existe
@@ -767,4 +785,579 @@ function generateHTML(liq, { headerBase64, tipoImpuestoMap = {}, condicionIvaMap
   `;
 }
 
+/**
+ * Genera liquidaciones automáticamente para todos los contratos vigentes del período especificado
+ * Endpoint: POST /api/liquidaciones/cron/generar?periodo=YYYY-MM
+ */
+export const generarLiquidacionesAutomaticas = async (req, res) => {
+  try {
+    const { periodo } = req.query || req.body;
+    
+    // Si no se proporciona período, usar el mes actual
+    let periodoObjetivo = periodo;
+    if (!periodoObjetivo) {
+      const ahora = new Date();
+      periodoObjetivo = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    // Validar formato YYYY-MM
+    if (!/^\d{4}-\d{2}$/.test(periodoObjetivo)) {
+      return res.status(400).json({ error: 'El período debe tener el formato YYYY-MM' });
+    }
+
+    const periodoDate = new Date(periodoObjetivo + '-01');
+    if (isNaN(periodoDate.getTime())) {
+      return res.status(400).json({ error: 'Período inválido' });
+    }
+
+    console.log(`[CRON] Iniciando generación automática de liquidaciones para período: ${periodoObjetivo}`);
+
+    // Crear fecha de inicio y fin del mes del período
+    const inicioMes = new Date(periodoDate.getFullYear(), periodoDate.getMonth(), 1);
+    inicioMes.setHours(0, 0, 0, 0);
+    const finMes = new Date(periodoDate.getFullYear(), periodoDate.getMonth() + 1, 0);
+    finMes.setHours(23, 59, 59, 999);
+
+    // PASO 1: Obtener TODAS las unidades que tengan cuentas tributarias activas
+    const unidadesConCuentas = await prisma.unidad.findMany({
+      where: {
+        isDeleted: false,
+        cuentas: {
+          some: {
+            isDeleted: false,
+            activo: true
+          }
+        }
+      },
+      include: {
+        cuentas: {
+          where: {
+            isDeleted: false,
+            activo: true
+          }
+        }
+      }
+    });
+
+    console.log(`[CRON] Encontradas ${unidadesConCuentas.length} unidades con cuentas tributarias activas`);
+
+    let creadas = 0;
+    let omitidas = 0;
+    let errores = 0;
+    let omitidosSinContrato = 0;
+    let omitidosPorFecha = 0;
+    let omitidosSinItems = 0;
+    const erroresDetalle = [];
+
+    // PASO 2: Para cada unidad, buscar el contrato vigente en el período
+    for (const unidad of unidadesConCuentas) {
+      try {
+        // Buscar el contrato vigente o prorrogado que esté activo en el período
+        const contratoVigente = await prisma.contrato.findFirst({
+          where: {
+            unidadId: unidad.id,
+            isDeleted: false,
+            estado: {
+              in: ['vigente', 'prorrogado']
+            },
+            fechaInicio: {
+              lte: finMes // El contrato debe haber comenzado antes o durante el mes
+            },
+            OR: [
+              { fechaFin: null }, // Contrato sin fecha de fin
+              { fechaFin: { gte: inicioMes } } // O fecha de fin posterior o igual al inicio del mes
+            ]
+          },
+          include: {
+            responsabilidades: true,
+            inquilino: true
+          },
+          orderBy: {
+            fechaInicio: 'desc' // Tomar el más reciente si hay múltiples
+          }
+        });
+
+        // Si no hay contrato vigente, crear liquidación solo con items de cuentas
+        // El contrato y las responsabilidades solo se usan para determinar quién paga al emitir
+        if (!contratoVigente) {
+          console.log(`[CRON] Unidad ${unidad.direccion} no tiene contrato vigente en período ${periodoObjetivo}, creando liquidación solo con items de cuentas`);
+        }
+
+        // Verificar idempotencia: si ya existe liquidación para esta unidad y período, omitir
+        const existing = await prisma.liquidacion.findFirst({
+          where: {
+            unidadId: unidad.id,
+            periodo: periodoObjetivo
+          }
+        });
+
+        if (existing) {
+          omitidas++;
+          console.log(`[CRON] Skip: Ya existe liquidación para unidad ${unidad.direccion} período ${periodoObjetivo}`);
+          continue;
+        }
+
+        console.log(`[CRON] Procesando unidad ${unidad.direccion}: ${contratoVigente ? `Contrato ${contratoVigente.nroContrato}, Responsabilidades=${contratoVigente.responsabilidades?.length || 0}, ` : ''}Cuentas activas=${unidad.cuentas.length}`);
+
+        const items = [];
+        let orden = 1;
+
+        // 1. Item Alquiler (solo si hay contrato vigente y responsabilidad de alquiler)
+        if (contratoVigente) {
+          const alquilerResp = contratoVigente.responsabilidades.find(r => r.tipoCargo === 'alquiler');
+          if (alquilerResp) {
+            const montoAlquiler = parseFloat(contratoVigente.montoActual || contratoVigente.montoInicial);
+            items.push({
+              tipoCargo: 'alquiler',
+              importe: montoAlquiler,
+              quienPaga: alquilerResp.quienPaga,
+              fuente: 'automatico',
+              estado: 'completado', // El alquiler ya está calculado
+              orden: orden++,
+              observaciones: 'Alquiler calculado automáticamente'
+            });
+          }
+        }
+
+        // 2. Items por cada cuenta tributaria activa de la unidad
+        // IMPORTANTE: Se crean items para TODAS las cuentas activas, independientemente de las responsabilidades
+        // Las responsabilidades solo se usan para determinar quién paga cuando se emite la liquidación
+        for (const cuenta of unidad.cuentas) {
+          // Buscar el último item completado de esta cuenta/tipo para obtener importeAnterior
+          const ultimoItem = await prisma.liquidacionItem.findFirst({
+            where: {
+              cuentaTributariaId: cuenta.id,
+              tipoCargo: cuenta.tipoImpuesto,
+              estado: 'completado',
+              importe: { not: null }
+            },
+            orderBy: {
+              createdAt: 'desc'
+            },
+            select: {
+              importe: true
+            }
+          });
+
+          // Buscar responsabilidad en el contrato para este tipo de impuesto (si hay contrato)
+          // Si no hay responsabilidad configurada o no hay contrato, usar un valor por defecto
+          // Las responsabilidades solo se usan para saber quién paga al emitir
+          const resp = contratoVigente?.responsabilidades.find(r => r.tipoCargo === cuenta.tipoImpuesto);
+          // Si no hay responsabilidad, usar 'paga_inq' como fallback (paga inquilino por defecto)
+          const quienPaga = resp ? resp.quienPaga : 'paga_inq';
+
+          items.push({
+            tipoCargo: cuenta.tipoImpuesto,
+            cuentaTributariaId: cuenta.id,
+            importe: null, // Pendiente de completar
+            importeAnterior: ultimoItem ? parseFloat(ultimoItem.importe) : null,
+            quienPaga: quienPaga, // Usar responsabilidad del contrato, o fallback
+            fuente: 'automatico',
+            estado: 'pendiente',
+            orden: orden++,
+            observaciones: 'Pendiente de carga manual'
+          });
+        }
+
+        // Si no hay items, no crear liquidación
+        if (items.length === 0) {
+          omitidosSinItems++;
+          console.log(`[CRON] Skip sin items: Unidad ${unidad.direccion} no tiene items para crear`);
+          continue;
+        }
+
+        // Calcular total inicial (solo items con importe)
+        const total = items.reduce((sum, item) => {
+          return sum + (item.importe ? parseFloat(item.importe) : 0);
+        }, 0);
+
+        // Determinar estado inicial
+        // Si todos los items están completados → lista_para_emitir
+        // Si hay items pendientes → pendiente_items
+        const todosCompletados = items.every(item => item.estado === 'completado');
+        const estadoInicial = todosCompletados ? 'lista_para_emitir' : 'pendiente_items';
+
+        // Crear liquidación
+        await prisma.liquidacion.create({
+          data: {
+            contratoId: contratoVigente?.id || null, // Opcional: puede ser null si no hay contrato
+            unidadId: unidad.id,
+            periodo: periodoObjetivo,
+            estado: estadoInicial,
+            total,
+            autoGenerada: true,
+            items: {
+              create: items
+            }
+          }
+        });
+
+        creadas++;
+        console.log(`[CRON] Creada liquidación para unidad ${unidad.direccion} ${contratoVigente ? `(contrato ${contratoVigente.nroContrato})` : '(sin contrato)'} período ${periodoObjetivo} con ${items.length} items`);
+
+      } catch (error) {
+        errores++;
+        erroresDetalle.push({
+          unidadId: unidad.id,
+          direccion: unidad.direccion,
+          error: error.message
+        });
+        console.error(`[CRON] Error al crear liquidación para unidad ${unidad.direccion}:`, error);
+        console.error(`[CRON] Error stack:`, error.stack);
+      }
+    }
+
+    const resultado = {
+      periodo: periodoObjetivo,
+      resumen: {
+        unidadesEncontradas: unidadesConCuentas.length,
+        creadas,
+        omitidas,
+        omitidosSinContrato,
+        omitidosPorFecha,
+        omitidosSinItems,
+        errores
+      },
+      erroresDetalle: errores > 0 ? erroresDetalle : undefined
+    };
+
+    console.log(`[CRON] Finalizada generación automática:`, resultado.resumen);
+    console.log(`[CRON] Detalle: ${unidadesConCuentas.length} unidades encontradas, ${creadas} creadas, ${omitidas} omitidas (existentes), ${omitidosSinContrato} omitidas (sin contrato), ${omitidosSinItems} omitidas (sin items), ${errores} errores`);
+    res.json(resultado);
+
+  } catch (error) {
+    console.error('[CRON] Error en generación automática de liquidaciones:', error);
+    res.status(500).json({ 
+      error: 'Error al generar liquidaciones automáticas',
+      detalles: error.message
+    });
+  }
+};
+
+/**
+ * Obtiene items pendientes para la bandeja de completar
+ * Endpoint: GET /api/liquidaciones/pendientes-items
+ */
+export const getPendientesItems = async (req, res) => {
+  try {
+    const { 
+      periodo, 
+      tipoImpuesto, 
+      search, 
+      verCompletados = 'false',
+      page = 1, 
+      pageSize = 50 
+    } = req.query;
+
+    const skip = (parseInt(page) - 1) * parseInt(pageSize);
+    const mostrarCompletados = verCompletados === 'true';
+
+    // Si no se proporciona período, usar el mes actual
+    let periodoFiltro = periodo;
+    if (!periodoFiltro) {
+      const ahora = new Date();
+      periodoFiltro = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    // Construir where clause
+    const where = {
+      liquidacion: {
+        periodo: periodoFiltro
+      },
+      estado: mostrarCompletados ? 'completado' : 'pendiente',
+      ...(tipoImpuesto && { tipoCargo: tipoImpuesto }),
+      ...(search && {
+        OR: [
+          {
+            liquidacion: {
+              unidad: {
+                direccion: { contains: search, mode: 'insensitive' }
+              }
+            }
+          },
+          {
+            liquidacion: {
+              unidad: {
+                localidad: { contains: search, mode: 'insensitive' }
+              }
+            }
+          },
+          {
+            liquidacion: {
+              contrato: {
+                inquilino: {
+                  OR: [
+                    { apellido: { contains: search, mode: 'insensitive' } },
+                    { nombre: { contains: search, mode: 'insensitive' } },
+                    { razonSocial: { contains: search, mode: 'insensitive' } }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      })
+    };
+
+    const [items, total] = await Promise.all([
+      prisma.liquidacionItem.findMany({
+        where,
+        skip,
+        take: parseInt(pageSize),
+        include: {
+          liquidacion: {
+            include: {
+              contrato: {
+                include: {
+                  inquilino: {
+                    select: {
+                      id: true,
+                      nombre: true,
+                      apellido: true,
+                      razonSocial: true
+                    }
+                  }
+                }
+              },
+              unidad: {
+                select: {
+                  id: true,
+                  direccion: true,
+                  localidad: true
+                }
+              }
+            }
+          },
+          cuentaTributaria: {
+            select: {
+              id: true,
+              codigo1: true,
+              codigo2: true,
+              usuarioEmail: true,
+              usuarioPortal: true,
+              password: true
+            }
+          }
+        },
+        orderBy: [
+          { tipoCargo: 'asc' },
+          { liquidacion: { unidad: { direccion: 'asc' } } }
+        ]
+      }),
+      prisma.liquidacionItem.count({ where })
+    ]);
+
+    // Formatear respuesta
+    const data = items.map(item => {
+      const inquilino = item.liquidacion.contrato.inquilino;
+      const displayInquilino = inquilino.razonSocial || 
+        `${inquilino.apellido || ''}, ${inquilino.nombre || ''}`.trim() || 'Sin nombre';
+
+      return {
+        itemId: item.id,
+        tipoImpuesto: item.tipoCargo,
+        periodo: item.liquidacion.periodo,
+        unidad: {
+          direccion: item.liquidacion.unidad.direccion,
+          localidad: item.liquidacion.unidad.localidad
+        },
+        inquilino: {
+          display: displayInquilino
+        },
+        cuenta: item.cuentaTributaria ? {
+          codigo1: item.cuentaTributaria.codigo1,
+          codigo2: item.cuentaTributaria.codigo2,
+          user: item.cuentaTributaria.usuarioPortal || item.cuentaTributaria.usuarioEmail,
+          password: item.cuentaTributaria.password || null // Devolver password real (se oculta en frontend con toggle)
+        } : null,
+        importeAnterior: item.importeAnterior ? parseFloat(item.importeAnterior) : null,
+        importe: item.importe ? parseFloat(item.importe) : null,
+        estado: item.estado,
+        observaciones: item.observaciones
+      };
+    });
+
+    res.json({
+      data,
+      pagination: {
+        page: parseInt(page),
+        pageSize: parseInt(pageSize),
+        total,
+        totalPages: Math.ceil(total / parseInt(pageSize))
+      }
+    });
+
+  } catch (error) {
+    console.error('Error al obtener items pendientes:', error);
+    res.status(500).json({ error: 'Error al obtener items pendientes' });
+  }
+};
+
+/**
+ * Completa un item de liquidación
+ * Endpoint: POST /api/liquidaciones/items/:id/completar
+ */
+export const completarItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { importe, observaciones } = req.body;
+
+    // Validar importe
+    const importeNum = parseFloat(importe);
+    if (isNaN(importeNum) || importeNum < 0) {
+      return res.status(400).json({ error: 'El importe debe ser un número mayor o igual a 0' });
+    }
+
+    // Obtener el item
+    const item = await prisma.liquidacionItem.findUnique({
+      where: { id },
+      include: {
+        liquidacion: {
+          include: {
+            items: true
+          }
+        }
+      }
+    });
+
+    if (!item) {
+      return res.status(404).json({ error: 'Item no encontrado' });
+    }
+
+    // Validar que el item esté pendiente
+    if (item.estado !== 'pendiente') {
+      return res.status(400).json({ 
+        error: 'El item ya está completado o no aplica',
+        estadoActual: item.estado
+      });
+    }
+
+    // Obtener usuario actual (si está disponible en el request)
+    const usuarioId = req.user?.id || null;
+
+    // Actualizar el item
+    const itemActualizado = await prisma.liquidacionItem.update({
+      where: { id },
+      data: {
+        importe: importeNum,
+        estado: 'completado',
+        completadoAt: new Date(),
+        completadoBy: usuarioId,
+        observaciones: observaciones || item.observaciones
+      }
+    });
+
+    // Recalcular total de la liquidación
+    const todosItems = await prisma.liquidacionItem.findMany({
+      where: { liquidacionId: item.liquidacionId }
+    });
+
+    const nuevoTotal = todosItems.reduce((sum, it) => {
+      return sum + (it.importe ? parseFloat(it.importe) : 0);
+    }, 0);
+
+    // Verificar si todos los items están completados o no_aplica
+    const todosCompletados = todosItems.every(it => 
+      it.estado === 'completado' || it.estado === 'no_aplica'
+    );
+
+    // Actualizar estado de la liquidación si corresponde
+    const nuevoEstado = todosCompletados ? 'lista_para_emitir' : 'pendiente_items';
+
+    await prisma.liquidacion.update({
+      where: { id: item.liquidacionId },
+      data: {
+        total: nuevoTotal,
+        estado: nuevoEstado
+      }
+    });
+
+    res.json({ 
+      ok: true,
+      item: itemActualizado,
+      liquidacionEstado: nuevoEstado
+    });
+
+  } catch (error) {
+    console.error('Error al completar item:', error);
+    res.status(500).json({ error: 'Error al completar item' });
+  }
+};
+
+/**
+ * Reabre un item completado (opcional)
+ * Endpoint: POST /api/liquidaciones/items/:id/reabrir
+ */
+export const reabrirItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Obtener el item
+    const item = await prisma.liquidacionItem.findUnique({
+      where: { id },
+      include: {
+        liquidacion: {
+          include: {
+            items: true
+          }
+        }
+      }
+    });
+
+    if (!item) {
+      return res.status(404).json({ error: 'Item no encontrado' });
+    }
+
+    // Validar que el item esté completado
+    if (item.estado !== 'completado') {
+      return res.status(400).json({ 
+        error: 'Solo se pueden reabrir items completados',
+        estadoActual: item.estado
+      });
+    }
+
+    // Validar que la liquidación no esté emitida
+    if (item.liquidacion.estado === 'emitida') {
+      return res.status(400).json({ error: 'No se puede reabrir un item de una liquidación ya emitida' });
+    }
+
+    // Actualizar el item
+    const itemActualizado = await prisma.liquidacionItem.update({
+      where: { id },
+      data: {
+        estado: 'pendiente',
+        importe: null,
+        completadoAt: null,
+        completadoBy: null
+      }
+    });
+
+    // Recalcular total de la liquidación
+    const todosItems = await prisma.liquidacionItem.findMany({
+      where: { liquidacionId: item.liquidacionId }
+    });
+
+    const nuevoTotal = todosItems.reduce((sum, it) => {
+      return sum + (it.importe ? parseFloat(it.importe) : 0);
+    }, 0);
+
+    // Actualizar estado de la liquidación a pendiente_items
+    await prisma.liquidacion.update({
+      where: { id: item.liquidacionId },
+      data: {
+        total: nuevoTotal,
+        estado: 'pendiente_items'
+      }
+    });
+
+    res.json({ 
+      ok: true,
+      item: itemActualizado
+    });
+
+  } catch (error) {
+    console.error('Error al reabrir item:', error);
+    res.status(500).json({ error: 'Error al reabrir item' });
+  }
+};
 

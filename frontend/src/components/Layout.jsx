@@ -33,8 +33,10 @@ import HomeIcon from '@mui/icons-material/Home';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import DescriptionIcon from '@mui/icons-material/Description';
 import ReceiptIcon from '@mui/icons-material/Receipt';
+import SettingsIcon from '@mui/icons-material/Settings';
 import LogoutIcon from '@mui/icons-material/Logout';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import { useAuth } from '../contexts/AuthContext';
 
 const drawerWidth = 260;
@@ -44,9 +46,11 @@ const menuItems = [
   { text: 'Inicio', icon: <DashboardIcon />, path: '/' },
   { text: 'Inquilinos', icon: <PeopleIcon />, path: '/inquilinos' },
   { text: 'Propietarios', icon: <BusinessIcon />, path: '/propietarios' },
-  { text: 'Unidades', icon: <HomeIcon />, path: '/unidades' },
+  { text: 'Propiedades', icon: <HomeIcon />, path: '/propiedades' },
   { text: 'Contratos', icon: <DescriptionIcon />, path: '/contratos' },
-  { text: 'Liquidaciones', icon: <ReceiptIcon />, path: '/liquidaciones' }
+  { text: 'Liquidaciones', icon: <ReceiptIcon />, path: '/liquidaciones' },
+  { text: 'Impuestos', icon: <CheckCircleIcon />, path: '/pendientes-impuestos' },
+  { text: 'Configuración', icon: <SettingsIcon />, path: '/configuracion' }
 ];
 
 export default function Layout() {

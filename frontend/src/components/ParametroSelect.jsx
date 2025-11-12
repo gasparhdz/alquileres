@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { FormControl, InputLabel, Select, MenuItem, Typography } from '@mui/material';
+import { FormControl, InputLabel, Select, MenuItem, FormHelperText } from '@mui/material';
 import api from '../api';
 
 export default function ParametroSelect({ 
@@ -11,7 +11,10 @@ export default function ParametroSelect({
   fullWidth = true,
   mostrarAbreviatura = false,
   error = false,
-  helperText = ''
+  helperText = '',
+  disabled = false,
+  size = 'small',
+  sx = {}
 }) {
   const { data: parametros, isLoading } = useQuery({
     queryKey: ['parametros', categoriaCodigo],
@@ -27,8 +30,9 @@ export default function ParametroSelect({
     <FormControl 
       fullWidth={fullWidth} 
       required={required} 
-      size="small"
+      size={size}
       error={error}
+      disabled={disabled}
       sx={{
         minWidth: fullWidth ? 'auto' : 150,
         '& .MuiInputLabel-root': {
@@ -36,7 +40,8 @@ export default function ParametroSelect({
           '&.MuiInputLabel-shrink': {
             transform: 'translate(14px, -9px) scale(0.75)'
           }
-        }
+        },
+        ...sx
       }}
     >
       <InputLabel>{label}</InputLabel>
@@ -44,7 +49,7 @@ export default function ParametroSelect({
         value={value || ''}
         onChange={onChange}
         label={label}
-        disabled={isLoading}
+        disabled={disabled || isLoading}
       >
         <MenuItem value="">
           <em>Seleccione...</em>
@@ -56,9 +61,7 @@ export default function ParametroSelect({
         ))}
       </Select>
       {helperText && (
-        <Typography variant="caption" color="error" sx={{ mt: 0.5, ml: 1.75 }}>
-          {helperText}
-        </Typography>
+        <FormHelperText error={error}>{helperText}</FormHelperText>
       )}
     </FormControl>
   );

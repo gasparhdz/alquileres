@@ -56,7 +56,8 @@ async function main() {
       parametros: [
         { codigo: 'disponible', descripcion: 'Disponible', abreviatura: 'DISP', orden: 1 },
         { codigo: 'alquilada', descripcion: 'Alquilada', abreviatura: 'ALQ', orden: 2 },
-        { codigo: 'mantenimiento', descripcion: 'En Mantenimiento', abreviatura: 'MANT', orden: 3 }
+        { codigo: 'no_disponible', descripcion: 'No Disponible', abreviatura: 'NO_DISP', orden: 3 },
+        { codigo: 'mantenimiento', descripcion: 'En Mantenimiento', abreviatura: 'MANT', orden: 4 }
       ]
     },
     {
@@ -165,8 +166,55 @@ async function main() {
       descripcion: 'Estados de Liquidación',
       parametros: [
         { codigo: 'borrador', descripcion: 'Borrador', abreviatura: 'BORR', orden: 1 },
-        { codigo: 'emitida', descripcion: 'Emitida', abreviatura: 'EMIT', orden: 2 },
-        { codigo: 'pagada', descripcion: 'Pagada', abreviatura: 'PAG', orden: 3 }
+        { codigo: 'pendiente_items', descripcion: 'Pendiente Items', abreviatura: 'PEND_ITEMS', orden: 2 },
+        { codigo: 'lista_para_emitir', descripcion: 'Lista para Emitir', abreviatura: 'LISTA', orden: 3 },
+        { codigo: 'emitida', descripcion: 'Emitida', abreviatura: 'EMIT', orden: 4 },
+        { codigo: 'pagada', descripcion: 'Pagada', abreviatura: 'PAG', orden: 5 }
+      ]
+    },
+    {
+      codigo: 'estado_item',
+      descripcion: 'Estados de Item de Liquidación',
+      parametros: [
+        { codigo: 'pendiente', descripcion: 'Pendiente', abreviatura: 'PEND', orden: 1 },
+        { codigo: 'completado', descripcion: 'Completado', abreviatura: 'COMP', orden: 2 },
+        { codigo: 'no_aplica', descripcion: 'No Aplica', abreviatura: 'NO_APL', orden: 3 }
+      ]
+    },
+    {
+      codigo: 'estado_contrato',
+      descripcion: 'Estados de Contrato',
+      parametros: [
+        { codigo: 'borrador', descripcion: 'Borrador', abreviatura: 'BORR', orden: 1 },
+        { codigo: 'pendiente_de_firma', descripcion: 'Pendiente de Firma', abreviatura: 'PEND_FIRMA', orden: 2 },
+        { codigo: 'vigente', descripcion: 'Vigente', abreviatura: 'VIG', orden: 3 },
+        { codigo: 'suspendido', descripcion: 'Suspendido', abreviatura: 'SUSP', orden: 4 },
+        { codigo: 'en_mora', descripcion: 'En Mora', abreviatura: 'MORA', orden: 5 },
+        { codigo: 'vencido', descripcion: 'Vencido', abreviatura: 'VENC', orden: 6 },
+        { codigo: 'prorrogado', descripcion: 'Prorrogado', abreviatura: 'PRORR', orden: 7 },
+        { codigo: 'renovado', descripcion: 'Renovado', abreviatura: 'RENOV', orden: 8 },
+        { codigo: 'rescindido', descripcion: 'Rescindido', abreviatura: 'RESC', orden: 9 },
+        { codigo: 'anulado', descripcion: 'Anulado', abreviatura: 'ANUL', orden: 10 },
+        { codigo: 'finalizado', descripcion: 'Finalizado', abreviatura: 'FIN', orden: 11 }
+      ]
+    },
+    {
+      codigo: 'motivo_rescision',
+      descripcion: 'Motivos de Rescisión',
+      parametros: [
+        { codigo: 'mutuo_acuerdo', descripcion: 'Mutuo Acuerdo', abreviatura: 'MUTUO', orden: 1 },
+        { codigo: 'incumplimiento_inquilino', descripcion: 'Incumplimiento Inquilino', abreviatura: 'INC_INQ', orden: 2 },
+        { codigo: 'incumplimiento_propietario', descripcion: 'Incumplimiento Propietario', abreviatura: 'INC_PROP', orden: 3 },
+        { codigo: 'otro', descripcion: 'Otro', abreviatura: 'OTRO', orden: 4 }
+      ]
+    },
+    {
+      codigo: 'motivo_suspension',
+      descripcion: 'Motivos de Suspensión',
+      parametros: [
+        { codigo: 'obra', descripcion: 'Obra', abreviatura: 'OBRA', orden: 1 },
+        { codigo: 'inhabitabilidad', descripcion: 'Inhabitabilidad', abreviatura: 'INHAB', orden: 2 },
+        { codigo: 'otro', descripcion: 'Otro', abreviatura: 'OTRO', orden: 3 }
       ]
     },
     {
@@ -185,6 +233,34 @@ async function main() {
         { codigo: 'monotributo', descripcion: 'Monotributo', abreviatura: 'MONO', orden: 2 },
         { codigo: 'exento', descripcion: 'Exento', abreviatura: 'EXE', orden: 3 },
         { codigo: 'consumidor_final', descripcion: 'Consumidor Final', abreviatura: 'CF', orden: 4 }
+      ]
+    },
+    {
+      codigo: 'ambientes',
+      descripcion: 'Ambientes',
+      parametros: [
+        { codigo: 'monoambiente', descripcion: 'Monoambiente', abreviatura: '1', orden: 1 },
+        { codigo: 'dos_ambientes', descripcion: 'Dos ambientes', abreviatura: '2', orden: 2 },
+        { codigo: 'tres_ambientes', descripcion: 'Tres ambientes', abreviatura: '3', orden: 3 },
+        { codigo: 'cuatro_ambientes', descripcion: 'Cuatro ambientes', abreviatura: '4', orden: 4 },
+        { codigo: 'cinco_ambientes', descripcion: 'Cinco ambientes', abreviatura: '5', orden: 5 },
+        { codigo: 'seis_o_mas', descripcion: 'Seis o más ambientes', abreviatura: '6+', orden: 6 }
+      ]
+    },
+    {
+      codigo: 'documentacion',
+      descripcion: 'Documentación',
+      parametros: [
+        { codigo: 'escritura', descripcion: 'Escritura', abreviatura: 'ESCR', orden: 1 },
+        { codigo: 'reglamento', descripcion: 'Reglamento Copropiedad', abreviatura: 'REG', orden: 2 },
+        { codigo: 'api', descripcion: 'Api', abreviatura: 'API', orden: 3 },
+        { codigo: 'tgi', descripcion: 'Tgi', abreviatura: 'TGI', orden: 4 },
+        { codigo: 'agua', descripcion: 'Agua', abreviatura: 'AGUA', orden: 5 },
+        { codigo: 'luz', descripcion: 'Luz', abreviatura: 'LUZ', orden: 6 },
+        { codigo: 'gas', descripcion: 'Gas', abreviatura: 'GAS', orden: 7 },
+        { codigo: 'expensas', descripcion: 'Expensas', abreviatura: 'EXP', orden: 8 },
+        { codigo: 'dni', descripcion: 'Dni titular/es y conyugue ambos lados', abreviatura: 'DNI', orden: 9 },
+        { codigo: 'poder', descripcion: 'Poder especial en caso de ser necesario', abreviatura: 'POD', orden: 10 }
       ]
     }
   ];

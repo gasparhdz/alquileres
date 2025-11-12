@@ -4,10 +4,12 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Inquilinos from './pages/Inquilinos';
 import Propietarios from './pages/Propietarios';
-import Unidades from './pages/Unidades';
+import Propiedades from './pages/Propiedades';
 import Contratos from './pages/Contratos';
 import Liquidaciones from './pages/Liquidaciones';
+import PendientesImpuestos from './pages/PendientesImpuestos';
 import CuentasTributarias from './pages/CuentasTributarias';
+import Configuracion from './pages/Configuracion';
 import Layout from './components/Layout';
 
 function ProtectedRoute({ children }) {
@@ -41,10 +43,12 @@ function AppRoutes() {
         <Route index element={<Dashboard />} />
         <Route path="inquilinos" element={<Inquilinos />} />
         <Route path="propietarios" element={<Propietarios />} />
-        <Route path="unidades" element={<Unidades />} />
+        <Route path="propiedades" element={<Propiedades />} />
         <Route path="cuentas-tributarias" element={<CuentasTributarias />} />
         <Route path="contratos" element={<Contratos />} />
         <Route path="liquidaciones" element={<Liquidaciones />} />
+        <Route path="pendientes-impuestos" element={<PendientesImpuestos />} />
+        <Route path="configuracion" element={<Configuracion />} />
       </Route>
     </Routes>
   );

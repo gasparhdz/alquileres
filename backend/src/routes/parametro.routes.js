@@ -3,7 +3,10 @@ import {
   getAllCategorias,
   getCategoriaById,
   getParametrosByCategoria,
-  getAllParametros
+  getAllParametros,
+  createParametro,
+  updateParametro,
+  deleteParametro
 } from '../controllers/parametro.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
@@ -15,5 +18,8 @@ router.get('/categorias', getAllCategorias);
 router.get('/categorias/:id', getCategoriaById);
 router.get('/categorias/:codigo/parametros', getParametrosByCategoria);
 router.get('/parametros', getAllParametros);
+router.post('/parametros', createParametro);
+router.put('/parametros/:id', updateParametro);
+router.delete('/parametros/:id', deleteParametro);
 
 export default router;

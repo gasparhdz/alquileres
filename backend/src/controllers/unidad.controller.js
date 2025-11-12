@@ -106,21 +106,36 @@ export const createUnidad = async (req, res) => {
   try {
     const data = req.body;
 
-    if (!data.direccion || !data.localidad || !data.propietarioId) {
-      return res.status(400).json({ error: 'Dirección, localidad y propietario son requeridos' });
+    if (!data.direccion || !data.localidad) {
+      return res.status(400).json({ error: 'Dirección y localidad son requeridos' });
     }
 
-    // Verificar que el propietario existe
-    const propietario = await prisma.propietario.findFirst({
-      where: { id: data.propietarioId, isDeleted: false }
-    });
+    // Verificar que el propietario existe si se proporciona
+    if (data.propietarioId) {
+      const propietario = await prisma.propietario.findFirst({
+        where: { id: data.propietarioId, isDeleted: false }
+      });
 
-    if (!propietario) {
-      return res.status(404).json({ error: 'Propietario no encontrado' });
+      if (!propietario) {
+        return res.status(404).json({ error: 'Propietario no encontrado' });
+      }
     }
+
+    // Si no hay propietario, establecer a null
+    const unidadData = {
+      ...data,
+      propietarioId: data.propietarioId || null
+    };
+
+    // Limpiar campos que pueden venir como cadena vacía y convertirlos a null
+    if (unidadData.ambientes === '') unidadData.ambientes = null;
+    if (unidadData.descripcion === '') unidadData.descripcion = null;
+    if (unidadData.codigoInterno === '') unidadData.codigoInterno = null;
+    if (unidadData.tipo === '') unidadData.tipo = null;
+    if (unidadData.estado === '') unidadData.estado = null;
 
     const unidad = await prisma.unidad.create({
-      data,
+      data: unidadData,
       include: {
         propietario: true
       }
@@ -131,10 +146,10 @@ export const createUnidad = async (req, res) => {
     console.error('Error al crear unidad:', error);
     
     if (error.code === 'P2002') {
-      return res.status(400).json({ error: 'Ya existe una unidad con esta dirección y localidad para este propietario' });
+      return res.status(400).json({ error: 'Ya existe una propiedad con esta dirección y localidad para este propietario' });
     }
 
-    res.status(500).json({ error: 'Error al crear unidad' });
+    res.status(500).json({ error: 'Error al crear propiedad' });
   }
 };
 
@@ -143,19 +158,20 @@ export const updateUnidad = async (req, res) => {
     const { id } = req.params;
     
     // Validar campos requeridos
-    if (!req.body.direccion || !req.body.localidad || !req.body.propietarioId) {
-      return res.status(400).json({ error: 'Dirección, localidad y propietario son requeridos' });
+    if (!req.body.direccion || !req.body.localidad) {
+      return res.status(400).json({ error: 'Dirección y localidad son requeridos' });
     }
 
-    const unidad = await prisma.unidad.findFirst({
-      where: { id, isDeleted: false }
+    // Verificar que la unidad existe y no está eliminada
+    const unidad = await prisma.unidad.findUnique({
+      where: { id }
     });
 
-    if (!unidad) {
-      return res.status(404).json({ error: 'Unidad no encontrada' });
+    if (!unidad || unidad.isDeleted) {
+      return res.status(404).json({ error: 'Propiedad no encontrada' });
     }
 
-    // Verificar que el propietario existe
+    // Verificar que el propietario existe si se proporciona
     if (req.body.propietarioId) {
       const propietario = await prisma.propietario.findFirst({
         where: { id: req.body.propietarioId, isDeleted: false }
@@ -180,6 +196,18 @@ export const updateUnidad = async (req, res) => {
       ...updateData
     } = req.body;
 
+    // Si propietarioId es una cadena vacía, establecer a null
+    if (updateData.propietarioId === '' || updateData.propietarioId === undefined) {
+      updateData.propietarioId = null;
+    }
+
+    // Limpiar campos que pueden venir como cadena vacía y convertirlos a null
+    if (updateData.ambientes === '') updateData.ambientes = null;
+    if (updateData.descripcion === '') updateData.descripcion = null;
+    if (updateData.codigoInterno === '') updateData.codigoInterno = null;
+    if (updateData.tipo === '') updateData.tipo = null;
+    if (updateData.estado === '') updateData.estado = null;
+
     const updated = await prisma.unidad.update({
       where: { id },
       data: updateData,
@@ -191,16 +219,35 @@ export const updateUnidad = async (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar unidad:', error);
+    console.error('Error details:', JSON.stringify({
+      message: error.message,
+      code: error.code,
+      meta: error.meta
+    }, null, 2));
+    console.error('Request body:', JSON.stringify(req.body, null, 2));
     
     if (error.code === 'P2002') {
-      return res.status(400).json({ error: 'Ya existe una unidad con estos datos' });
+      return res.status(400).json({ error: 'Ya existe una propiedad con esta dirección y localidad para este propietario' });
     }
 
     if (error.code === 'P2003') {
       return res.status(400).json({ error: 'El propietario especificado no es válido' });
     }
 
-    res.status(500).json({ error: 'Error al actualizar unidad' });
+    if (error.code === 'P2022') {
+      return res.status(500).json({ 
+        error: 'Error de esquema de base de datos',
+        message: 'La base de datos no coincide con el esquema. Por favor, ejecuta las migraciones y regenera el cliente de Prisma.',
+        details: error.meta
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'Error al actualizar unidad',
+      message: error.message,
+      code: error.code,
+      meta: error.meta
+    });
   }
 };
 

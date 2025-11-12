@@ -338,11 +338,11 @@ export default function CuentasTributarias() {
             <Grid container spacing={2} sx={{ mt: 1 }}>
               <Grid item xs={12}>
                 <FormControl fullWidth required size="small">
-                  <InputLabel>Unidad</InputLabel>
+                  <InputLabel>Propiedad</InputLabel>
                   <Select
                     value={formData.unidadId}
                     onChange={(e) => setFormData({ ...formData, unidadId: e.target.value })}
-                    label="Unidad"
+                    label="Propiedad"
                   >
                     {unidades?.data?.map((unidad) => (
                       <MenuItem key={unidad.id} value={unidad.id}>

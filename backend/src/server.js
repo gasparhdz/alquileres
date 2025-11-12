@@ -12,6 +12,9 @@ import cuentaTributariaRoutes from './routes/cuentaTributaria.routes.js';
 import contratoRoutes from './routes/contrato.routes.js';
 import liquidacionRoutes from './routes/liquidacion.routes.js';
 import parametroRoutes from './routes/parametro.routes.js';
+import indiceRoutes from './routes/indice.routes.js';
+import ajusteRoutes from './routes/ajuste.routes.js';
+import propiedadDocumentoRoutes from './routes/propiedadDocumento.routes.js';
 
 dotenv.config();
 
@@ -59,6 +62,9 @@ app.use('/api/cuentas', cuentaTributariaRoutes);
 app.use('/api/contratos', contratoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
 app.use('/api/parametros', parametroRoutes);
+app.use('/api/indices', indiceRoutes);
+app.use('/api/ajustes', ajusteRoutes);
+app.use('/api/documentos-propiedad', propiedadDocumentoRoutes);
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

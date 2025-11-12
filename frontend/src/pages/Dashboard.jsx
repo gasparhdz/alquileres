@@ -136,7 +136,7 @@ export default function Dashboard() {
 
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
-            title="Unidades"
+            title="Propiedades"
             value={unidades?.pagination?.total || 0}
             icon={<HomeIcon sx={{ fontSize: 32 }} />}
             gradient="linear-gradient(135deg, #ea580c 0%, #f97316 100%)"
