@@ -5,14 +5,16 @@ const prisma = new PrismaClient();
 
 export const getAllLiquidaciones = async (req, res) => {
   try {
-    const { contratoId, unidadId, periodo, estado, page = 1, limit = 50 } = req.query;
+    const { contratoId, propiedadId, periodo, estado, page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {
-      ...(contratoId && { contratoId }),
-      ...(unidadId && { unidadId }),
+      deletedAt: null,
+      activo: true,
+      ...(contratoId && { contratoId: parseInt(contratoId) }),
+      ...(propiedadId && { propiedadId: parseInt(propiedadId) }),
       ...(periodo && { periodo }),
-      ...(estado && { estado })
+      ...(estado && { estadoLiquidacionId: parseInt(estado) })
     };
 
     const [liquidaciones, total] = await Promise.all([
@@ -22,18 +24,46 @@ export const getAllLiquidaciones = async (req, res) => {
         take: parseInt(limit),
         orderBy: { periodo: 'desc' },
         include: {
+          estado: {
+            select: {
+              id: true,
+              codigo: true,
+              nombre: true
+            }
+          },
           contrato: {
             include: {
               inquilino: true,
-              unidad: {
+              propiedad: {
                 include: {
-                  propietario: true
+                  localidad: {
+                    include: {
+                      provincia: true
+                    }
+                  },
+                  provincia: true,
+                  propietarios: {
+                    where: {
+                      deletedAt: null,
+                      activo: true
+                    },
+                    include: {
+                      propietario: {
+                        select: {
+                          id: true,
+                          nombre: true,
+                          apellido: true,
+                          razonSocial: true
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
           },
           items: {
-            orderBy: { orden: 'asc' }
+            orderBy: { id: 'asc' }
           }
         }
       }),
@@ -58,18 +88,52 @@ export const getAllLiquidaciones = async (req, res) => {
 export const getLiquidacionById = async (req, res) => {
   try {
     const { id } = req.params;
+    const liquidacionId = parseInt(id, 10);
+
+    if (isNaN(liquidacionId)) {
+      return res.status(400).json({ error: 'ID de liquidación inválido' });
+    }
 
     const liquidacion = await prisma.liquidacion.findUnique({
-      where: { id },
+      where: { id: liquidacionId },
       include: {
+        estado: {
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          }
+        },
         contrato: {
           include: {
             inquilino: true,
-            unidad: {
+            propiedad: {
               include: {
-                propietario: true,
-                cuentas: {
-                  where: { isDeleted: false }
+                localidad: {
+                  include: {
+                    provincia: true
+                  }
+                },
+                provincia: true,
+                propietarios: {
+                  where: {
+                    deletedAt: null,
+                    activo: true
+                  },
+                  include: {
+                    propietario: {
+                      select: {
+                        id: true,
+                        nombre: true,
+                        apellido: true,
+                        razonSocial: true,
+                        dni: true,
+                        cuit: true,
+                        mail: true,
+                        telefono: true
+                      }
+                    }
+                  }
                 }
               }
             },
@@ -77,9 +141,17 @@ export const getLiquidacionById = async (req, res) => {
           }
         },
         items: {
-          orderBy: { orden: 'asc' },
+          orderBy: { id: 'asc' },
           include: {
-            cuentaTributaria: true
+            propiedadImpuesto: {
+              include: {
+                tipoImpuesto: true
+              }
+            },
+            tipoCargo: true,
+            tipoExpensa: true,
+            actorFacturado: true,
+            quienSoportaCosto: true
           }
         }
       }
@@ -192,9 +264,9 @@ export const generateLiquidacion = async (req, res) => {
     const liquidacion = await prisma.liquidacion.create({
       data: {
         contratoId,
-        unidadId: contrato.unidadId,
+        propiedadId: contrato.propiedadId,
         periodo,
-        estado: 'borrador',
+        estadoLiquidacionId: 1, // Estado borrador por defecto
         total,
         items: {
           create: items
@@ -202,7 +274,7 @@ export const generateLiquidacion = async (req, res) => {
       },
       include: {
         items: {
-          orderBy: { orden: 'asc' }
+          orderBy: { id: 'asc' }
         }
       }
     });
@@ -216,11 +288,11 @@ export const generateLiquidacion = async (req, res) => {
 
 export const createLiquidacion = async (req, res) => {
   try {
-    const { contratoId, unidadId, periodo, items, vencimiento, observaciones, estado } = req.body;
+    const { contratoId, propiedadId, periodo, items, vencimiento, observaciones, estadoLiquidacionId } = req.body;
 
     // Validaciones básicas
-    if (!unidadId || !periodo) {
-      return res.status(400).json({ error: 'Unidad y período son requeridos' });
+    if (!propiedadId || !periodo) {
+      return res.status(400).json({ error: 'Propiedad y período son requeridos' });
     }
     
     // contratoId es opcional, pero si se proporciona, debe ser válido
@@ -281,10 +353,10 @@ export const createLiquidacion = async (req, res) => {
     const liquidacion = await prisma.liquidacion.create({
       data: {
         contratoId,
-        unidadId,
+        propiedadId,
         periodo,
         total,
-        estado: estado || 'borrador',
+        estadoLiquidacionId: estadoLiquidacionId || 1, // Estado por defecto (borrador)
         vencimiento: vencimiento ? new Date(vencimiento) : null,
         observaciones: observaciones || null,
         items: {
@@ -293,7 +365,7 @@ export const createLiquidacion = async (req, res) => {
       },
       include: {
         items: {
-          orderBy: { orden: 'asc' }
+          orderBy: { id: 'asc' }
         }
       }
     });
@@ -369,7 +441,7 @@ export const updateLiquidacion = async (req, res) => {
       },
       include: {
         items: {
-          orderBy: { orden: 'asc' }
+          orderBy: { id: 'asc' }
         }
       }
     });
@@ -430,7 +502,7 @@ export const emitirLiquidacion = async (req, res) => {
       },
       include: {
         items: {
-          orderBy: { orden: 'asc' }
+          orderBy: { id: 'asc' }
         }
       }
     });
@@ -493,7 +565,7 @@ export const generatePDF = async (req, res) => {
           }
         },
         items: {
-          orderBy: { orden: 'asc' },
+          orderBy: { id: 'asc' },
           include: {
             cuentaTributaria: {
               include: {
@@ -1358,6 +1430,961 @@ export const reabrirItem = async (req, res) => {
   } catch (error) {
     console.error('Error al reabrir item:', error);
     res.status(500).json({ error: 'Error al reabrir item' });
+  }
+};
+
+// ============================================
+// LIQUIDACIÓN DE IMPUESTOS
+// ============================================
+
+/**
+ * Determina si un período corresponde según la periodicidad del impuesto
+ * @param {string} codigoPeriodicidad - Código de la periodicidad (MENSUAL, BIMESTRAL, ANUAL, etc.)
+ * @param {string} periodo - Período en formato "YYYY-MM"
+ * @returns {boolean} - true si corresponde generar el impuesto en ese período
+ */
+function correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo) {
+  if (!codigoPeriodicidad || !periodo) return false;
+
+  const [anio, mes] = periodo.split('-').map(Number);
+  const mesNumero = mes;
+
+  switch (codigoPeriodicidad.toUpperCase()) {
+    case 'MENSUAL':
+      return true; // Siempre se genera
+
+    case 'BIMESTRAL':
+      // Generar solo en meses pares (feb, abr, jun, ago, oct, dic)
+      // O alternativamente en meses impares (ene, mar, may, jul, sep, nov)
+      // Usamos meses pares como estrategia por defecto
+      return mesNumero % 2 === 0;
+
+    case 'TRIMESTRAL':
+      // Generar en marzo, junio, septiembre, diciembre (meses múltiplos de 3)
+      return mesNumero % 3 === 0;
+
+    case 'CUATRIMESTRAL':
+      // Generar en abril, agosto, diciembre (meses múltiplos de 4)
+      return mesNumero % 4 === 0;
+
+    case 'SEMESTRAL':
+      // Generar en junio y diciembre
+      return mesNumero === 6 || mesNumero === 12;
+
+    case 'ANUAL':
+      // Generar solo en enero
+      return mesNumero === 1;
+
+    default:
+      console.warn(`Periodicidad desconocida: ${codigoPeriodicidad}, asumiendo MENSUAL`);
+      return true;
+  }
+}
+
+/**
+ * Genera liquidaciones e items de impuestos para un período específico
+ * @param {string} periodo - Período en formato "YYYY-MM"
+ * @param {number} usuarioId - ID del usuario que ejecuta la generación
+ * @returns {Promise<{creadas: number, itemsCreados: number, errores: number}>}
+ */
+async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
+  // Validar formato de período
+  if (!/^\d{4}-\d{2}$/.test(periodo)) {
+    throw new Error('El período debe tener el formato YYYY-MM');
+  }
+
+  const [anio, mes] = periodo.split('-').map(Number);
+  const periodoDate = new Date(anio, mes - 1, 1);
+  const startOfMonth = new Date(anio, mes - 1, 1);
+  startOfMonth.setHours(0, 0, 0, 0);
+  const endOfMonth = new Date(anio, mes, 0);
+  endOfMonth.setHours(23, 59, 59, 999);
+
+  console.log(`[LIQUIDACION-IMPUESTOS] Iniciando generación para período ${periodo}`);
+
+  // Obtener estado por defecto para liquidaciones (BORRADOR)
+  const estadoBorrador = await prisma.estadoLiquidacion.findFirst({
+    where: { codigo: 'BORRADOR', activo: true }
+  });
+
+  if (!estadoBorrador) {
+    throw new Error('No se encontró el estado BORRADOR para liquidaciones');
+  }
+
+  // Obtener estado PENDIENTE para items
+  const estadoPendiente = await prisma.estadoItemLiquidacion.findFirst({
+    where: { codigo: 'PENDIENTE', activo: true }
+  });
+
+  if (!estadoPendiente) {
+    throw new Error('No se encontró el estado PENDIENTE para items de liquidación');
+  }
+
+  // Obtener todas las propiedades con impuestos activos O con expensas activas
+  const propiedadesConImpuestos = await prisma.propiedad.findMany({
+    where: {
+      activo: true,
+      deletedAt: null,
+      OR: [
+        {
+          impuestos: {
+            some: {
+              activo: true,
+              deletedAt: null
+            }
+          }
+        },
+        {
+          cargos: {
+            some: {
+              activo: true,
+              deletedAt: null,
+              tipoCargo: {
+                codigo: 'EXPENSAS',
+                activo: true
+              }
+            }
+          }
+        }
+      ]
+    },
+    include: {
+      impuestos: {
+        where: {
+          activo: true,
+          deletedAt: null
+        },
+        include: {
+          tipoImpuesto: {
+            include: {
+              periodicidad: true
+            }
+          },
+          periodicidad: true,
+          campos: {
+            where: {
+              deletedAt: null
+            },
+            include: {
+              tipoCampo: true
+            }
+          }
+        }
+      },
+      cargos: {
+        where: {
+          activo: true,
+          deletedAt: null,
+          tipoCargo: {
+            codigo: 'EXPENSAS',
+            activo: true
+          }
+        },
+        include: {
+          tipoCargo: {
+            include: {
+              periodicidad: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  console.log(`[LIQUIDACION-IMPUESTOS] Encontradas ${propiedadesConImpuestos.length} propiedades con impuestos o expensas activos`);
+
+  let liquidacionesCreadas = 0;
+  let itemsCreados = 0;
+  let errores = 0;
+  const erroresDetalle = [];
+
+  // Procesar cada propiedad
+  for (const propiedad of propiedadesConImpuestos) {
+    const propiedadId = propiedad.id;
+
+    try {
+      // Buscar contratos vigentes para esta propiedad (opcional)
+      const contratosVigentes = await prisma.contrato.findMany({
+        where: {
+          propiedadId: propiedadId,
+          activo: true,
+          deletedAt: null,
+          fechaInicio: { lte: endOfMonth },
+          OR: [
+            { fechaFin: null },
+            { fechaFin: { gte: startOfMonth } }
+          ]
+        },
+        include: {
+          responsabilidades: {
+            where: {
+              activo: true,
+              deletedAt: null,
+              tipoImpuestoId: { not: null }
+            }
+          },
+          inquilino: true
+        },
+        orderBy: {
+          fechaInicio: 'desc'
+        }
+      });
+
+      const contratoPrincipal = contratosVigentes.length > 0 ? contratosVigentes[0] : null;
+
+      // Crear o reutilizar liquidación para esta propiedad y período
+      const liquidacion = await prisma.liquidacion.upsert({
+        where: {
+          unique_propiedad_periodo: {
+            propiedadId: propiedadId,
+            periodo: periodo
+          }
+        },
+        create: {
+          propiedadId: propiedadId,
+          contratoId: contratoPrincipal?.id || null,
+          periodo: periodo,
+          estadoLiquidacionId: estadoBorrador.id,
+          total: 0,
+          autoGenerada: true,
+          createdById: usuarioId
+        },
+        update: {
+          // Si ya existe, no modificar nada, solo reutilizar
+        },
+        include: {
+          items: {
+            where: {
+              activo: true,
+              deletedAt: null
+            }
+          }
+        }
+      });
+
+      if (liquidacion.items.length === 0) {
+        liquidacionesCreadas++;
+      }
+
+      // Procesar cada impuesto activo de la propiedad
+      for (const impuesto of propiedad.impuestos) {
+        try {
+          // Determinar periodicidad (prioridad: impuesto.periodicidad > tipoImpuesto.periodicidad)
+          const periodicidad = impuesto.periodicidad || impuesto.tipoImpuesto?.periodicidad;
+          const codigoPeriodicidad = periodicidad?.codigo || 'MENSUAL';
+
+          // Verificar si corresponde generar según periodicidad
+          if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo)) {
+            console.log(`[LIQUIDACION-IMPUESTOS] Saltando ${impuesto.tipoImpuesto?.codigo} por periodicidad ${codigoPeriodicidad} en período ${periodo}`);
+            continue;
+          }
+
+          // Verificar si ya existe un item para este impuesto en este período
+          const itemExistente = await prisma.liquidacionItem.findFirst({
+            where: {
+              liquidacionId: liquidacion.id,
+              propiedadImpuestoId: impuesto.id,
+              periodoRef: periodo,
+              activo: true,
+              deletedAt: null
+            }
+          });
+
+          if (itemExistente) {
+            console.log(`[LIQUIDACION-IMPUESTOS] Item ya existe para impuesto ${impuesto.tipoImpuesto?.codigo} en período ${periodo}`);
+            continue;
+          }
+
+          // Buscar responsabilidad del contrato para este impuesto (si existe contrato)
+          const responsabilidad = contratoPrincipal?.responsabilidades?.find(
+            r => r.tipoImpuestoId === impuesto.tipoImpuestoId
+          ) || null;
+
+          // Determinar actores según responsabilidad
+          let actorFacturadoId = null;
+          let quienSoportaCostoId = null;
+          let afectaSaldoInquilino = true;
+          let visibleEnBoletaInquilino = true;
+
+          if (responsabilidad) {
+            actorFacturadoId = responsabilidad.quienPagaProveedorId;
+            quienSoportaCostoId = responsabilidad.quienSoportaCostoId;
+
+            // Determinar si afecta saldo del inquilino
+            // Buscar actor INQ (Inquilino) por código
+            const actorINQ = await prisma.actorResponsableContrato.findFirst({
+              where: { codigo: 'INQ', activo: true }
+            });
+
+            afectaSaldoInquilino = actorINQ && quienSoportaCostoId === actorINQ.id;
+            visibleEnBoletaInquilino = true; // Por defecto visible
+          } else {
+            // Si no hay responsabilidad configurada, usar valores por defecto
+            // Buscar actores por código
+            const actorINQ = await prisma.actorResponsableContrato.findFirst({
+              where: { codigo: 'INQ', activo: true }
+            });
+            const actorPROP = await prisma.actorResponsableContrato.findFirst({
+              where: { codigo: 'PROP', activo: true }
+            });
+
+            // Por defecto, el inquilino soporta el costo si no hay configuración
+            actorFacturadoId = actorINQ?.id || null;
+            quienSoportaCostoId = actorINQ?.id || null;
+            afectaSaldoInquilino = true;
+            visibleEnBoletaInquilino = true;
+          }
+
+          // Crear item de liquidación
+          await prisma.liquidacionItem.create({
+            data: {
+              liquidacionId: liquidacion.id,
+              propiedadImpuestoId: impuesto.id,
+              periodoRef: periodo,
+              importe: null, // Sin importe inicial
+              estadoItemId: estadoPendiente.id,
+              actorFacturadoId: actorFacturadoId,
+              quienSoportaCostoId: quienSoportaCostoId,
+              visibleEnBoletaInquilino: visibleEnBoletaInquilino,
+              afectaSaldoInquilino: afectaSaldoInquilino,
+              createdById: usuarioId
+            }
+          });
+
+          itemsCreados++;
+          console.log(`[LIQUIDACION-IMPUESTOS] Creado item para impuesto ${impuesto.tipoImpuesto?.codigo} en propiedad ${propiedadId}`);
+
+        } catch (error) {
+          errores++;
+          erroresDetalle.push({
+            propiedadId: propiedadId,
+            impuestoId: impuesto.id,
+            error: error.message
+          });
+          console.error(`[LIQUIDACION-IMPUESTOS] Error al crear item para impuesto ${impuesto.tipoImpuesto?.codigo}:`, error);
+        }
+      }
+
+      // Procesar expensas para esta propiedad
+      const propiedadCargoExpensas = propiedad.cargos?.find(c => c.tipoCargo?.codigo === 'EXPENSAS');
+      
+      if (propiedadCargoExpensas) {
+        // Obtener tipos de expensa (ORD y EXT)
+        const tiposExpensa = await prisma.tipoExpensa.findMany({
+          where: {
+            activo: true,
+            deletedAt: null
+          }
+        });
+
+        // Determinar periodicidad de expensas (prioridad: propiedadCargo.periodicidad > tipoCargo.periodicidad)
+        const periodicidadExpensas = propiedadCargoExpensas.tipoCargo?.periodicidad;
+        const codigoPeriodicidadExpensas = periodicidadExpensas?.codigo || 'MENSUAL';
+
+        // Verificar si corresponde generar según periodicidad
+        if (correspondeGenerarPorPeriodicidad(codigoPeriodicidadExpensas, periodo)) {
+          // Buscar responsabilidad del contrato para expensas (si existe contrato)
+          const responsabilidadExpensas = contratoPrincipal?.responsabilidades?.find(
+            r => r.tipoCargoId === propiedadCargoExpensas.tipoCargoId
+          ) || null;
+
+          // Determinar actores según responsabilidad
+          let actorFacturadoIdExpensas = null;
+          let quienSoportaCostoIdExpensas = null;
+          let afectaSaldoInquilinoExpensas = true;
+          let visibleEnBoletaInquilinoExpensas = true;
+
+          if (responsabilidadExpensas) {
+            actorFacturadoIdExpensas = responsabilidadExpensas.quienPagaProveedorId;
+            quienSoportaCostoIdExpensas = responsabilidadExpensas.quienSoportaCostoId;
+
+            const actorINQ = await prisma.actorResponsableContrato.findFirst({
+              where: { codigo: 'INQ', activo: true }
+            });
+
+            afectaSaldoInquilinoExpensas = actorINQ && quienSoportaCostoIdExpensas === actorINQ.id;
+            visibleEnBoletaInquilinoExpensas = true;
+          } else {
+            const actorINQ = await prisma.actorResponsableContrato.findFirst({
+              where: { codigo: 'INQ', activo: true }
+            });
+
+            actorFacturadoIdExpensas = actorINQ?.id || null;
+            quienSoportaCostoIdExpensas = actorINQ?.id || null;
+            afectaSaldoInquilinoExpensas = true;
+            visibleEnBoletaInquilinoExpensas = true;
+          }
+
+          // Crear items para cada tipo de expensa (ORD y EXT)
+          for (const tipoExpensa of tiposExpensa) {
+            try {
+              // Verificar si ya existe un item para este tipo de expensa en este período
+              const itemExistente = await prisma.liquidacionItem.findFirst({
+                where: {
+                  liquidacionId: liquidacion.id,
+                  tipoCargoId: propiedadCargoExpensas.tipoCargoId,
+                  tipoExpensaId: tipoExpensa.id,
+                  periodoRef: periodo,
+                  activo: true,
+                  deletedAt: null
+                }
+              });
+
+              if (itemExistente) {
+                console.log(`[LIQUIDACION-IMPUESTOS] Item ya existe para expensa ${tipoExpensa.codigo} en período ${periodo}`);
+                continue;
+              }
+
+              // Crear item de liquidación para expensa
+              await prisma.liquidacionItem.create({
+                data: {
+                  liquidacionId: liquidacion.id,
+                  tipoCargoId: propiedadCargoExpensas.tipoCargoId,
+                  tipoExpensaId: tipoExpensa.id,
+                  periodoRef: periodo,
+                  importe: null, // Sin importe inicial
+                  estadoItemId: estadoPendiente.id,
+                  actorFacturadoId: actorFacturadoIdExpensas,
+                  quienSoportaCostoId: quienSoportaCostoIdExpensas,
+                  visibleEnBoletaInquilino: visibleEnBoletaInquilinoExpensas,
+                  afectaSaldoInquilino: afectaSaldoInquilinoExpensas,
+                  createdById: usuarioId
+                }
+              });
+
+              itemsCreados++;
+              console.log(`[LIQUIDACION-IMPUESTOS] Creado item para expensa ${tipoExpensa.codigo} en propiedad ${propiedadId}`);
+
+            } catch (error) {
+              errores++;
+              erroresDetalle.push({
+                propiedadId: propiedadId,
+                tipoExpensaId: tipoExpensa.id,
+                error: error.message
+              });
+              console.error(`[LIQUIDACION-IMPUESTOS] Error al crear item para expensa ${tipoExpensa.codigo}:`, error);
+            }
+          }
+        } else {
+          console.log(`[LIQUIDACION-IMPUESTOS] Saltando expensas por periodicidad ${codigoPeriodicidadExpensas} en período ${periodo}`);
+        }
+      }
+
+    } catch (error) {
+      errores++;
+      erroresDetalle.push({
+        propiedadId: propiedadId,
+        error: error.message
+      });
+      console.error(`[LIQUIDACION-IMPUESTOS] Error al procesar propiedad ${propiedadId}:`, error);
+    }
+  }
+
+  console.log(`[LIQUIDACION-IMPUESTOS] Finalizada generación: ${liquidacionesCreadas} liquidaciones, ${itemsCreados} items, ${errores} errores`);
+
+  return {
+    creadas: liquidacionesCreadas,
+    itemsCreados: itemsCreados,
+    errores: errores,
+    erroresDetalle: errores > 0 ? erroresDetalle : undefined
+  };
+}
+
+/**
+ * Endpoint: POST /liquidaciones/impuestos/generar
+ * Genera liquidaciones e items de impuestos para un período
+ */
+export const generarImpuestos = async (req, res) => {
+  try {
+    const { periodo } = req.body;
+    const usuarioId = req.user?.id || null;
+
+    if (!periodo) {
+      return res.status(400).json({ error: 'El período es requerido (formato: YYYY-MM)' });
+    }
+
+    const resultado = await generarLiquidacionesImpuestos(periodo, usuarioId);
+
+    res.json({
+      ok: true,
+      periodo,
+      ...resultado
+    });
+
+  } catch (error) {
+    console.error('Error al generar liquidaciones de impuestos:', error);
+    res.status(500).json({
+      error: 'Error al generar liquidaciones de impuestos',
+      detalles: error.message
+    });
+  }
+};
+
+/**
+ * Endpoint: GET /liquidaciones/impuestos-pendientes
+ * Lista todos los impuestos pendientes de liquidar, agrupados por tipo
+ */
+export const getImpuestosPendientes = async (req, res) => {
+  try {
+    const { periodo, verCompletados = 'false' } = req.query;
+    const mostrarCompletados = verCompletados === 'true';
+
+    // Obtener estados
+    const estadoPendiente = await prisma.estadoItemLiquidacion.findFirst({
+      where: { codigo: 'PENDIENTE', activo: true }
+    });
+
+    const estadoCompletado = mostrarCompletados ? await prisma.estadoItemLiquidacion.findFirst({
+      where: { codigo: 'COMPLETADO', activo: true }
+    }) : null;
+
+    if (!estadoPendiente) {
+      return res.status(500).json({ error: 'No se encontró el estado PENDIENTE' });
+    }
+
+    // Determinar qué estados buscar
+    const estadosBuscar = mostrarCompletados && estadoCompletado
+      ? [estadoPendiente.id, estadoCompletado.id]
+      : [estadoPendiente.id];
+
+    // Construir filtro de período
+    const wherePeriodo = periodo ? {
+      OR: [
+        { liquidacion: { periodo: periodo } },
+        { periodoRef: periodo }
+      ]
+    } : {};
+
+    // Construir where clause combinando todas las condiciones
+    const whereClause = {
+      activo: true,
+      deletedAt: null,
+      estadoItemId: { in: estadosBuscar },
+      OR: [
+        { propiedadImpuestoId: { not: null } }, // Impuestos
+        { tipoCargoId: { not: null } } // Cargos (incluyendo EXPENSAS)
+      ]
+    };
+
+    // Agregar filtro de período si existe
+    if (periodo) {
+      whereClause.AND = [
+        {
+          OR: [
+            { liquidacion: { periodo: periodo } },
+            { periodoRef: periodo }
+          ]
+        }
+      ];
+    }
+
+    // Obtener todos los items pendientes: impuestos Y cargos (incluyendo EXPENSAS)
+    const items = await prisma.liquidacionItem.findMany({
+      where: whereClause,
+      include: {
+        liquidacion: {
+          include: {
+            propiedad: {
+              include: {
+                localidad: {
+                  include: {
+                    provincia: true
+                  }
+                },
+                provincia: true
+              }
+            },
+            contrato: {
+              include: {
+                inquilino: true
+              }
+            }
+          }
+        },
+        propiedadImpuesto: {
+          include: {
+            tipoImpuesto: {
+              include: {
+                campos: {
+                  where: {
+                    activo: true,
+                    deletedAt: null
+                  },
+                  orderBy: {
+                    orden: 'asc'
+                  }
+                }
+              }
+            },
+            campos: {
+              where: {
+                deletedAt: null
+              },
+              include: {
+                tipoCampo: true
+              },
+              orderBy: {
+                tipoCampo: {
+                  orden: 'asc'
+                }
+              }
+            }
+          }
+        },
+        tipoCargo: true,
+        tipoExpensa: true,
+        actorFacturado: true,
+        quienSoportaCosto: true,
+        estadoItem: true
+      },
+      orderBy: [
+        { liquidacion: { propiedad: { dirCalle: 'asc' } } }
+      ]
+    });
+
+    // Separar items en impuestos y expensas
+    const impuestosItems = [];
+    const expensasItems = [];
+
+    for (const item of items) {
+      if (item.propiedadImpuestoId) {
+        // Es un impuesto
+        impuestosItems.push(item);
+      } else if (item.tipoCargoId && item.tipoCargo?.codigo === 'EXPENSAS') {
+        // Es una expensa
+        expensasItems.push(item);
+      } else if (item.tipoCargoId) {
+        // Es otro tipo de cargo (no expensas)
+        impuestosItems.push(item);
+      }
+    }
+
+    // Agrupar impuestos por tipo de impuesto
+    const impuestosAgrupados = new Map();
+
+    for (const item of impuestosItems) {
+      let tipoImpuesto = null;
+      let codigo = null;
+      let nombre = null;
+
+      if (item.propiedadImpuesto?.tipoImpuesto) {
+        // Es un impuesto de propiedad
+        tipoImpuesto = item.propiedadImpuesto.tipoImpuesto;
+        codigo = tipoImpuesto.codigo;
+        nombre = tipoImpuesto.nombre;
+      } else if (item.tipoCargo) {
+        // Es un cargo (no expensas)
+        codigo = item.tipoCargo.codigo;
+        nombre = item.tipoCargo.nombre;
+      }
+
+      if (!codigo) continue;
+
+      if (!impuestosAgrupados.has(codigo)) {
+        impuestosAgrupados.set(codigo, {
+          tipoImpuesto: {
+            id: tipoImpuesto?.id || item.tipoCargo?.id || 0,
+            codigo: codigo,
+            nombre: nombre
+          },
+          items: []
+        });
+      }
+
+      const propiedad = item.liquidacion?.propiedad;
+      if (!propiedad) continue;
+
+      const inquilino = item.liquidacion.contrato?.inquilino;
+
+      // Construir dirección de la propiedad
+      const direccion = [
+        propiedad.dirCalle,
+        propiedad.dirNro,
+        propiedad.dirPiso && `Piso ${propiedad.dirPiso}`,
+        propiedad.dirDepto && `Depto ${propiedad.dirDepto}`
+      ].filter(Boolean).join(' ');
+
+      const localidad = propiedad.localidad?.nombre || '';
+      const provincia = propiedad.provincia?.nombre || propiedad.localidad?.provincia?.nombre || '';
+      const direccionCompleta = `${direccion}${localidad ? `, ${localidad}` : ''}${provincia ? `, ${provincia}` : ''}`;
+
+      // Construir nombre del inquilino
+      const nombreInquilino = inquilino
+        ? (inquilino.razonSocial || `${inquilino.apellido || ''}, ${inquilino.nombre || ''}`.trim() || 'Sin nombre')
+        : 'Sin inquilino';
+
+      // Construir datos del impuesto (campos) - solo para impuestos de propiedad
+      const datosImpuesto = [];
+      if (item.propiedadImpuesto?.campos) {
+        for (const campo of item.propiedadImpuesto.campos) {
+          datosImpuesto.push({
+            codigo: campo.tipoCampo.codigo,
+            nombre: campo.tipoCampo.nombre,
+            valor: campo.valor
+          });
+        }
+      }
+
+      impuestosAgrupados.get(codigo).items.push({
+        itemId: item.id,
+        propiedad: direccionCompleta,
+        inquilino: nombreInquilino,
+        periodoRef: item.periodoRef,
+        datosImpuesto: datosImpuesto,
+        importe: item.importe ? parseFloat(item.importe) : null,
+        actorFacturadoId: item.actorFacturadoId,
+        quienSoportaCostoId: item.quienSoportaCostoId,
+        actorFacturado: item.actorFacturado ? {
+          id: item.actorFacturado.id,
+          codigo: item.actorFacturado.codigo,
+          nombre: item.actorFacturado.nombre
+        } : null,
+        quienSoportaCosto: item.quienSoportaCosto ? {
+          id: item.quienSoportaCosto.id,
+          codigo: item.quienSoportaCosto.codigo,
+          nombre: item.quienSoportaCosto.nombre
+        } : null
+      });
+    }
+
+    // Agrupar expensas por propiedad
+    const expensasAgrupadas = new Map();
+
+    for (const item of expensasItems) {
+      const propiedad = item.liquidacion?.propiedad;
+      if (!propiedad) continue;
+
+      const propiedadId = propiedad.id;
+      const inquilino = item.liquidacion.contrato?.inquilino;
+
+      // Construir dirección de la propiedad
+      const direccion = [
+        propiedad.dirCalle,
+        propiedad.dirNro,
+        propiedad.dirPiso && `Piso ${propiedad.dirPiso}`,
+        propiedad.dirDepto && `Depto ${propiedad.dirDepto}`
+      ].filter(Boolean).join(' ');
+
+      const localidad = propiedad.localidad?.nombre || '';
+      const provincia = propiedad.provincia?.nombre || propiedad.localidad?.provincia?.nombre || '';
+      const direccionCompleta = `${direccion}${localidad ? `, ${localidad}` : ''}${provincia ? `, ${provincia}` : ''}`;
+
+      // Construir nombre del inquilino
+      const nombreInquilino = inquilino
+        ? (inquilino.razonSocial || `${inquilino.apellido || ''}, ${inquilino.nombre || ''}`.trim() || 'Sin nombre')
+        : 'Sin inquilino';
+
+      if (!expensasAgrupadas.has(propiedadId)) {
+        expensasAgrupadas.set(propiedadId, {
+          propiedad: direccionCompleta,
+          inquilino: nombreInquilino,
+          periodoRef: item.periodoRef,
+          importeORD: null,
+          importeEXT: null,
+          itemIdORD: null,
+          itemIdEXT: null,
+          actorFacturadoIdORD: null,
+          actorFacturadoIdEXT: null,
+          quienSoportaCostoIdORD: null,
+          quienSoportaCostoIdEXT: null,
+          actorFacturadoORD: null,
+          actorFacturadoEXT: null,
+          quienSoportaCostoORD: null,
+          quienSoportaCostoEXT: null
+        });
+      }
+
+      const expensa = expensasAgrupadas.get(propiedadId);
+      const tipoExpensaCodigo = item.tipoExpensa?.codigo;
+
+      if (tipoExpensaCodigo === 'ORD') {
+        expensa.importeORD = item.importe ? parseFloat(item.importe) : null;
+        expensa.itemIdORD = item.id;
+        expensa.actorFacturadoIdORD = item.actorFacturadoId;
+        expensa.quienSoportaCostoIdORD = item.quienSoportaCostoId;
+        expensa.actorFacturadoORD = item.actorFacturado ? {
+          id: item.actorFacturado.id,
+          codigo: item.actorFacturado.codigo,
+          nombre: item.actorFacturado.nombre
+        } : null;
+        expensa.quienSoportaCostoORD = item.quienSoportaCosto ? {
+          id: item.quienSoportaCosto.id,
+          codigo: item.quienSoportaCosto.codigo,
+          nombre: item.quienSoportaCosto.nombre
+        } : null;
+      } else if (tipoExpensaCodigo === 'EXT') {
+        expensa.importeEXT = item.importe ? parseFloat(item.importe) : null;
+        expensa.itemIdEXT = item.id;
+        expensa.actorFacturadoIdEXT = item.actorFacturadoId;
+        expensa.quienSoportaCostoIdEXT = item.quienSoportaCostoId;
+        expensa.actorFacturadoEXT = item.actorFacturado ? {
+          id: item.actorFacturado.id,
+          codigo: item.actorFacturado.codigo,
+          nombre: item.actorFacturado.nombre
+        } : null;
+        expensa.quienSoportaCostoEXT = item.quienSoportaCosto ? {
+          id: item.quienSoportaCosto.id,
+          codigo: item.quienSoportaCosto.codigo,
+          nombre: item.quienSoportaCosto.nombre
+        } : null;
+      }
+    }
+
+    // Convertir Maps a Arrays y ordenar
+    const impuestosResultado = Array.from(impuestosAgrupados.values()).sort((a, b) => {
+      return a.tipoImpuesto.codigo.localeCompare(b.tipoImpuesto.codigo);
+    });
+
+    const expensasResultado = Array.from(expensasAgrupadas.values()).sort((a, b) => {
+      return a.propiedad.localeCompare(b.propiedad);
+    });
+
+    // Retornar ambos grupos
+    res.json({
+      impuestos: impuestosResultado,
+      expensas: expensasResultado
+    });
+
+  } catch (error) {
+    console.error('Error al obtener impuestos pendientes:', error);
+    res.status(500).json({
+      error: 'Error al obtener impuestos pendientes',
+      detalles: error.message
+    });
+  }
+};
+
+/**
+ * Endpoint: PATCH /liquidacion-items/:id
+ * Completa el importe de un item de liquidación (impuesto)
+ */
+export const completarImporteItem = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { importe, actorFacturadoId, quienSoportaCostoId } = req.body;
+    const usuarioId = req.user?.id || null;
+
+    // Validar importe
+    const importeNum = parseFloat(importe);
+    if (isNaN(importeNum) || importeNum < 0) {
+      return res.status(400).json({ error: 'El importe debe ser un número mayor o igual a 0' });
+    }
+
+    // Obtener el item
+    const item = await prisma.liquidacionItem.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        liquidacion: {
+          include: {
+            items: {
+              where: {
+                activo: true,
+                deletedAt: null
+              }
+            }
+          }
+        },
+        estadoItem: true
+      }
+    });
+
+    if (!item) {
+      return res.status(404).json({ error: 'Item no encontrado' });
+    }
+
+    if (!item.activo || item.deletedAt) {
+      return res.status(400).json({ error: 'El item no está activo' });
+    }
+
+    // Validar que el item esté en estado PENDIENTE
+    if (item.estadoItem.codigo !== 'PENDIENTE') {
+      return res.status(400).json({
+        error: 'El item no está en estado PENDIENTE',
+        estadoActual: item.estadoItem.codigo
+      });
+    }
+
+    // Obtener estado COMPLETADO
+    const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
+      where: { codigo: 'COMPLETADO', activo: true }
+    });
+
+    if (!estadoCompletado) {
+      return res.status(500).json({ error: 'No se encontró el estado COMPLETADO' });
+    }
+
+    // Guardar importe anterior
+    const importeAnterior = item.importe ? parseFloat(item.importe) : null;
+
+    // Preparar datos de actualización
+    const updateData = {
+      importeAnterior: importeAnterior,
+      importe: importeNum,
+      estadoItemId: estadoCompletado.id,
+      completadoAt: new Date(),
+      completadoById: usuarioId,
+      updatedById: usuarioId
+    };
+
+    // Si se proporcionan actorFacturadoId o quienSoportaCostoId, actualizarlos
+    if (actorFacturadoId !== undefined && actorFacturadoId !== null) {
+      updateData.actorFacturadoId = parseInt(actorFacturadoId);
+    }
+    if (quienSoportaCostoId !== undefined && quienSoportaCostoId !== null) {
+      updateData.quienSoportaCostoId = parseInt(quienSoportaCostoId);
+    }
+
+    // Actualizar el item
+    const itemActualizado = await prisma.liquidacionItem.update({
+      where: { id: parseInt(id) },
+      data: updateData
+    });
+
+    // Recalcular total de la liquidación
+    // Sumar solo los items que afectan el saldo del inquilino
+    const itemsActivos = await prisma.liquidacionItem.findMany({
+      where: {
+        liquidacionId: item.liquidacionId,
+        activo: true,
+        deletedAt: null,
+        afectaSaldoInquilino: true
+      }
+    });
+
+    const nuevoTotal = itemsActivos.reduce((sum, it) => {
+      return sum + (it.importe ? parseFloat(it.importe) : 0);
+    }, 0);
+
+    // Actualizar total de la liquidación
+    await prisma.liquidacion.update({
+      where: { id: item.liquidacionId },
+      data: {
+        total: nuevoTotal,
+        updatedById: usuarioId
+      }
+    });
+
+    res.json({
+      ok: true,
+      item: {
+        id: itemActualizado.id,
+        importe: parseFloat(itemActualizado.importe),
+        importeAnterior: itemActualizado.importeAnterior ? parseFloat(itemActualizado.importeAnterior) : null,
+        estadoItem: estadoCompletado.codigo,
+        completadoAt: itemActualizado.completadoAt
+      },
+      liquidacion: {
+        id: item.liquidacionId,
+        total: nuevoTotal
+      }
+    });
+
+  } catch (error) {
+    console.error('Error al completar importe del item:', error);
+    res.status(500).json({
+      error: 'Error al completar importe del item',
+      detalles: error.message
+    });
   }
 };
 

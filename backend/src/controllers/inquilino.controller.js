@@ -8,7 +8,8 @@ export const getAllInquilinos = async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const where = {
-      isDeleted: false,
+      deletedAt: null,
+      activo: true,
       ...(search && {
         OR: [
           { nombre: { contains: search, mode: 'insensitive' } },
@@ -52,11 +53,12 @@ export const getInquilinoById = async (req, res) => {
     const inquilino = await prisma.inquilino.findFirst({
       where: {
         id,
-        isDeleted: false
+        deletedAt: null,
+      activo: true
       },
       include: {
         contratos: {
-          where: { isDeleted: false },
+          where: { deletedAt: null, activo: true },
           include: {
             unidad: {
               include: {
@@ -150,7 +152,7 @@ export const deleteInquilino = async (req, res) => {
     await prisma.inquilino.update({
       where: { id },
       data: {
-        isDeleted: true,
+        activo: false,
         deletedAt: new Date()
       }
     });

@@ -1,6 +1,16 @@
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+// Singleton pattern para asegurar que prisma siempre esté inicializado
+let prismaInstance = null;
+
+const getPrisma = () => {
+  if (!prismaInstance) {
+    prismaInstance = new PrismaClient();
+  }
+  return prismaInstance;
+};
+
+const prisma = getPrisma();
 
 export const getAllCategorias = async (req, res) => {
   try {
@@ -31,7 +41,7 @@ export const getCategoriaById = async (req, res) => {
       include: {
         parametros: {
           where: { activo: true },
-          orderBy: { orden: 'asc' }
+          orderBy: { id: 'asc' }
         }
       }
     });
@@ -51,26 +61,108 @@ export const getParametrosByCategoria = async (req, res) => {
   try {
     const { codigo } = req.params;
 
-    const categoria = await prisma.categoria.findUnique({
-      where: { codigo }
-    });
-
-    if (!categoria) {
-      return res.status(404).json({ error: 'Categoría no encontrada' });
+    if (!prisma) {
+      console.error('Prisma client no está inicializado correctamente');
+      return res.status(500).json({ error: 'Error de configuración del servidor' });
     }
 
-    const parametros = await prisma.parametro.findMany({
-      where: {
-        categoriaId: categoria.id,
-        activo: true
-      },
-      orderBy: { orden: 'asc' }
-    });
+    let parametros = [];
+
+    // Mapear cada categoría a su tabla correspondiente
+    switch (codigo) {
+      case 'estado_liquidacion':
+        parametros = await prisma.estadoLiquidacion.findMany({
+          where: {
+            activo: true,
+            deletedAt: null
+          },
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          },
+          orderBy: { id: 'asc' }
+        });
+        // Transformar para que tenga la estructura esperada
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      case 'tipo_cargo':
+        parametros = await prisma.tipoCargo.findMany({
+          where: {
+            activo: true,
+            deletedAt: null
+          },
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      case 'tipo_impuesto':
+        parametros = await prisma.tipoImpuestoPropiedad.findMany({
+          where: {
+            activo: true,
+            deletedAt: null
+          },
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      case 'quien_paga':
+        parametros = await prisma.actorResponsableContrato.findMany({
+          where: {
+            activo: true,
+            deletedAt: null
+          },
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      default:
+        return res.status(404).json({ error: `Categoría '${codigo}' no encontrada` });
+    }
 
     res.json(parametros);
   } catch (error) {
     console.error('Error al obtener parámetros:', error);
-    res.status(500).json({ error: 'Error al obtener parámetros' });
+    res.status(500).json({ error: 'Error al obtener parámetros', details: error.message });
   }
 };
 

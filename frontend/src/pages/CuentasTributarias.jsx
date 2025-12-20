@@ -166,9 +166,6 @@ export default function CuentasTributarias() {
     }
   };
 
-  if (isLoading) {
-    return <Box sx={{ p: 3 }}>Cargando...</Box>;
-  }
 
   return (
     <Box>
@@ -405,7 +402,7 @@ export default function CuentasTributarias() {
           <DialogActions>
             <Button onClick={() => setOpen(false)}>Cancelar</Button>
             <Button type="submit" variant="contained" disabled={createMutation.isLoading || updateMutation.isLoading}>
-              {editing ? 'Actualizar' : 'Crear'}
+              {editing ? 'Guardar' : 'Crear'}
             </Button>
           </DialogActions>
         </form>

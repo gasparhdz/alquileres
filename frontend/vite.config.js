@@ -8,8 +8,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:4000',
-        changeOrigin: true
+        // Cambiar a la IP de tu servidor cuando accedas desde otra máquina
+        target: 'http://192.168.100.183:4000',
+        changeOrigin: true,
+        // Alternativa: usar localhost si accedes desde la misma máquina
+        // target: 'http://localhost:4000',
       }
     }
   }

@@ -11,7 +11,10 @@ import {
   generarLiquidacionesAutomaticas,
   getPendientesItems,
   completarItem,
-  reabrirItem
+  reabrirItem,
+  generarImpuestos,
+  getImpuestosPendientes,
+  completarImporteItem
 } from '../controllers/liquidacion.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
@@ -21,7 +24,10 @@ router.use(authenticateToken);
 
 router.get('/', getAllLiquidaciones);
 router.get('/pendientes-items', getPendientesItems);
+router.get('/impuestos-pendientes', getImpuestosPendientes);
 router.post('/cron/generar', generarLiquidacionesAutomaticas);
+router.post('/impuestos/generar', generarImpuestos);
+router.patch('/liquidacion-items/:id', completarImporteItem);
 router.get('/:id', getLiquidacionById);
 router.post('/', createLiquidacion);
 router.post('/generar', generateLiquidacion);

@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes.js';
 import inquilinoRoutes from './routes/inquilino.routes.js';
 import propietarioRoutes from './routes/propietario.routes.js';
 import unidadRoutes from './routes/unidad.routes.js';
+import propiedadRoutes from './routes/propiedad.routes.js';
 import cuentaTributariaRoutes from './routes/cuentaTributaria.routes.js';
 import contratoRoutes from './routes/contrato.routes.js';
 import liquidacionRoutes from './routes/liquidacion.routes.js';
@@ -15,6 +16,14 @@ import parametroRoutes from './routes/parametro.routes.js';
 import indiceRoutes from './routes/indice.routes.js';
 import ajusteRoutes from './routes/ajuste.routes.js';
 import propiedadDocumentoRoutes from './routes/propiedadDocumento.routes.js';
+import catalogoRoutes from './routes/catalogo.routes.js';
+import catalogoABMRoutes from './routes/catalogoABM.routes.js';
+import propiedadImpuestoRoutes from './routes/propiedadImpuesto.routes.js';
+import propiedadCargoRoutes from './routes/propiedadCargo.routes.js';
+import tipoImpuestoPropiedadCampoRoutes from './routes/tipoImpuestoPropiedadCampo.routes.js';
+import propiedadImpuestoCampoRoutes from './routes/propiedadImpuestoCampo.routes.js';
+import tipoCargoCampoRoutes from './routes/tipoCargoCampo.routes.js';
+import propiedadCargoCampoRoutes from './routes/propiedadCargoCampo.routes.js';
 
 dotenv.config();
 
@@ -58,6 +67,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/inquilinos', inquilinoRoutes);
 app.use('/api/propietarios', propietarioRoutes);
 app.use('/api/unidades', unidadRoutes);
+app.use('/api/propiedades', propiedadRoutes);
 app.use('/api/cuentas', cuentaTributariaRoutes);
 app.use('/api/contratos', contratoRoutes);
 app.use('/api/liquidaciones', liquidacionRoutes);
@@ -65,6 +75,14 @@ app.use('/api/parametros', parametroRoutes);
 app.use('/api/indices', indiceRoutes);
 app.use('/api/ajustes', ajusteRoutes);
 app.use('/api/documentos-propiedad', propiedadDocumentoRoutes);
+app.use('/api/catalogos', catalogoRoutes);
+app.use('/api/catalogos-abm', catalogoABMRoutes);
+app.use('/api/propiedad-impuestos', propiedadImpuestoRoutes);
+app.use('/api/propiedad-cargos', propiedadCargoRoutes);
+app.use('/api/tipos-impuesto-propiedad-campos', tipoImpuestoPropiedadCampoRoutes);
+app.use('/api/propiedad-impuesto-campos', propiedadImpuestoCampoRoutes);
+app.use('/api/tipos-cargo-campos', tipoCargoCampoRoutes);
+app.use('/api/propiedad-cargo-campos', propiedadCargoCampoRoutes);
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

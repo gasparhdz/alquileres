@@ -3,13 +3,23 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 // Obtener todos los documentos de una propiedad
-export const getDocumentosByUnidad = async (req, res) => {
+export const getDocumentosByPropiedad = async (req, res) => {
   try {
-    const { unidadId } = req.params;
+    const { propiedadId } = req.params;
 
     const documentos = await prisma.propiedadDocumento.findMany({
       where: {
-        unidadId
+        propiedadId: parseInt(propiedadId),
+        deletedAt: null
+      },
+      include: {
+        tipoDocumento: {
+          select: {
+            id: true,
+            codigo: true,
+            nombre: true
+          }
+        }
       },
       orderBy: {
         createdAt: 'asc'
@@ -18,116 +28,139 @@ export const getDocumentosByUnidad = async (req, res) => {
 
     res.json(documentos);
   } catch (error) {
-    console.error('Error al obtener documentos por unidad:', error);
+    console.error('Error al obtener documentos por propiedad:', error);
     res.status(500).json({ error: 'Error al obtener documentos' });
   }
 };
 
 // Crear o actualizar documentos de una propiedad
-export const upsertDocumentosUnidad = async (req, res) => {
+export const upsertDocumentosPropiedad = async (req, res) => {
   try {
-    const { unidadId } = req.params;
-    const { documentos } = req.body; // Array de { tipoDocumentoId, necesario, recibido }
-
-    console.log(`Guardando ${documentos.length} documentos para propiedad ${unidadId}`);
+    const { propiedadId } = req.params;
+    const { documentos } = req.body; // Array de { tipoDocumentoPropiedadId, necesario, recibido }
 
     if (!documentos) {
-      console.error('No se recibió el campo documentos en el body');
       return res.status(400).json({ error: 'El campo documentos es requerido' });
     }
 
     if (!Array.isArray(documentos)) {
-      console.error('documentos no es un array:', typeof documentos, documentos);
       return res.status(400).json({ error: 'documentos debe ser un array' });
     }
 
     if (documentos.length === 0) {
-      console.warn('Se recibió un array vacío de documentos');
       return res.json([]);
     }
 
-    // Verificar que la unidad existe
-    const unidad = await prisma.unidad.findUnique({
-      where: { id: unidadId }
+    // Verificar que la propiedad existe
+    const propiedad = await prisma.propiedad.findFirst({
+      where: {
+        id: parseInt(propiedadId),
+        deletedAt: null,
+        activo: true
+      }
     });
 
-    if (!unidad || unidad.isDeleted) {
+    if (!propiedad) {
       return res.status(404).json({ error: 'Propiedad no encontrada' });
     }
 
-    // Primero, obtener todos los parámetros de documentación para validar
-    const parametrosDocumentacion = await prisma.parametro.findMany({
+    // Obtener todos los tipos de documento para validar
+    const tiposDocumento = await prisma.tipoDocumentoPropiedad.findMany({
       where: {
-        categoria: {
-          codigo: 'documentacion'
-        }
-      },
-      include: {
-        categoria: true
+        activo: true,
+        deletedAt: null
       }
     });
 
-    const parametrosMap = new Map(parametrosDocumentacion.map(p => [p.id, p]));
+    const tiposDocumentoMap = new Map(tiposDocumento.map(t => [t.id, t]));
+
+    // Obtener documentos existentes
+    const documentosExistentes = await prisma.propiedadDocumento.findMany({
+      where: {
+        propiedadId: parseInt(propiedadId),
+        deletedAt: null
+      }
+    });
+
+    const tiposDocumentosNuevos = new Set(documentos.map(d => parseInt(d.tipoDocumentoPropiedadId)));
+
+    // Eliminar documentos que ya no están en la lista (soft delete)
+    const documentosAEliminar = documentosExistentes.filter(
+      d => !tiposDocumentosNuevos.has(d.tipoDocumentoPropiedadId)
+    );
+
+    if (documentosAEliminar.length > 0) {
+      await prisma.propiedadDocumento.updateMany({
+        where: {
+          id: { in: documentosAEliminar.map(d => d.id) }
+        },
+        data: {
+          deletedAt: new Date()
+        }
+      });
+    }
 
     // Procesar cada documento
     const resultados = [];
-    const documentosOmitidos = [];
     
     for (const doc of documentos) {
-      // Verificar que el parámetro existe y es de la categoría documentacion
-      const parametro = parametrosMap.get(doc.tipoDocumentoId);
-
-      if (!parametro) {
-        console.warn(`Parámetro de documento no encontrado: ${doc.tipoDocumentoId}`);
-        documentosOmitidos.push(doc.tipoDocumentoId);
-        continue; // Saltar este documento en lugar de fallar
+      const tipoDocumentoPropiedadId = parseInt(doc.tipoDocumentoPropiedadId);
+      
+      // Verificar que el tipo de documento existe
+      const tipoDocumento = tiposDocumentoMap.get(tipoDocumentoPropiedadId);
+      if (!tipoDocumento) {
+        console.warn(`Tipo de documento no encontrado: ${tipoDocumentoPropiedadId}`);
+        continue;
       }
 
-      // Buscar si existe o crear/actualizar documento
-      try {
-        // Primero verificar si existe
-        const documentoExistente = await prisma.propiedadDocumento.findFirst({
+      // Buscar si existe
+      const documentoExistente = documentosExistentes.find(
+        d => d.tipoDocumentoPropiedadId === tipoDocumentoPropiedadId && d.deletedAt === null
+      );
+      
+      let resultado;
+      if (documentoExistente) {
+        // Actualizar documento existente
+        resultado = await prisma.propiedadDocumento.update({
           where: {
-            unidadId: unidadId,
-            tipoDocumentoId: doc.tipoDocumentoId
+            id: documentoExistente.id
+          },
+          data: {
+            necesario: Boolean(doc.necesario),
+            recibido: Boolean(doc.recibido)
+          },
+          include: {
+            tipoDocumento: {
+              select: {
+                id: true,
+                codigo: true,
+                nombre: true
+              }
+            }
           }
         });
-        
-        let resultado;
-        if (documentoExistente) {
-          // Actualizar documento existente
-          resultado = await prisma.propiedadDocumento.update({
-            where: {
-              id: documentoExistente.id
-            },
-            data: {
-              necesario: Boolean(doc.necesario),
-              recibido: Boolean(doc.recibido)
+      } else {
+        // Crear nuevo documento
+        resultado = await prisma.propiedadDocumento.create({
+          data: {
+            propiedadId: parseInt(propiedadId),
+            tipoDocumentoPropiedadId,
+            necesario: Boolean(doc.necesario),
+            recibido: Boolean(doc.recibido)
+          },
+          include: {
+            tipoDocumento: {
+              select: {
+                id: true,
+                codigo: true,
+                nombre: true
+              }
             }
-          });
-        } else {
-          // Crear nuevo documento
-          resultado = await prisma.propiedadDocumento.create({
-            data: {
-              unidadId,
-              tipoDocumentoId: doc.tipoDocumentoId,
-              necesario: Boolean(doc.necesario),
-              recibido: Boolean(doc.recibido)
-            }
-          });
-        }
-        
-        resultados.push(resultado);
-      } catch (error) {
-        console.error(`Error al guardar documento ${doc.tipoDocumentoId}:`, error.message);
-        throw new Error(`Error al guardar documento ${doc.tipoDocumentoId}: ${error.message}`);
+          }
+        });
       }
-    }
-
-    if (resultados.length === 0 && documentosOmitidos.length === documentos.length) {
-      return res.status(400).json({ 
-        error: 'No se pudo guardar ningún documento. Verificar que los tipos de documento existen en la categoría "documentacion".'
-      });
+      
+      resultados.push(resultado);
     }
     
     res.json(resultados);

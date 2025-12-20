@@ -15,11 +15,13 @@ const parseDecimalInput = (value) => {
   return numeric;
 };
 
-const buildWhereClause = ({ codigo, periodoDesde, periodoHasta, activo }) => {
-  const where = {};
+const buildWhereClause = ({ metodoAjusteContratoId, periodoDesde, periodoHasta, activo }) => {
+  const where = {
+    deletedAt: null
+  };
 
-  if (codigo) {
-    where.codigo = { equals: codigo, mode: 'insensitive' };
+  if (metodoAjusteContratoId) {
+    where.metodoAjusteContratoId = parseInt(metodoAjusteContratoId);
   }
 
   if (periodoDesde || periodoHasta) {
@@ -59,7 +61,7 @@ const calculateVariacion = (valorActual, valorAnterior) => {
 export const listIndices = async (req, res) => {
   try {
     const {
-      codigo,
+      metodoAjusteContratoId,
       periodoDesde,
       periodoHasta,
       activo,
@@ -67,16 +69,25 @@ export const listIndices = async (req, res) => {
       limit = 50
     } = req.query;
 
-    const where = buildWhereClause({ codigo, periodoDesde, periodoHasta, activo });
+    const where = buildWhereClause({ metodoAjusteContratoId, periodoDesde, periodoHasta, activo });
     const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
     const [indices, total] = await Promise.all([
       prisma.indiceAjuste.findMany({
         where,
         orderBy: [
-          { codigo: 'asc' },
+          { metodoAjusteContratoId: 'asc' },
           { periodo: 'desc' }
         ],
+        include: {
+          metodoAjuste: {
+            select: {
+              id: true,
+              codigo: true,
+              nombre: true
+            }
+          }
+        },
         skip,
         take: parseInt(limit, 10)
       }),

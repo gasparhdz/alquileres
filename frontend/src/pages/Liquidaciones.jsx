@@ -89,11 +89,12 @@ export default function Liquidaciones() {
     }
   });
 
-  const { data: liquidacionDetalle } = useQuery({
+  const { data: liquidacionDetalle, isLoading: isLoadingDetalle } = useQuery({
     queryKey: ['liquidacion', selectedLiquidacion],
     queryFn: async () => {
       if (!selectedLiquidacion) return null;
       const response = await api.get(`/liquidaciones/${selectedLiquidacion}`);
+      console.log('Liquidación recibida del backend:', response.data);
       return response.data;
     },
     enabled: !!selectedLiquidacion
@@ -167,8 +168,6 @@ export default function Liquidaciones() {
     setEditOpen(true);
   };
 
-  if (isLoading) return <div>Cargando...</div>;
-
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
@@ -212,14 +211,18 @@ export default function Liquidaciones() {
                   {liquidacion.contrato?.inquilino?.razonSocial ||
                     `${liquidacion.contrato?.inquilino?.nombre || ''} ${liquidacion.contrato?.inquilino?.apellido || ''}`.trim()}
                 </TableCell>
-                <TableCell>{liquidacion.contrato?.unidad?.direccion}</TableCell>
+                <TableCell>
+                  {liquidacion.contrato?.propiedad 
+                    ? `${liquidacion.contrato.propiedad.dirCalle} ${liquidacion.contrato.propiedad.dirNro}${liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}${liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}`
+                    : '-'}
+                </TableCell>
                 <TableCell>
                   <Chip
-                    label={getDescripcion(estadoLiquidacionMap, liquidacion.estado)}
+                    label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
                     color={
-                      liquidacion.estado === 'emitida'
+                      liquidacion.estado?.codigo === 'EMITIDA'
                         ? 'success'
-                        : liquidacion.estado === 'pagada'
+                        : liquidacion.estado?.codigo === 'PAGADA'
                         ? 'primary'
                         : 'default'
                     }
@@ -242,7 +245,7 @@ export default function Liquidaciones() {
                     <IconButton size="small" onClick={() => handleView(liquidacion.id)} title="Ver detalle" sx={{ padding: '4px' }}>
                       <VisibilityIcon fontSize="small" />
                     </IconButton>
-                    {liquidacion.estado === 'borrador' && (
+                    {liquidacion.estado?.codigo === 'BORRADOR' && (
                       <>
                         <IconButton size="small" onClick={() => handleEdit(liquidacion.id)} title="Editar" sx={{ padding: '4px' }}>
                           <EditIcon fontSize="small" />
@@ -261,7 +264,7 @@ export default function Liquidaciones() {
                         </IconButton>
                       </>
                     )}
-                    {liquidacion.estado === 'emitida' && (
+                    {liquidacion.estado?.codigo === 'EMITIDA' && (
                       <IconButton
                         size="small"
                         onClick={() => handleDownloadPDF(liquidacion.id)}
@@ -299,11 +302,11 @@ export default function Liquidaciones() {
                     </Box>
                     <Box>
                       <Chip
-                        label={getDescripcion(estadoLiquidacionMap, liquidacion.estado)}
+                        label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
                         color={
-                          liquidacion.estado === 'emitida'
+                          liquidacion.estado?.codigo === 'EMITIDA'
                             ? 'success'
-                            : liquidacion.estado === 'pagada'
+                            : liquidacion.estado?.codigo === 'PAGADA'
                             ? 'primary'
                             : 'default'
                         }
@@ -323,11 +326,11 @@ export default function Liquidaciones() {
                         </Typography>
                       </Box>
                     )}
-                    {liquidacion.contrato?.unidad && (
+                    {liquidacion.contrato?.propiedad && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <HomeIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                         <Typography variant="body2">
-                          <strong>Unidad:</strong> {liquidacion.contrato?.unidad?.direccion}
+                          <strong>Propiedad:</strong> {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}{liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}{liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}
                         </Typography>
                       </Box>
                     )}
@@ -355,7 +358,7 @@ export default function Liquidaciones() {
                     <IconButton size="small" onClick={() => handleView(liquidacion.id)}>
                       <VisibilityIcon />
                     </IconButton>
-                    {liquidacion.estado === 'borrador' && (
+                    {liquidacion.estado?.codigo === 'BORRADOR' && (
                       <>
                         <IconButton size="small" onClick={() => handleEdit(liquidacion.id)}>
                           <EditIcon />
@@ -372,7 +375,7 @@ export default function Liquidaciones() {
                         </IconButton>
                       </>
                     )}
-                    {liquidacion.estado === 'emitida' && (
+                    {liquidacion.estado?.codigo === 'EMITIDA' && (
                       <IconButton size="small" onClick={() => handleDownloadPDF(liquidacion.id)}>
                         <PictureAsPdfIcon />
                       </IconButton>
@@ -406,7 +409,7 @@ export default function Liquidaciones() {
                   <MenuItem key={contrato.id} value={contrato.id}>
                     {contrato.inquilino?.razonSocial ||
                       `${contrato.inquilino?.nombre} ${contrato.inquilino?.apellido}`} -{' '}
-                    {contrato.unidad?.direccion}
+                    {contrato.propiedad ? `${contrato.propiedad.dirCalle} ${contrato.propiedad.dirNro}` : '-'}
                   </MenuItem>
                 ))}
               </Select>
@@ -457,34 +460,19 @@ export default function Liquidaciones() {
       <Dialog open={viewOpen} onClose={() => setViewOpen(false)} maxWidth="lg" fullWidth>
         <DialogTitle>Detalle de Liquidación</DialogTitle>
         <DialogContent>
-          {liquidacionDetalle && (
+          {isLoadingDetalle ? (
+            <Box sx={{ p: 2, textAlign: 'center' }}>Cargando...</Box>
+          ) : liquidacionDetalle ? (
             <LiquidacionDetalle
               liquidacion={liquidacionDetalle}
               onEmitir={handleEmitir}
               onDownloadPDF={() => handleDownloadPDF(selectedLiquidacion)}
             />
+          ) : (
+            <Box sx={{ p: 2 }}>No se pudo cargar la liquidación</Box>
           )}
         </DialogContent>
         <DialogActions>
-          {liquidacionDetalle?.estado === 'borrador' && (
-            <Button
-              variant="contained"
-              startIcon={<CheckCircleIcon />}
-              onClick={handleEmitir}
-              disabled={emitirMutation.isLoading}
-            >
-              Emitir Liquidación
-            </Button>
-          )}
-          {liquidacionDetalle?.estado === 'emitida' && (
-            <Button
-              variant="contained"
-              startIcon={<PictureAsPdfIcon />}
-              onClick={() => handleDownloadPDF(selectedLiquidacion)}
-            >
-              Descargar PDF
-            </Button>
-          )}
           <Button onClick={() => setViewOpen(false)}>Cerrar</Button>
         </DialogActions>
       </Dialog>
@@ -510,7 +498,7 @@ function LiquidacionForm({ onClose }) {
   
   const [formData, setFormData] = useState({
     contratoId: '',
-    unidadId: '',
+    propiedadId: '',
     periodo: mesActual,
     vencimiento: '',
     observaciones: '',
@@ -548,34 +536,34 @@ function LiquidacionForm({ onClose }) {
 
   // Obtener cuentas tributarias de la unidad
   const { data: cuentasTributarias } = useQuery({
-    queryKey: ['cuentasTributarias', formData.unidadId],
+    queryKey: ['cuentasTributarias', formData.propiedadId],
     queryFn: async () => {
-      if (!formData.unidadId) return [];
-      const response = await api.get(`/cuentas/unidad/${formData.unidadId}`);
+      if (!formData.propiedadId) return [];
+      const response = await api.get(`/cuentas/propiedad/${formData.propiedadId}`);
       return response.data || [];
     },
-    enabled: !!formData.unidadId
+    enabled: !!formData.propiedadId
   });
 
   // Efecto para cargar items automáticamente cuando cambia el contrato
   useEffect(() => {
     // Solo cargar items si tenemos contrato cargado
-    if (!contratoDetalle?.id || !contratoDetalle?.unidadId) {
+    if (!contratoDetalle?.id || !contratoDetalle?.propiedadId) {
       return;
     }
     
     const contratoIdActual = contratoDetalle.id;
-    const unidadIdActual = contratoDetalle.unidadId;
+    const propiedadIdActual = contratoDetalle.propiedadId;
     
     // Solo ejecutar si cambió el contrato
     if (contratoIdActual !== contratoIdRef.current) {
       contratoIdRef.current = contratoIdActual;
       itemsCargadosRef.current = false;
       
-      // Actualizar unidadId inmediatamente
+      // Actualizar propiedadId inmediatamente
       setFormData((prev) => ({
         ...prev,
-        unidadId: unidadIdActual,
+        propiedadId: propiedadIdActual,
         items: []
       }));
       return; // Salir para esperar a que se carguen las cuentas tributarias
@@ -735,7 +723,7 @@ function LiquidacionForm({ onClose }) {
 
     const submitData = {
       contratoId: formData.contratoId,
-      unidadId: contrato.unidadId,
+      propiedadId: contrato.propiedadId,
       periodo: formData.periodo,
       vencimiento: formData.vencimiento ? new Date(formData.vencimiento).toISOString() : null,
       observaciones: formData.observaciones || null,
@@ -763,7 +751,7 @@ function LiquidacionForm({ onClose }) {
                   setFormData({ 
                     ...formData, 
                     contratoId: nuevoContratoId,
-                    unidadId: '',
+                    propiedadId: '',
                     items: []
                   });
                   if (errors.contratoId) {
@@ -779,7 +767,7 @@ function LiquidacionForm({ onClose }) {
                   <MenuItem key={contrato.id} value={contrato.id}>
                     {contrato.inquilino?.razonSocial ||
                       `${contrato.inquilino?.nombre} ${contrato.inquilino?.apellido}`} -{' '}
-                    {contrato.unidad?.direccion}
+                    {contrato.propiedad ? `${contrato.propiedad.dirCalle} ${contrato.propiedad.dirNro}` : '-'}
                   </MenuItem>
                 ))}
               </Select>
@@ -889,6 +877,20 @@ function LiquidacionForm({ onClose }) {
                             handleUpdateItem(index, 'importe', e.target.value);
                           }}
                           onFocus={(e) => e.stopPropagation()}
+                          inputProps={{ 
+                            style: { MozAppearance: 'textfield' },
+                            onWheel: (e) => e.target.blur()
+                          }}
+                          sx={{
+                            '& input[type=number]::-webkit-outer-spin-button': {
+                              WebkitAppearance: 'none',
+                              margin: 0
+                            },
+                            '& input[type=number]::-webkit-inner-spin-button': {
+                              WebkitAppearance: 'none',
+                              margin: 0
+                            }
+                          }}
                           onClick={(e) => e.stopPropagation()}
                           placeholder="0.00"
                           inputProps={{ step: '0.01', min: '0' }}
@@ -1097,8 +1099,23 @@ function LiquidacionEditForm({ liquidacion, onClose }) {
                         type="number"
                         value={item.importe}
                         onChange={(e) => handleUpdateItem(index, 'importe', e.target.value)}
-                        inputProps={{ step: '0.01', min: 0 }}
-                        sx={{ width: 120 }}
+                        inputProps={{ 
+                          step: '0.01', 
+                          min: 0,
+                          style: { MozAppearance: 'textfield' },
+                          onWheel: (e) => e.target.blur()
+                        }}
+                        sx={{ 
+                          width: 120,
+                          '& input[type=number]::-webkit-outer-spin-button': {
+                            WebkitAppearance: 'none',
+                            margin: 0
+                          },
+                          '& input[type=number]::-webkit-inner-spin-button': {
+                            WebkitAppearance: 'none',
+                            margin: 0
+                          }
+                        }}
                       />
                     </TableCell>
                     <TableCell>
@@ -1160,8 +1177,11 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
   const tipoUnidadMap = useParametrosMap('tipo_unidad');
 
   if (!liquidacion) {
-    return <Alert severity="info">Cargando información de la liquidación...</Alert>;
+    console.log('LiquidacionDetalle: liquidacion es null o undefined');
+    return <Box sx={{ p: 2 }}>Cargando liquidación...</Box>;
   }
+  
+  console.log('LiquidacionDetalle recibió:', liquidacion);
 
   const formatoMoneda = (valor) => {
     if (!valor) return '-';
@@ -1183,91 +1203,159 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
         <Grid item xs={12}>
           <Card sx={{ bgcolor: 'primary.main', color: 'primary.contrastText', py: 1 }}>
             <CardContent sx={{ py: '8px !important' }}>
-              <Typography variant="h6" component="div">
-                Liquidación {liquidacion.numeracion ? `#${liquidacion.numeracion}` : liquidacion.periodo}
-                {liquidacion.contrato?.unidad && (
-                  <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>
-                    {' - '}
-                    {getDescripcion(tipoUnidadMap, liquidacion.contrato.unidad.tipo) || ''}
-                    {liquidacion.contrato.unidad.direccion && ` ${liquidacion.contrato.unidad.direccion}`}
-                    {liquidacion.contrato.unidad.codigoInterno && `, ${liquidacion.contrato.unidad.codigoInterno}`}
-                    {liquidacion.contrato.unidad.localidad && `, ${liquidacion.contrato.unidad.localidad}`}
-                    .
-                  </span>
-                )}
-              </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h6" component="div">
+                  Liquidación {liquidacion.numeracion ? `#${liquidacion.numeracion}` : liquidacion.periodo}
+                  {liquidacion.contrato?.propiedad && (
+                    <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>
+                      {' - '}
+                      {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}{liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}{liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}
+                      {liquidacion.contrato.propiedad.localidad?.nombre && `, ${liquidacion.contrato.propiedad.localidad.nombre}`}
+                      {liquidacion.contrato.propiedad.provincia?.nombre && `, ${liquidacion.contrato.propiedad.provincia.nombre}`}
+                    </span>
+                  )}
+                </Typography>
+                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                  <Chip
+                    label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
+                    size="small"
+                    sx={{
+                      bgcolor: liquidacion.estado?.codigo === 'EMITIDA'
+                        ? 'success.main'
+                        : liquidacion.estado?.codigo === 'PAGADA'
+                        ? 'info.main'
+                        : 'rgba(255, 255, 255, 0.2)',
+                      color: 'white'
+                    }}
+                  />
+                  <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
+                    {formatoMoneda(liquidacion.total)}
+                  </Typography>
+                </Box>
+              </Box>
             </CardContent>
           </Card>
         </Grid>
 
-        {/* Información General */}
-        <Grid item xs={12} md={6}>
+        {/* Tres cards en una fila: Contrato, Propietarios, Inquilino */}
+        <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1 }}>
               <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
-                Información General
+                Contrato
               </Typography>
-              <Grid container spacing={1}>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary" display="block">Período</Typography>
-                  <Typography variant="body2" fontWeight="medium">{liquidacion.periodo}</Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary" display="block">Estado</Typography>
-                  <Chip
-                    label={getDescripcion(estadoLiquidacionMap, liquidacion.estado)}
-                    size="small"
-                    color={
-                      liquidacion.estado === 'emitida'
-                        ? 'success'
-                        : liquidacion.estado === 'pagada'
-                        ? 'primary'
-                        : 'default'
-                    }
-                    sx={{ mt: 0.5 }}
-                  />
-                </Grid>
-                {liquidacion.numeracion && (
-                  <Grid item xs={6}>
-                    <Typography variant="caption" color="text.secondary" display="block">Nro. Liquidación</Typography>
-                    <Typography variant="body2">{liquidacion.numeracion}</Typography>
-                  </Grid>
-                )}
-                {liquidacion.vencimiento && (
-                  <Grid item xs={6}>
-                    <Typography variant="caption" color="text.secondary" display="block">Vencimiento</Typography>
-                    <Typography variant="body2">{formatoFecha(liquidacion.vencimiento)}</Typography>
-                  </Grid>
-                )}
-                {liquidacion.emisionAt && (
-                  <Grid item xs={12}>
-                    <Typography variant="caption" color="text.secondary" display="block">Emisión</Typography>
-                    <Typography variant="body2">{dayjs(liquidacion.emisionAt).format('DD/MM/YYYY HH:mm')}</Typography>
-                  </Grid>
-                )}
-                <Grid item xs={12}>
-                  <Typography variant="caption" color="text.secondary" display="block">Total</Typography>
-                  <Typography variant="h6" color="primary.main" fontWeight="bold">
-                    {formatoMoneda(liquidacion.total)}
-                  </Typography>
-                </Grid>
-              </Grid>
+              {liquidacion.contrato ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  {liquidacion.contrato.nroContrato && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Nro. Contrato</Typography>
+                      <Typography variant="body2" fontWeight="medium">{liquidacion.contrato.nroContrato}</Typography>
+                    </Box>
+                  )}
+                  {liquidacion.contrato.propiedad && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Propiedad</Typography>
+                      <Typography variant="body2">
+                        {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}
+                        {liquidacion.contrato.propiedad.dirPiso && ` Piso ${liquidacion.contrato.propiedad.dirPiso}`}
+                        {liquidacion.contrato.propiedad.dirDepto && ` Dto ${liquidacion.contrato.propiedad.dirDepto}`}
+                        {liquidacion.contrato.propiedad.localidad?.nombre && `, ${liquidacion.contrato.propiedad.localidad.nombre}`}
+                        {liquidacion.contrato.propiedad.provincia?.nombre && `, ${liquidacion.contrato.propiedad.provincia.nombre}`}
+                      </Typography>
+                    </Box>
+                  )}
+                  {liquidacion.contrato.fechaInicio && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Fecha Inicio</Typography>
+                      <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaInicio)}</Typography>
+                    </Box>
+                  )}
+                  {liquidacion.contrato.fechaFin && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Fecha Fin</Typography>
+                      <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaFin)}</Typography>
+                    </Box>
+                  )}
+                  {liquidacion.contrato.montoActual && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Monto Actual</Typography>
+                      <Typography variant="body2" fontWeight="medium">{formatoMoneda(liquidacion.contrato.montoActual)}</Typography>
+                    </Box>
+                  )}
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" display="block">Período</Typography>
+                    <Typography variant="body2" fontWeight="medium">{liquidacion.periodo}</Typography>
+                  </Box>
+                  {liquidacion.vencimiento && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Vencimiento</Typography>
+                      <Typography variant="body2">{formatoFecha(liquidacion.vencimiento)}</Typography>
+                    </Box>
+                  )}
+                  {liquidacion.emisionAt && (
+                    <Box>
+                      <Typography variant="caption" color="text.secondary" display="block">Emisión</Typography>
+                      <Typography variant="body2">{dayjs(liquidacion.emisionAt).format('DD/MM/YYYY HH:mm')}</Typography>
+                    </Box>
+                  )}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="text.secondary">Sin contrato asociado</Typography>
+              )}
             </CardContent>
           </Card>
         </Grid>
 
-        {/* Inquilino y Propietario */}
-        <Grid item xs={12} md={6}>
+        <Grid item xs={12} md={4}>
           <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1 }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1, overflow: 'auto' }}>
+              <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
+                Propietarios
+              </Typography>
+              {liquidacion.contrato?.propiedad?.propietarios && liquidacion.contrato.propiedad.propietarios.length > 0 ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                  {liquidacion.contrato.propiedad.propietarios.map((prop, idx) => (
+                    <Box key={prop.propietario.id || idx}>
+                      <Typography variant="body2" fontWeight="medium">
+                        {prop.propietario.razonSocial || 
+                         `${prop.propietario.nombre || ''} ${prop.propietario.apellido || ''}`.trim()}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" component="div">
+                        {prop.propietario.dni && `DNI: ${prop.propietario.dni}`}
+                        {prop.propietario.dni && prop.propietario.cuit && ' • '}
+                        {prop.propietario.cuit && `CUIT: ${prop.propietario.cuit}`}
+                      </Typography>
+                      {prop.propietario.mail && (
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                          {prop.propietario.mail}
+                        </Typography>
+                      )}
+                      {prop.propietario.telefono && (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {prop.propietario.telefono}
+                        </Typography>
+                      )}
+                    </Box>
+                  ))}
+                </Box>
+              ) : (
+                <Typography variant="body2" color="text.secondary">Sin propietarios</Typography>
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={4}>
+          <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1, overflow: 'auto' }}>
               <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
                 Inquilino
               </Typography>
               {liquidacion.contrato?.inquilino ? (
-                <>
-                  <Typography variant="body2" fontWeight="medium" gutterBottom>
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Typography variant="body2" fontWeight="medium">
                     {liquidacion.contrato.inquilino.razonSocial ||
-                     `${liquidacion.contrato.inquilino.nombre} ${liquidacion.contrato.inquilino.apellido}`}
+                     `${liquidacion.contrato.inquilino.nombre || ''} ${liquidacion.contrato.inquilino.apellido || ''}`.trim()}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" component="div">
                     {liquidacion.contrato.inquilino.dni && `DNI: ${liquidacion.contrato.inquilino.dni}`}
@@ -1275,7 +1363,7 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
                     {liquidacion.contrato.inquilino.cuit && `CUIT: ${liquidacion.contrato.inquilino.cuit}`}
                   </Typography>
                   {liquidacion.contrato.inquilino.email && (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
                       {liquidacion.contrato.inquilino.email}
                     </Typography>
                   )}
@@ -1284,37 +1372,9 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
                       {liquidacion.contrato.inquilino.telefono}
                     </Typography>
                   )}
-                </>
+                </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary">Sin inquilino</Typography>
-              )}
-              
-              {liquidacion.contrato?.unidad?.propietario && (
-                <>
-                  <Divider sx={{ my: 1.5 }} />
-                  <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
-                    Propietario
-                  </Typography>
-                  <Typography variant="body2" fontWeight="medium" gutterBottom>
-                    {liquidacion.contrato.unidad.propietario.razonSocial || 
-                     `${liquidacion.contrato.unidad.propietario.nombre} ${liquidacion.contrato.unidad.propietario.apellido}`}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" component="div">
-                    {liquidacion.contrato.unidad.propietario.dni && `DNI: ${liquidacion.contrato.unidad.propietario.dni}`}
-                    {liquidacion.contrato.unidad.propietario.dni && liquidacion.contrato.unidad.propietario.cuit && ' • '}
-                    {liquidacion.contrato.unidad.propietario.cuit && `CUIT: ${liquidacion.contrato.unidad.propietario.cuit}`}
-                  </Typography>
-                  {liquidacion.contrato.unidad.propietario.email && (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
-                      {liquidacion.contrato.unidad.propietario.email}
-                    </Typography>
-                  )}
-                  {liquidacion.contrato.unidad.propietario.telefono && (
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      {liquidacion.contrato.unidad.propietario.telefono}
-                    </Typography>
-                  )}
-                </>
               )}
             </CardContent>
           </Card>
@@ -1334,23 +1394,43 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
                       <TableRow>
                         <TableCell padding="none"><strong>Concepto</strong></TableCell>
                         <TableCell padding="none" align="right"><strong>Importe</strong></TableCell>
-                        <TableCell padding="none"><strong>Responsable</strong></TableCell>
+                        <TableCell padding="none"><strong>Paga</strong></TableCell>
+                        <TableCell padding="none"><strong>Cobra a</strong></TableCell>
                         <TableCell padding="none"><strong>Observaciones</strong></TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {liquidacion.items.map((item) => (
-                        <TableRow key={item.id}>
-                          <TableCell padding="none">
-                            {item.cuentaTributaria?.tipoImpuesto 
-                              ? getAbreviatura(tipoImpuestoMap, item.cuentaTributaria.tipoImpuesto)
-                              : getDescripcion(tipoCargoMap, item.tipoCargo)}
-                          </TableCell>
-                          <TableCell padding="none" align="right">{formatoMoneda(item.importe)}</TableCell>
-                          <TableCell padding="none">{getDescripcion(quienPagaMap, item.quienPaga)}</TableCell>
-                          <TableCell padding="none">{item.observaciones || '-'}</TableCell>
-                        </TableRow>
-                      ))}
+                      {liquidacion.items.map((item) => {
+                        // Obtener el concepto
+                        const concepto = item.propiedadImpuesto?.tipoImpuesto 
+                          ? getAbreviatura(tipoImpuestoMap, item.propiedadImpuesto.tipoImpuesto.codigo)
+                          : item.tipoCargo?.codigo === 'EXPENSAS' && item.tipoExpensa
+                            ? `Expensas ${item.tipoExpensa.nombre || (item.tipoExpensa.codigo === 'ORD' ? 'Ordinarias' : 'Extraordinarias')}`
+                            : getDescripcion(tipoCargoMap, item.tipoCargo?.codigo || item.tipoCargo);
+                        
+                        // Determinar si mostrar "Cobra a" (no para Gastos iniciales ni Alquiler)
+                        const mostrarCobraA = item.tipoCargo?.codigo !== 'GASTOS_INICIALES' && item.tipoCargo?.codigo !== 'ALQUILER';
+                        
+                        // Obtener quién paga
+                        const quienPaga = item.actorFacturado?.nombre || item.actorFacturado?.codigo || 
+                                         (item.actorFacturadoId ? getDescripcion(quienPagaMap, item.actorFacturadoId) : '-');
+                        
+                        // Obtener a quién cobrar
+                        const quienCobra = mostrarCobraA 
+                          ? (item.quienSoportaCosto?.nombre || item.quienSoportaCosto?.codigo || 
+                             (item.quienSoportaCostoId ? getDescripcion(quienPagaMap, item.quienSoportaCostoId) : '-'))
+                          : '-';
+                        
+                        return (
+                          <TableRow key={item.id}>
+                            <TableCell padding="none">{concepto}</TableCell>
+                            <TableCell padding="none" align="right">{formatoMoneda(item.importe)}</TableCell>
+                            <TableCell padding="none">{quienPaga}</TableCell>
+                            <TableCell padding="none">{quienCobra}</TableCell>
+                            <TableCell padding="none">{item.observaciones || '-'}</TableCell>
+                          </TableRow>
+                        );
+                      })}
                       <TableRow>
                         <TableCell padding="none" colSpan={3}>
                           <strong>TOTAL</strong>

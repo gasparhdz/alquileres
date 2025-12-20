@@ -43,7 +43,7 @@ export const login = async (req, res) => {
         id: usuario.id,
         nombre: usuario.nombre,
         email: usuario.email,
-        roles: usuario.roles.map(ur => ur.rol.nombre)
+        roles: usuario.roles.map(ur => ur.rol.codigo)
       }
     });
   } catch (error) {
@@ -80,7 +80,7 @@ export const register = async (req, res) => {
 
     // Asignar rol de administrador por defecto (primera versión)
     const rolAdmin = await prisma.rol.findFirst({
-      where: { nombre: 'Administrador' }
+      where: { codigo: 'ADMIN' }
     });
 
     if (rolAdmin) {
@@ -110,7 +110,6 @@ export const getCurrentUser = async (req, res) => {
   try {
     const usuario = await prisma.usuario.findUnique({
       where: { id: req.user.id },
-      include: { roles: { include: { rol: true } } },
       select: {
         id: true,
         nombre: true,
@@ -118,7 +117,13 @@ export const getCurrentUser = async (req, res) => {
         activo: true,
         roles: {
           include: {
-            rol: true
+            rol: {
+              select: {
+                id: true,
+                codigo: true,
+                descripcion: true
+              }
+            }
           }
         }
       }
@@ -133,7 +138,7 @@ export const getCurrentUser = async (req, res) => {
       nombre: usuario.nombre,
       email: usuario.email,
       activo: usuario.activo,
-      roles: usuario.roles.map(ur => ur.rol.nombre)
+      roles: usuario.roles.map(ur => ur.rol.codigo)
     });
   } catch (error) {
     console.error('Error al obtener usuario actual:', error);

@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,398 +7,1130 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum AjusteOrigen {
-  manual
-  automatico
-}
-
 // ============================================
 // AUTENTICACIÓN Y USUARIOS
 // ============================================
 
 model Usuario {
-  id            String    @id @default(uuid())
-  nombre        String
+  id            Int       @id @default(autoincrement())
+  apellido      String?
+  nombre        String?
+  nombreUsuario String    @unique @map("nombre_usuario")
   email         String    @unique
+  telefono      String?
   passwordHash  String    @map("password_hash")
   activo        Boolean   @default(true)
   createdAt     DateTime  @default(now()) @map("created_at")
+  createdById   Int?      @map("created_by_id") // FK lógico a Usuario.id
   updatedAt     DateTime  @updatedAt @map("updated_at")
-  
-  roles         UsuarioRol[]
+  updatedById   Int?      @map("updated_by_id")
+  deletedAt     DateTime? @map("deleted_at")
+  deletedById   Int?      @map("deleted_by_id")
+
+  roles UsuarioRol[]
 
   @@map("usuarios")
 }
 
 model Rol {
-  id          String      @id @default(uuid())
-  nombre      String      @unique
+  id          Int       @id @default(autoincrement())
+  codigo      String    @unique // antes "nombre"
   descripcion String?
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
-  
-  usuarios    UsuarioRol[]
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id") // Usuario.id
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  usuarios UsuarioRol[]
+  permisos RolPermiso[]
 
   @@map("roles")
 }
 
 model UsuarioRol {
-  usuarioId  String   @map("usuario_id")
-  rolId      String   @map("rol_id")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  usuario    Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  rol        Rol      @relation(fields: [rolId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  usuarioId   Int      @map("usuario_id")
+  rolId       Int      @map("rol_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdById Int?     @map("created_by_id") // Usuario.id
+  usuario     Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  rol         Rol      @relation(fields: [rolId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@id([usuarioId, rolId])
   @@map("usuario_rol")
 }
 
-// ============================================
-// CATÁLOGOS Y PARÁMETROS
-// ============================================
+model Permiso {
+  id          Int     @id @default(autoincrement())
+  codigo      String  @unique // "propiedades.ver", "propiedades.editar", etc.
+  nombre      String // "Ver propiedades", "Editar propiedades"
+  descripcion String?
 
-model Categoria {
-  id          String      @id @default(uuid())
-  codigo      String      @unique
-  descripcion String
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
-  
-  parametros  Parametro[]
+  activo Boolean @default(true)
 
-  @@map("categorias")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  roles RolPermiso[]
+
+  @@map("permisos")
 }
 
-model Parametro {
-  id                  String      @id @default(uuid())
-  categoriaId         String      @map("categoria_id")
-  codigo              String
-  descripcion         String
-  abreviatura         String?
-  labelCodigo1        String?     @map("label_codigo_1")
-  labelCodigo2        String?     @map("label_codigo_2")
-  periodicidadPorDefecto String?  @map("periodicidad_por_defecto")
-  activo              Boolean     @default(true)
-  orden               Int         @default(0)
-  createdAt           DateTime    @default(now()) @map("created_at")
-  updatedAt           DateTime    @updatedAt @map("updated_at")
+model RolPermiso {
+  rolId     Int @map("rol_id")
+  permisoId Int @map("permiso_id")
 
-  categoria           Categoria   @relation(fields: [categoriaId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  createdAt   DateTime @default(now()) @map("created_at")
+  createdById Int?     @map("created_by_id") // Usuario.id
 
-  @@unique([categoriaId, codigo])
-  @@map("parametros")
+  rol     Rol     @relation(fields: [rolId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  permiso Permiso @relation(fields: [permisoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@id([rolId, permisoId])
+  @@map("rol_permiso")
+}
+
+// ============================================
+// PARAMETRIA
+// ============================================
+
+model TipoPersona {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "FISICA", "JURIDICA"
+  nombre String // "Persona física", "Persona jurídica"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  inquilinos   Inquilino[]
+  propietarios Propietario[]
+
+  @@map("tipos_persona")
+}
+
+model Provincia {
+  id     Int     @id @default(autoincrement())
+  codigo String? @unique // opcional: "SF", "BA"
+  nombre String // "Santa Fe", "Buenos Aires"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  localidades  Localidad[]
+  inquilinos   Inquilino[]
+  propietarios Propietario[]
+  propiedades  Propiedad[]
+
+  @@map("provincias")
+}
+
+model Localidad {
+  id Int @id @default(autoincrement())
+
+  nombre      String
+  provinciaId Int    @map("provincia_id")
+
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  provincia Provincia @relation(fields: [provinciaId], references: [id])
+
+  propiedades  Propiedad[]
+  inquilinos   Inquilino[]
+  propietarios Propietario[]
+
+  @@map("localidades")
+}
+
+model CondicionIva {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "RI", "MT", "EX", etc.
+  nombre String // "Responsable Inscripto", "Monotributista", etc.
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  inquilinos   Inquilino[]
+  propietarios Propietario[]
+
+  @@map("condiciones_iva")
+}
+
+model AmbientePropiedad {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "MONO", "1D", "2D", "3D", etc.
+  nombre String // "Monoambiente", "1 dormitorio", etc.
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  propiedades Propiedad[]
+
+  @@map("ambientes_propiedad")
+}
+
+model TipoPropiedad {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "CASA", "DPTO", "LOCAL", etc.
+  nombre String // "Casa", "Departamento", "Local comercial"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  propiedades Propiedad[]
+
+  @@map("tipos_propiedad")
+}
+
+model EstadoPropiedad {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "DISP", "ALQ", "RESERV", etc.
+  nombre String // "Disponible", "Alquilada", "Reservada"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  propiedades Propiedad[]
+
+  @@map("estados_propiedad")
+}
+
+model DestinoPropiedad {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "VIV_FAM", "PROF", "COM"
+  nombre String // "Vivienda familiar", "Uso profesional", "Comercial"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  propiedades Propiedad[]
+
+  @@map("destinos_propiedad")
+}
+
+model TipoImpuestoPropiedad {
+  id             Int    @id @default(autoincrement())
+  codigo         String @unique // "AGUA", "LUZ", "GAS", "TGI", "API", etc.
+  nombre         String // "Agua", "Luz", "Gas", etc.
+  periodicidadId Int?   @map("periodicidad_id") // Periodicidad por defecto
+
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  periodicidad      PeriodicidadImpuesto?        @relation("TiposImpuestoPeriodicidadDefault", fields: [periodicidadId], references: [id])
+  impuestos         PropiedadImpuesto[]
+  responsabilidades ContratoResponsabilidad[]
+  campos            TipoImpuestoPropiedadCampo[]
+
+  @@map("tipos_impuesto_propiedad")
+}
+
+model TipoCargo {
+  id             Int     @id @default(autoincrement())
+  codigo         String  @unique // "ALQUILER", "EXPENSAS", "SEGURO", "GASTO_EXTRA", ...
+  nombre         String
+  periodicidadId Int?    @map("periodicidad_id") // Periodicidad por defecto
+  activo         Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  periodicidad      PeriodicidadImpuesto?     @relation("TiposCargoPeriodicidadDefault", fields: [periodicidadId], references: [id])
+  items             LiquidacionItem[]
+  propiedades       PropiedadCargo[]
+  campos            TipoCargoCampo[]
+  responsabilidades ContratoResponsabilidad[]
+
+  @@map("tipos_cargo")
+}
+
+model TipoExpensa {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "ORD", "EXT"
+  nombre String // "Ordinaria", "Extraordinaria"
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  items LiquidacionItem[]
+
+  @@map("tipos_expensa")
+}
+
+model PeriodicidadImpuesto {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "MENSUAL", "BIMESTRAL", "ANUAL", etc.
+  nombre String // "Mensual", "Bimestral", "Anual"
+  activo Boolean @default(true)
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  createdById Int? @map("created_by_id")
+  updatedById Int? @map("updated_by_id")
+  deletedById Int? @map("deleted_by_id")
+
+  impuestos            PropiedadImpuesto[]
+  tiposImpuestoDefault TipoImpuestoPropiedad[] @relation("TiposImpuestoPeriodicidadDefault")
+  tiposCargoDefault    TipoCargo[]             @relation("TiposCargoPeriodicidadDefault")
+
+  @@map("periodicidades_impuesto")
+}
+
+model TipoDocumentoPropiedad {
+  id          Int     @id @default(autoincrement())
+  codigo      String  @unique // "ESCR", "IMP_AL_DIA", etc.
+  nombre      String // "Escritura", "Impuestos al día", etc.
+  descripcion String?
+  activo      Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  documentos PropiedadDocumento[]
+
+  @@map("tipos_documento_propiedad")
+}
+
+model Moneda {
+  id      Int     @id @default(autoincrement())
+  codigo  String  @unique // "ARS", "USD", etc.
+  nombre  String // "Pesos argentinos", "Dólares estadounidenses"
+  simbolo String? // "$", "US$"
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contratos Contrato[]
+
+  @@map("monedas")
+}
+
+model EstadoContrato {
+  id     Int    @id @default(autoincrement())
+  codigo String @unique // "BORRADOR", "VIGENTE", "FINALIZADO", "RESCINDIDO", etc.
+  nombre String // "Borrador", "Vigente", ...
+
+  esFinal Boolean @default(false) // opcional: marca estados terminales
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contratos Contrato[]
+
+  @@map("estados_contrato")
+}
+
+model MetodoAjusteContrato {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "ICL", "IPC", "UVA", "FIJO", etc.
+  nombre String
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contratos Contrato[]
+  indices   IndiceAjuste[]
+
+  @@map("metodos_ajuste_contrato")
+}
+
+model IndiceAjuste {
+  id Int @id @default(autoincrement())
+
+  // A qué método/índice pertenece este valor (ICL, IPC, UVA, etc.)
+  metodoAjusteContratoId Int @map("metodo_ajuste_id")
+
+  periodo          String // ej. "2024-11" (lo podés estandarizar así)
+  valor            Decimal  @db.Decimal(12, 6)
+  variacion        Decimal? @db.Decimal(10, 6)
+  fuente           String?
+  fechaPublicacion DateTime @map("fecha_publicacion")
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  metodoAjuste MetodoAjusteContrato @relation(fields: [metodoAjusteContratoId], references: [id])
+
+  @@unique([metodoAjusteContratoId, periodo], name: "unique_indice_metodo_periodo")
+  @@map("indice_ajuste")
+}
+
+model ActorResponsableContrato {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "ADMIN", "INQ", "PROP"
+  nombre String // "Administrador", "Inquilino", "Propietario"
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  // Relaciones
+  responsabilidadesComoPagador    ContratoResponsabilidad[] @relation("RespPagaProveedor")
+  responsabilidadesComoSoportante ContratoResponsabilidad[] @relation("RespSoportaCosto")
+
+  itemsComoFacturado  LiquidacionItem[]      @relation("ActorFacturadoItem")
+  itemsComoSoportante LiquidacionItem[]      @relation("ActorSoportaCostoItem")
+  gastosIniciales     ContratoGastoInicial[]
+
+  @@map("actores_responsable_contrato")
+}
+
+model TipoGarantiaContrato {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "PROP", "RECIBO_SUELDO", "SEGURO_CAUCION", etc.
+  nombre String
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  garantias ContratoGarantia[]
+
+  @@map("tipos_garantia_contrato")
+}
+
+model EstadoGarantiaContrato {
+  id     Int     @id @default(autoincrement())
+  codigo String  @unique // "PEND_AV", "APROBADA", "RECHAZADA", etc.
+  nombre String
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?
+  updatedAt   DateTime  @updatedAt
+  updatedById Int?
+  deletedAt   DateTime?
+  deletedById Int?
+
+  garantias ContratoGarantia[]
+
+  @@map("estados_garantia_contrato")
+}
+
+model TipoGastoInicialContrato {
+  id           Int      @id @default(autoincrement())
+  codigo       String   @unique // "SELLOS", "DEPOSITO", "AVERIG", "HONORARIOS", etc.
+  nombre       String
+  activo       Boolean  @default(true)
+  valorDefault Decimal? @map("valor_default") @db.Decimal(12, 4)
+  esPorcentaje Boolean  @default(false)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?
+  updatedAt   DateTime  @updatedAt
+  updatedById Int?
+  deletedAt   DateTime?
+  deletedById Int?
+
+  gastosIniciales ContratoGastoInicial[]
+
+  @@map("tipos_gasto_inicial_contrato")
+}
+
+model EstadoLiquidacion {
+  id      Int     @id @default(autoincrement())
+  codigo  String  @unique // "BORRADOR", "EMITIDA", "CERRADA", etc.
+  nombre  String // "Borrador", "Emitida", "Cerrada"
+  esFinal Boolean @default(false)
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  liquidaciones Liquidacion[]
+
+  @@map("estados_liquidacion")
+}
+
+model EstadoItemLiquidacion {
+  id     Int    @id @default(autoincrement())
+  codigo String @unique // "PENDIENTE", "COMPLETADO", "NO_APLICA"
+  nombre String
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  items LiquidacionItem[]
+
+  @@map("estados_item_liquidacion")
+}
+
+model TipoImpuestoPropiedadCampo {
+  id             Int @id @default(autoincrement())
+  tipoImpuestoId Int @map("tipo_impuesto_id") // FK -> TipoImpuestoPropiedad
+
+  // Código técnico estable (para lógica / integraciones)
+  codigo String @map("codigo") // "CUENTA", "PARTIDA", "PADRON", etc.
+
+  // Etiqueta visible en la UI
+  nombre String @map("nombre") // "Nº de cuenta", "Partida", etc.
+
+  orden  Int     @default(0) @map("orden")
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  tipoImpuesto TipoImpuestoPropiedad    @relation(fields: [tipoImpuestoId], references: [id])
+  valores      PropiedadImpuestoCampo[]
+
+  @@unique([tipoImpuestoId, codigo], name: "unique_tipo_impuesto_campo")
+  @@map("tipos_impuesto_propiedad_campos")
+}
+
+model PropiedadImpuestoCampo {
+  id                  Int    @id @default(autoincrement())
+  propiedadImpuestoId Int    @map("propiedad_impuesto_id")
+  tipoCampoId         Int    @map("tipo_campo_id")
+  valor               String @map("valor")
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedadImpuesto PropiedadImpuesto          @relation(fields: [propiedadImpuestoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoCampo         TipoImpuestoPropiedadCampo @relation(fields: [tipoCampoId], references: [id])
+
+  @@unique([propiedadImpuestoId, tipoCampoId], name: "unique_propiedad_impuesto_campo")
+  @@map("propiedad_impuesto_campos")
+}
+
+model TipoCargoCampo {
+  id          Int @id @default(autoincrement())
+  tipoCargoId Int @map("tipo_cargo_id") // FK -> TipoCargo
+
+  // Código técnico estable (para lógica / integraciones)
+  codigo String @map("codigo") // "CUENTA", "PARTIDA", "PADRON", etc.
+
+  // Etiqueta visible en la UI
+  nombre String @map("nombre") // "Nº de cuenta", "Partida", etc.
+
+  orden  Int     @default(0) @map("orden")
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  tipoCargo TipoCargo             @relation(fields: [tipoCargoId], references: [id])
+  valores   PropiedadCargoCampo[]
+
+  @@unique([tipoCargoId, codigo], name: "unique_tipo_cargo_campo_codigo")
+  @@map("tipos_cargo_campos")
+}
+
+model PropiedadCargoCampo {
+  id               Int    @id @default(autoincrement())
+  propiedadCargoId Int    @map("propiedad_cargo_id")
+  tipoCampoId      Int    @map("tipo_campo_id")
+  valor            String @map("valor")
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedadCargo PropiedadCargo @relation(fields: [propiedadCargoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoCampo      TipoCargoCampo @relation(fields: [tipoCampoId], references: [id])
+
+  @@unique([propiedadCargoId, tipoCampoId], name: "unique_propiedad_cargo_campo")
+  @@map("propiedad_cargo_campos")
 }
 
 // ============================================
 // ENTIDADES PRINCIPALES
 // ============================================
-
 model Inquilino {
-  id            String      @id @default(uuid())
-  apellido      String?
-  nombre        String?
-  razonSocial   String?     @map("razon_social")
-  dni           String?
-  cuit          String?
-  mail          String?
-  telefono      String?
-  direccion     String?
-  localidad     String?
-  condicionIva  String?     @map("condicion_iva")
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
-  deletedAt     DateTime?   @map("deleted_at")
-  isDeleted     Boolean     @default(false) @map("is_deleted")
+  id          Int     @id @default(autoincrement())
+  apellido    String?
+  nombre      String?
+  razonSocial String? @map("razon_social")
+  dni         String?
+  cuit        String?
+  mail        String?
+  telefono    String?
 
-  contratos     Contrato[]
+  dirCalle String? @map("dir_calle")
+  dirNro   String? @map("dir_nro")
+  dirPiso  String? @map("dir_piso")
+  dirDepto String? @map("dir_depto")
 
-  @@unique([dni, nombre], name: "unique_dni_nombre")
-  @@unique([cuit], name: "unique_cuit_inquilino")
+  localidadId    Int? @map("localidad_id")
+  provinciaId    Int? @map("provincia_id")
+  tipoPersonaId  Int? @map("tipo_persona_id")
+  condicionIvaId Int? @map("condicion_iva_id")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  // Relaciones
+  localidad    Localidad?    @relation(fields: [localidadId], references: [id])
+  provincia    Provincia?    @relation(fields: [provinciaId], references: [id])
+  tipoPersona  TipoPersona?  @relation(fields: [tipoPersonaId], references: [id])
+  condicionIva CondicionIva? @relation(fields: [condicionIvaId], references: [id])
+
+  contratos Contrato[]
+
+  @@unique([dni], name: "unique_inquilino_dni")
+  @@unique([cuit], name: "unique_inquilino_cuit")
   @@map("inquilinos")
 }
 
 model Propietario {
-  id            String      @id @default(uuid())
-  apellido      String?
-  nombre        String?
-  razonSocial   String?     @map("razon_social")
-  dni           String?
-  cuit          String?
-  mail          String?
-  telefono      String?
-  direccion     String?
-  localidad     String?
-  condicionIva  String?     @map("condicion_iva")
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
-  deletedAt     DateTime?   @map("deleted_at")
-  isDeleted     Boolean     @default(false) @map("is_deleted")
+  id          Int     @id @default(autoincrement())
+  apellido    String?
+  nombre      String?
+  razonSocial String? @map("razon_social")
+  dni         String?
+  cuit        String?
+  mail        String?
+  telefono    String?
 
-  unidades      Unidad[]
+  dirCalle String? @map("dir_calle")
+  dirNro   String? @map("dir_nro")
+  dirPiso  String? @map("dir_piso")
+  dirDepto String? @map("dir_depto")
 
-  @@unique([dni, nombre], name: "unique_dni_nombre_prop")
-  @@unique([cuit], name: "unique_cuit_propietario")
+  localidadId    Int? @map("localidad_id")
+  provinciaId    Int? @map("provincia_id")
+  tipoPersonaId  Int? @map("tipo_persona_id")
+  condicionIvaId Int? @map("condicion_iva_id")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  // Relaciones
+  localidad    Localidad?    @relation(fields: [localidadId], references: [id])
+  provincia    Provincia?    @relation(fields: [provinciaId], references: [id])
+  tipoPersona  TipoPersona?  @relation(fields: [tipoPersonaId], references: [id])
+  condicionIva CondicionIva? @relation(fields: [condicionIvaId], references: [id])
+
+  propiedades PropiedadPropietario[]
+
+  @@unique([dni], name: "unique_propietario_dni")
+  @@unique([cuit], name: "unique_propietario_cuit")
   @@map("propietarios")
 }
 
-model Unidad {
-  id            String              @id @default(uuid())
-  propietarioId String?             @map("propietario_id")
-  direccion     String
-  localidad     String
-  tipo          String?             // Parametro categoria: tipo_unidad
-  estado        String?             // Parametro categoria: estado_unidad
-  codigoInterno String?             @map("codigo_interno")
-  ambientes     String?
-  descripcion   String?             @db.Text
-  createdAt     DateTime            @default(now()) @map("created_at")
-  updatedAt     DateTime            @updatedAt @map("updated_at")
-  deletedAt     DateTime?           @map("deleted_at")
-  isDeleted     Boolean             @default(false) @map("is_deleted")
+model Propiedad {
+  id Int @id @default(autoincrement())
 
-  propietario   Propietario?        @relation(fields: [propietarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  cuentas       CuentaTributaria[]
+  dirCalle String  @map("dir_calle")
+  dirNro   String  @map("dir_nro")
+  dirPiso  String? @map("dir_piso")
+  dirDepto String? @map("dir_depto")
+
+  localidadId Int? @map("localidad_id")
+  provinciaId Int? @map("provincia_id")
+
+  codigoInterno String? @map("codigo_interno")
+  descripcion   String? @db.Text
+
+  tipoPropiedadId   Int? @map("tipo_propiedad_id")
+  estadoPropiedadId Int? @map("estado_propiedad_id")
+  destinoId         Int? @map("destino_id")
+  ambientesId       Int? @map("ambientes_id")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  // Relaciones
+  localidad       Localidad?         @relation(fields: [localidadId], references: [id])
+  provincia       Provincia?         @relation(fields: [provinciaId], references: [id])
+  tipoPropiedad   TipoPropiedad?     @relation(fields: [tipoPropiedadId], references: [id])
+  estadoPropiedad EstadoPropiedad?   @relation(fields: [estadoPropiedadId], references: [id])
+  destino         DestinoPropiedad?  @relation(fields: [destinoId], references: [id])
+  ambientes       AmbientePropiedad? @relation(fields: [ambientesId], references: [id])
+
+  propietarios  PropiedadPropietario[]
+  impuestos     PropiedadImpuesto[]
   contratos     Contrato[]
   liquidaciones Liquidacion[]
   documentos    PropiedadDocumento[]
+  cargos        PropiedadCargo[]
 
-  @@unique([propietarioId, direccion, localidad], name: "unique_unidad")
-  @@map("unidades")
+  @@unique([dirCalle, dirNro, dirPiso, dirDepto, localidadId], name: "unique_propiedad_direccion")
+  @@map("propiedades")
 }
 
-model CuentaTributaria {
-  id            String      @id @default(uuid())
-  unidadId      String      @map("unidad_id")
-  tipoImpuesto  String      @map("tipo_impuesto") // Parametro categoria: tipo_impuesto
-  codigo1       String?     @map("codigo_1")
-  codigo2       String?     @map("codigo_2")
-  periodicidad  String?     // Parametro categoria: periodicidad
-  usuarioEmail  String?     @map("usuario_email")
-  usuarioPortal String?     @map("usuario_portal") // Username de la oficina virtual (si no es email)
-  password      String?     // Contraseña de la oficina virtual (se podría encriptar en el futuro)
-  activo        Boolean     @default(true) // Habilita/inhabilita para generación mensual
-  observaciones String?
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
-  deletedAt     DateTime?   @map("deleted_at")
-  isDeleted     Boolean     @default(false) @map("is_deleted")
+model PropiedadPropietario {
+  propiedadId   Int       @map("propiedad_id")
+  propietarioId Int       @map("propietario_id")
+  activo        Boolean   @default(true)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  createdById   Int?      @map("created_by_id")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  updatedById   Int?      @map("updated_by_id")
+  deletedAt     DateTime? @map("deleted_at")
+  deletedById   Int?      @map("deleted_by_id")
 
-  unidad        Unidad      @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  items         LiquidacionItem[]
+  propiedad   Propiedad   @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  propietario Propietario @relation(fields: [propietarioId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
-  @@unique([unidadId, tipoImpuesto], name: "unique_cuenta_tributaria")
+  @@id([propiedadId, propietarioId])
+  @@map("propiedad_propietario")
+}
+
+model PropiedadImpuesto {
+  id             Int  @id @default(autoincrement())
+  propiedadId    Int  @map("propiedad_id")
+  tipoImpuestoId Int  @map("tipo_impuesto_id")
+  periodicidadId Int? @map("periodicidad_id")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedad    Propiedad             @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoImpuesto TipoImpuestoPropiedad @relation(fields: [tipoImpuestoId], references: [id])
+  periodicidad PeriodicidadImpuesto? @relation(fields: [periodicidadId], references: [id])
+
+  items  LiquidacionItem[]
+  campos PropiedadImpuestoCampo[]
+
   @@index([activo])
-  @@map("cuentas_tributarias")
+  @@map("propiedad_impuestos")
+}
+
+model PropiedadCargo {
+  id          Int @id @default(autoincrement())
+  propiedadId Int @map("propiedad_id")
+  tipoCargoId Int @map("tipo_cargo_id") // "ALQUILER", "EXPENSAS", "SEGURO", "GASTO_EXTRA", etc.
+
+  activo Boolean @default(true)
+
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedad Propiedad             @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoCargo TipoCargo             @relation(fields: [tipoCargoId], references: [id])
+  campos    PropiedadCargoCampo[]
+
+  @@unique([propiedadId, tipoCargoId], name: "unique_propiedad_cargo")
+  @@map("propiedad_cargos")
+}
+
+model PropiedadDocumento {
+  id                       Int @id @default(autoincrement())
+  propiedadId              Int @map("propiedad_id")
+  tipoDocumentoPropiedadId Int @map("tipo_documento_id")
+
+  necesario Boolean @default(false)
+  recibido  Boolean @default(false)
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedad     Propiedad              @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoDocumento TipoDocumentoPropiedad @relation(fields: [tipoDocumentoPropiedadId], references: [id])
+
+  @@unique([propiedadId, tipoDocumentoPropiedadId])
+  @@map("propiedad_documento")
 }
 
 model Contrato {
-  id                    String                  @id @default(uuid())
-  unidadId              String                  @map("unidad_id")
-  inquilinoId           String                  @map("inquilino_id")
-  nroContrato           String?                 @map("nro_contrato")
-  fechaInicio           DateTime                @map("fecha_inicio")
-  fechaFin              DateTime?               @map("fecha_fin")
-  duracionMeses         Int?                    @map("duracion_meses")
-  montoInicial          Decimal                 @map("monto_inicial") @db.Decimal(10, 2)
-  montoActual           Decimal                 @map("monto_actual") @db.Decimal(10, 2)
-  ultimoAjusteAt        DateTime?               @map("ultimo_ajuste_at")
-  indiceAumento         String?                 @map("indice_aumento")
-  periodoAumento        Int?                    @map("periodo_aumento")
-  gastosAdministrativos Decimal?                @map("gastos_administrativos") @db.Decimal(5, 2)
-  honorariosPropietario Decimal?                @map("honorarios_propietario") @db.Decimal(5, 2)
-  metodoAjuste          String?                 @map("metodo_ajuste") // Parametro categoria: metodo_ajuste
-  frecuenciaAjusteMeses Int?                    @map("frecuencia_ajuste_meses")
-  registradoAfip        Boolean                 @default(false) @map("registrado_afip")
-  moneda                String?                 @default("ARS") // Parametro categoria: moneda
-  estado                String?                 @default("borrador") // Parametro categoria: estado_contrato
-  // Campos para gestión de estados avanzados
-  fechaFirma            DateTime?               @map("fecha_firma")
-  rescisionAt           DateTime?               @map("rescision_at")
-  motivoRescisionId     String?                 @map("motivo_rescision_id") // Parametro categoria: motivo_rescision
-  prorrogaHasta         DateTime?               @map("prorroga_hasta")
-  prorrogaDeId          String?                 @map("prorroga_de_id") // ID del contrato original prorrogado
-  renovadoPorId         String?                 @map("renovado_por_id") // ID del nuevo contrato que reemplaza este
-  renovacionDeId        String?                 @map("renovacion_de_id") // ID del contrato anterior que fue renovado
-  suspendidoDesde       DateTime?               @map("suspendido_desde")
-  suspendidoHasta       DateTime?               @map("suspendido_hasta")
-  motivoSuspensionId    String?                 @map("motivo_suspension_id") // Parametro categoria: motivo_suspension
-  enMora                Boolean                 @default(false) @map("en_mora") // Flag calculado: tiene períodos impagos
-  createdAt             DateTime                @default(now()) @map("created_at")
-  updatedAt             DateTime                @updatedAt @map("updated_at")
-  deletedAt             DateTime?               @map("deleted_at")
-  isDeleted             Boolean                 @default(false) @map("is_deleted")
+  id                     Int       @id @default(autoincrement())
+  propiedadId            Int       @map("propiedad_id")
+  inquilinoId            Int       @map("inquilino_id")
+  nroContrato            String?   @map("nro_contrato")
+  fechaInicio            DateTime  @map("fecha_inicio")
+  fechaFin               DateTime? @map("fecha_fin")
+  duracionMeses          Int?      @map("duracion_meses")
+  montoInicial           Decimal   @map("monto_inicial") @db.Decimal(12, 2)
+  montoActual            Decimal   @map("monto_actual") @db.Decimal(12, 2)
+  monedaId               Int?      @map("moneda_id")
+  metodoAjusteContratoId Int?      @map("metodo_ajuste_id")
+  frecuenciaAjusteMeses  Int?      @map("frecuencia_ajuste_meses")
+  gastosAdministrativos  Decimal?  @map("gastos_administrativos") @db.Decimal(5, 2)
+  honorariosPropietario  Decimal?  @map("honorarios_propietario") @db.Decimal(5, 2)
+  estadoContratoId       Int?      @map("estado_contrato_id") // tabla EstadoContrato
+  activo                 Boolean   @default(true)
+  createdAt              DateTime  @default(now()) @map("created_at")
+  createdById            Int?      @map("created_by_id")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+  updatedById            Int?      @map("updated_by_id")
+  deletedAt              DateTime? @map("deleted_at")
+  deletedById            Int?      @map("deleted_by_id")
 
-  unidad                Unidad                  @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  inquilino             Inquilino               @relation(fields: [inquilinoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  // Relaciones para prórrogas y renovaciones
-  prorrogaDe            Contrato?               @relation("ContratoProrroga", fields: [prorrogaDeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-  prorrogas              Contrato[]             @relation("ContratoProrroga")
-  renovadoPor           Contrato?               @relation("ContratoRenovacion", fields: [renovadoPorId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-  renovaciones          Contrato[]              @relation("ContratoRenovacion")
-  renovacionDe          Contrato?               @relation("ContratoRenovacionDe", fields: [renovacionDeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-  renovacionesDe        Contrato[]              @relation("ContratoRenovacionDe")
-  responsabilidades     ContratoResponsabilidad[]
-  garantias             Garantia[]
-  gastosIniciales       ContratoGastoInicial[]
-  liquidaciones         Liquidacion[]
-  ajustes               ContratoAjuste[]
+  // Relaciones principales
+  propiedad         Propiedad                 @relation(fields: [propiedadId], references: [id])
+  inquilino         Inquilino                 @relation(fields: [inquilinoId], references: [id])
+  moneda            Moneda?                   @relation(fields: [monedaId], references: [id])
+  metodoAjuste      MetodoAjusteContrato?     @relation(fields: [metodoAjusteContratoId], references: [id])
+  estado            EstadoContrato?           @relation(fields: [estadoContratoId], references: [id])
+  // Relaciones a otros módulos
+  responsabilidades ContratoResponsabilidad[]
+  garantias         ContratoGarantia[]
+  gastosIniciales   ContratoGastoInicial[]
+  ajustes           ContratoAjuste[]
+  liquidaciones     Liquidacion[]
 
-  @@unique([unidadId, inquilinoId, fechaInicio], name: "unique_contrato")
+  @@index([propiedadId])
+  @@index([inquilinoId])
+  @@index([estadoContratoId])
   @@map("contratos")
 }
 
 model ContratoResponsabilidad {
-  id          String      @id @default(uuid())
-  contratoId  String      @map("contrato_id")
-  tipoCargo   String      @map("tipo_cargo") // Parametro categoria: tipo_cargo
-  quienPaga   String      @map("quien_paga") // Parametro categoria: quien_paga (inquilino/propietario/prorrata)
-  titular     String?
-  createdAt   DateTime    @default(now()) @map("created_at")
-  updatedAt   DateTime    @updatedAt @map("updated_at")
+  id         Int @id @default(autoincrement())
+  contratoId Int @map("contrato_id")
 
-  contrato    Contrato    @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  // Qué impuesto/cargo aplica (AGUA, LUZ, GAS, EXP_ORD, EXP_EXT, etc.)
+  tipoImpuestoId Int? @map("tipo_impuesto_id") // TipoImpuestoPropiedad (opcional si es cargo)
+  tipoCargoId    Int? @map("tipo_cargo_id") // TipoCargo (opcional si es impuesto)
 
+  // Quién paga la boleta al proveedor (ADMIN, INQ, PROP)
+  quienPagaProveedorId Int @map("quien_paga_proveedor_id")
+
+  // A quién se le cobra / quién soporta el costo (INQ o PROP en tu modelo actual)
+  quienSoportaCostoId Int @map("quien_soporta_costo_id")
+
+  // Opcional: un campo de texto para aclarar titular/casos especiales
+  titular String?
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contrato           Contrato                 @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoImpuesto       TipoImpuestoPropiedad?   @relation(fields: [tipoImpuestoId], references: [id])
+  tipoCargo          TipoCargo?               @relation(fields: [tipoCargoId], references: [id])
+  quienPagaProveedor ActorResponsableContrato @relation("RespPagaProveedor", fields: [quienPagaProveedorId], references: [id])
+  quienSoportaCosto  ActorResponsableContrato @relation("RespSoportaCosto", fields: [quienSoportaCostoId], references: [id])
+
+  @@unique([contratoId, tipoImpuestoId], name: "unique_contrato_impuesto")
+  @@unique([contratoId, tipoCargoId], name: "unique_contrato_cargo")
   @@map("contrato_responsabilidades")
 }
 
-model Garantia {
-  id            String      @id @default(uuid())
-  contratoId    String      @map("contrato_id")
-  tipoGarantia  String?     @map("tipo_garantia") // Parametro categoria: tipo_garantia
-  estadoGarantia String?    @map("estado_garantia") // Parametro categoria: estado_garantia
-  apellido      String?
-  nombre        String?
-  dni           String?
-  cuit          String?
-  telefono      String?
-  mail          String?
-  direccion     String?
-  createdAt     DateTime    @default(now()) @map("created_at")
-  updatedAt     DateTime    @updatedAt @map("updated_at")
+model ContratoGarantia {
+  id         Int @id @default(autoincrement())
+  contratoId Int @map("contrato_id")
 
-  contrato      Contrato    @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoGarantiaId   Int? @map("tipo_garantia_id")
+  estadoGarantiaId Int? @map("estado_garantia_id")
 
-  @@map("garantias")
+  apellido  String?
+  nombre    String?
+  dni       String?
+  cuit      String?
+  telefono  String?
+  mail      String?
+  direccion String?
+
+  // Nuevo: costo de averiguación
+  costoAveriguacion Decimal? @map("costo_averiguacion") @db.Decimal(12, 2)
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contrato       Contrato                @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoGarantia   TipoGarantiaContrato?   @relation(fields: [tipoGarantiaId], references: [id])
+  estadoGarantia EstadoGarantiaContrato? @relation(fields: [estadoGarantiaId], references: [id])
+
+  @@map("contrato_garantias")
 }
 
 model ContratoGastoInicial {
-  id              String      @id @default(uuid())
-  contratoId      String      @map("contrato_id")
-  tipoGastoInicial String     @map("tipo_gasto_inicial") // Parametro categoria: tipo_gasto_inicial
-  valorCalculo   Decimal?    @map("valor_calculo") @db.Decimal(10, 2) // Porcentaje para sellado/honorarios, meses para deposito, cantidad para averiguacion
-  importe         Decimal     @db.Decimal(10, 2)
-  estado          String?     // Parametro categoria: estado_gasto
-  observaciones   String?
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
+  id         Int @id @default(autoincrement())
+  contratoId Int @map("contrato_id")
 
-  contrato        Contrato    @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoGastoInicialId Int      @map("tipo_gasto_inicial_id")
+  valorCalculo       Decimal? @map("valor_calculo") @db.Decimal(12, 4)
+  importe            Decimal  @db.Decimal(12, 2)
+
+  // Quién lo paga (en tu caso: INQ o PROP)
+  quienPagaId Int @map("quien_paga_id") // ActorResponsableContrato
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contrato         Contrato                 @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoGastoInicial TipoGastoInicialContrato @relation(fields: [tipoGastoInicialId], references: [id])
+  quienPaga        ActorResponsableContrato @relation(fields: [quienPagaId], references: [id])
+  itemsLiquidacion LiquidacionItem[]
 
   @@map("contrato_gastos_iniciales")
 }
 
-model Liquidacion {
-  id          String            @id @default(uuid())
-  contratoId  String?           @map("contrato_id") // Opcional: las liquidaciones pueden generarse desde propiedades sin contrato
-  unidadId    String            @map("unidad_id")
-  periodo     String            // Formato: YYYY-MM
-  estado      String            @default("borrador") // Parametro categoria: estado_liquidacion
-  vencimiento DateTime?
-  total       Decimal           @db.Decimal(10, 2)
-  numeracion  String?
-  observaciones String?
-  emisionAt   DateTime?         @map("emision_at")
-  autoGenerada Boolean          @default(false) @map("auto_generada") // Marca si fue creada por el cron del 1°
-  createdAt   DateTime          @default(now()) @map("created_at")
-  updatedAt   DateTime          @updatedAt @map("updated_at")
-
-  contrato    Contrato?         @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  unidad      Unidad            @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  items       LiquidacionItem[]
-
-  @@unique([unidadId, periodo], name: "unique_liquidacion") // Cambiar a unidadId_periodo ya que contratoId es opcional
-  @@index([periodo, estado])
-  @@map("liquidaciones")
-}
-
-model PropiedadDocumento {
-  id              String    @id @default(uuid())
-  unidadId        String    @map("unidad_id")
-  tipoDocumentoId String    @map("tipo_documento_id") // ID del parametro de categoria: documentacion
-  necesario       Boolean   @default(false)
-  recibido        Boolean   @default(false)
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-
-  unidad          Unidad    @relation(fields: [unidadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-
-  @@unique([unidadId, tipoDocumentoId])
-  @@map("propiedad_documento")
-}
-
-model LiquidacionItem {
-  id                  String            @id @default(uuid())
-  liquidacionId       String            @map("liquidacion_id")
-  tipoCargo           String            @map("tipo_cargo") // Parametro categoria: tipo_cargo
-  cuentaTributariaId  String?           @map("cuenta_tributaria_id")
-  periodoRef          String?           @map("periodo_ref")
-  importe             Decimal?          @db.Decimal(10, 2) // Nullable para items pendientes
-  quienPaga           String            @map("quien_paga") // Parametro categoria: quien_paga
-  fuente              String?           // Parametro categoria: fuente (manual/automatico)
-  refExterna          String?           @map("ref_externa")
-  observaciones       String?
-  orden               Int               @default(0)
-  estado              String            @default("pendiente") @map("estado") // Parametro categoria: estado_item {pendiente, completado, no_aplica}
-  importeAnterior     Decimal?          @map("importe_anterior") @db.Decimal(10, 2) // Valor del último item completado de esta cuenta/tipo
-  completadoAt        DateTime?         @map("completado_at")
-  completadoBy        String?           @map("completado_by") // Usuario que completó (opcional FK a Usuario en el futuro)
-  createdAt           DateTime          @default(now()) @map("created_at")
-  updatedAt           DateTime          @updatedAt @map("updated_at")
-
-  liquidacion         Liquidacion       @relation(fields: [liquidacionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  cuentaTributaria    CuentaTributaria? @relation(fields: [cuentaTributariaId], references: [id], onDelete: SetNull, onUpdate: Cascade)
-
-  @@index([estado, tipoCargo])
-  @@index([cuentaTributariaId, estado])
-  @@map("liquidacion_items")
-}
-
-model IndiceAjuste {
-  id               Int       @id @default(autoincrement())
-  codigo           String
-  descripcion      String
-  periodo          String
-  valor            Decimal   @db.Decimal(12, 6)
-  variacion        Decimal?  @db.Decimal(10, 6)
-  fuente           String?
-  fechaPublicacion DateTime  @map("fecha_publicacion")
-  activo           Boolean   @default(true)
-  createdBy        String?   @map("created_by")
-  updatedBy        String?   @map("updated_by")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-
-  @@unique([codigo, periodo], name: "unique_indice_periodo")
-  @@map("indice_ajuste")
-}
-
 model ContratoAjuste {
-  id                Int       @id @default(autoincrement())
-  contratoId        String    @map("contrato_id")
-  fechaAjuste       DateTime  @map("fecha_ajuste")
-  indiceUsado       String    @map("indice_usado")
-  valorIndice       Decimal   @map("valor_indice") @db.Decimal(12, 6)
-  montoAnterior     Decimal   @map("monto_anterior") @db.Decimal(10, 2)
-  montoNuevo        Decimal   @map("monto_nuevo") @db.Decimal(10, 2)
-  porcentajeAumento Decimal   @map("porcentaje_aumento") @db.Decimal(10, 4)
-  origen            AjusteOrigen
-  observaciones     String?
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
+  id         Int @id @default(autoincrement())
+  contratoId Int @map("contrato_id")
 
-  contrato          Contrato  @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  fechaAjuste DateTime @map("fecha_ajuste")
 
+  // Monto de alquiler antes y después del ajuste
+  montoAnterior Decimal @map("monto_anterior") @db.Decimal(12, 2)
+  montoNuevo    Decimal @map("monto_nuevo") @db.Decimal(12, 2)
+
+  // Porcentaje aplicado en el ajuste
+  porcentajeAumento Decimal @map("porcentaje_aumento") @db.Decimal(10, 4)
+
+  // Auditoría estándar
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  contrato Contrato @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([contratoId, fechaAjuste])
   @@map("contrato_ajuste")
 }
 
+model Liquidacion {
+  id Int @id @default(autoincrement())
+
+  propiedadId Int  @map("propiedad_id")
+  contratoId  Int? @map("contrato_id")
+
+  periodo             String // "YYYY-MM"
+  estadoLiquidacionId Int    @map("estado_liquidacion_id")
+
+  vencimiento   DateTime?
+  total         Decimal   @db.Decimal(12, 2)
+  numeracion    String?
+  observaciones String?
+  emisionAt     DateTime? @map("emision_at")
+
+  autoGenerada Boolean @default(false) @map("auto_generada")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  propiedad Propiedad         @relation(fields: [propiedadId], references: [id])
+  contrato  Contrato?         @relation(fields: [contratoId], references: [id])
+  estado    EstadoLiquidacion @relation(fields: [estadoLiquidacionId], references: [id])
+
+  items LiquidacionItem[]
+
+  @@unique([propiedadId, periodo], name: "unique_propiedad_periodo")
+  @@index([periodo, estadoLiquidacionId])
+  @@map("liquidaciones")
+}
+
+model LiquidacionItem {
+  id                       Int      @id @default(autoincrement())
+  liquidacionId            Int      @map("liquidacion_id")
+  propiedadImpuestoId      Int?     @map("propiedad_impuesto_id")
+  tipoCargoId              Int?     @map("tipo_cargo_id")
+  tipoExpensaId            Int?     @map("tipo_expensa_id")
+  contratoGastoInicialId   Int?     @map("contrato_gasto_inicial_id")
+  periodoRef               String?  @map("periodo_ref")
+  importe                  Decimal? @db.Decimal(12, 2)
+  estadoItemId             Int      @map("estado_item_id") // FK -> EstadoItemLiquidacion
+  actorFacturadoId         Int?     @map("actor_facturado_id") // FK -> ActorResponsableContrato
+  quienSoportaCostoId      Int?     @map("quien_soporta_costo_id") // FK -> ActorResponsableContrato
+  visibleEnBoletaInquilino Boolean  @default(true) @map("visible_en_boleta_inq")
+  afectaSaldoInquilino     Boolean  @default(true) @map("afecta_saldo_inq")
+  refExterna               String?  @map("ref_externa") // nro de factura, comprobante, etc.
+  observaciones            String?
+
+  importeAnterior Decimal?  @map("importe_anterior") @db.Decimal(12, 2)
+  completadoAt    DateTime? @map("completado_at")
+  completadoById  Int?      @map("completado_by_id")
+
+  activo      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  createdById Int?      @map("created_by_id")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  updatedById Int?      @map("updated_by_id")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedById Int?      @map("deleted_by_id")
+
+  liquidacion       Liquidacion           @relation(fields: [liquidacionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  propiedadImpuesto PropiedadImpuesto?    @relation(fields: [propiedadImpuestoId], references: [id])
+  tipoCargo         TipoCargo?            @relation(fields: [tipoCargoId], references: [id])
+  tipoExpensa       TipoExpensa?          @relation(fields: [tipoExpensaId], references: [id])
+  estadoItem        EstadoItemLiquidacion @relation(fields: [estadoItemId], references: [id])
+
+  actorFacturado       ActorResponsableContrato? @relation("ActorFacturadoItem", fields: [actorFacturadoId], references: [id])
+  quienSoportaCosto    ActorResponsableContrato? @relation("ActorSoportaCostoItem", fields: [quienSoportaCostoId], references: [id])
+  contratoGastoInicial ContratoGastoInicial?     @relation(fields: [contratoGastoInicialId], references: [id])
+
+  @@index([estadoItemId])
+  @@index([propiedadImpuestoId, estadoItemId])
+  @@map("liquidacion_items")
+}

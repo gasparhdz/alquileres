@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -35,18 +35,15 @@ import {
   Card,
   CardContent,
   Pagination,
-  Tooltip
+  Tooltip,
+  Tabs,
+  Tab
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
-import CheckCircleIcon from '@mui/icons-material/CheckCircle';
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import SaveIcon from '@mui/icons-material/Save';
+import { liquidacionApi } from '../api/liquidacion';
 import api from '../api';
-import ParametroSelect from '../components/ParametroSelect';
-import { useParametrosMap, getDescripcion, getAbreviatura } from '../utils/parametros';
-import dayjs from 'dayjs';
 
 
 export default function PendientesImpuestos() {
@@ -56,10 +53,6 @@ export default function PendientesImpuestos() {
   });
   const [tipoImpuesto, setTipoImpuesto] = useState('');
   const [search, setSearch] = useState('');
-  const [verCompletados, setVerCompletados] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize] = useState(50);
-  const [showPasswords, setShowPasswords] = useState({});
   const [generarDialog, setGenerarDialog] = useState(false);
   const [periodoGenerar, setPeriodoGenerar] = useState(() => {
     const ahora = new Date();
@@ -68,6 +61,10 @@ export default function PendientesImpuestos() {
   const [importesEditados, setImportesEditados] = useState({}); // Estado para almacenar importes editados por itemId
   // Estado para controlar acordeones expandidos - por defecto todos expandidos
   const [expandedAccordions, setExpandedAccordions] = useState({});
+  const [tabValue, setTabValue] = useState(0); // 0 = Impuestos, 1 = Expensas
+  const [actoresEditados, setActoresEditados] = useState({}); // Estado para actores editados en expensas { itemId: { actorFacturadoId, quienSoportaCostoId } }
+  const [verCompletados, setVerCompletados] = useState(false); // Switch para mostrar completados
+  const [camposEnFoco, setCamposEnFoco] = useState({}); // Estado para rastrear qué campos están en foco { itemId: true }
   
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
@@ -75,76 +72,122 @@ export default function PendientesImpuestos() {
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
   
   const queryClient = useQueryClient();
-  
-  const tipoImpuestoMap = useParametrosMap('tipo_cargo');
-  // estadoItemMap se obtendrá solo cuando sea necesario, para evitar el error 404
 
-  // Función helper para obtener las columnas de código que deben mostrarse para un tipo de impuesto
-  const getColumnasCodigo = useMemo(() => {
-    return (tipoImpuestoCodigo) => {
-      if (!tipoImpuestoMap?.lista || !tipoImpuestoCodigo) {
-        return [];
-      }
-      
-      const parametro = tipoImpuestoMap.lista.find(p => p.codigo === tipoImpuestoCodigo);
-      if (!parametro) {
-        // Si no se encuentra el parámetro, no mostrar columnas
-        return [];
-      }
-      
-      const columnas = [];
-      // Solo agregar columnas si tienen etiquetas parametrizadas
-      if (parametro.labelCodigo1 && parametro.labelCodigo1.trim() !== '') {
-        columnas.push({ label: parametro.labelCodigo1, campo: 'codigo1' });
-      }
-      if (parametro.labelCodigo2 && parametro.labelCodigo2.trim() !== '') {
-        columnas.push({ label: parametro.labelCodigo2, campo: 'codigo2' });
-      }
-      return columnas;
-    };
-  }, [tipoImpuestoMap?.lista]);
-
-  // Obtener items pendientes
-  const { data: pendientesData, isLoading, refetch } = useQuery({
-    queryKey: ['pendientes-items', periodo, tipoImpuesto, search, verCompletados, page],
+  // Obtener actores responsables
+  const { data: actoresResponse } = useQuery({
+    queryKey: ['actores-responsable-contrato'],
     queryFn: async () => {
-      const params = new URLSearchParams({
-        periodo,
-        ...(tipoImpuesto && { tipoImpuesto }),
-        ...(search && { search }),
-        verCompletados: verCompletados.toString(),
-        page: page.toString(),
-        pageSize: pageSize.toString()
-      });
-      const response = await api.get(`/liquidaciones/pendientes-items?${params}`);
-      return response.data;
+      const response = await api.get('/catalogos-abm/actores-responsable-contrato');
+      return Array.isArray(response.data) ? response.data : (response.data?.data || []);
     }
   });
 
-  // Agrupar items por tipo de impuesto
+  const actores = useMemo(() => {
+    if (!actoresResponse) return [];
+    return Array.isArray(actoresResponse) 
+      ? actoresResponse.filter(a => a.activo === true)
+      : [];
+  }, [actoresResponse]);
+
+  // Obtener impuestos pendientes (nuevo endpoint que ya viene agrupado)
+  const { data: impuestosPendientes, isLoading, refetch } = useQuery({
+    queryKey: ['impuestos-pendientes', periodo, verCompletados],
+    queryFn: async () => {
+      return await liquidacionApi.getImpuestosPendientes(periodo || null, verCompletados);
+    }
+  });
+
+  // Extraer impuestos y expensas de la respuesta
+  const impuestosData = useMemo(() => {
+    if (!impuestosPendientes) return [];
+    return impuestosPendientes.impuestos || impuestosPendientes || [];
+  }, [impuestosPendientes]);
+
+  const expensasData = useMemo(() => {
+    if (!impuestosPendientes) return [];
+    return impuestosPendientes.expensas || [];
+  }, [impuestosPendientes]);
+
+  // Filtrar y procesar datos de impuestos según filtros
   const itemsAgrupados = useMemo(() => {
-    if (!pendientesData?.data) return {};
+    if (!impuestosData || !Array.isArray(impuestosData)) return {};
     
+    // Filtrar por tipo de impuesto si está seleccionado
+    let gruposFiltrados = impuestosData;
+    if (tipoImpuesto) {
+      gruposFiltrados = gruposFiltrados.filter(
+        grupo => grupo.tipoImpuesto?.codigo === tipoImpuesto
+      );
+    }
+
+    // Filtrar por búsqueda (propiedad o inquilino)
+    if (search) {
+      const searchLower = search.toLowerCase();
+      gruposFiltrados = gruposFiltrados.map(grupo => ({
+        ...grupo,
+        items: grupo.items.filter(item => {
+          const propiedadMatch = item.propiedad?.toLowerCase().includes(searchLower);
+          const inquilinoMatch = item.inquilino?.toLowerCase().includes(searchLower);
+          return propiedadMatch || inquilinoMatch;
+        })
+      })).filter(grupo => grupo.items.length > 0);
+    }
+
+    // Convertir a objeto para mantener compatibilidad con el código existente
     const agrupados = {};
-    pendientesData.data.forEach(item => {
-      const tipo = item.tipoImpuesto;
-      if (!agrupados[tipo]) {
-        agrupados[tipo] = [];
-      }
-      agrupados[tipo].push(item);
+    gruposFiltrados.forEach(grupo => {
+      const codigo = grupo.tipoImpuesto?.codigo || 'SIN_TIPO';
+      agrupados[codigo] = grupo.items || [];
     });
     
     return agrupados;
-  }, [pendientesData]);
+  }, [impuestosData, tipoImpuesto, search]);
 
-  // Obtener lista de tipos de impuesto para tabs
+  // Agrupar expensas por propiedad
+  const expensasAgrupadas = useMemo(() => {
+    if (!expensasData || !Array.isArray(expensasData)) return {};
+    
+    // Filtrar por búsqueda si existe
+    let expensasFiltradas = expensasData;
+    if (search) {
+      const searchLower = search.toLowerCase();
+      expensasFiltradas = expensasData.filter(expensa => {
+        const propiedadMatch = expensa.propiedad?.toLowerCase().includes(searchLower);
+        const inquilinoMatch = expensa.inquilino?.toLowerCase().includes(searchLower);
+        return propiedadMatch || inquilinoMatch;
+      });
+    }
+    
+    // Agrupar por propiedad
+    const agrupadas = {};
+    expensasFiltradas.forEach(expensa => {
+      const propiedadKey = expensa.propiedad || 'SIN_PROPIEDAD';
+      if (!agrupadas[propiedadKey]) {
+        agrupadas[propiedadKey] = [];
+      }
+      agrupadas[propiedadKey].push(expensa);
+    });
+    
+    return agrupadas;
+  }, [expensasData, search]);
+  
+  // Lista de propiedades para iterar
+  const propiedadesExpensas = useMemo(() => {
+    return Object.keys(expensasAgrupadas).sort();
+  }, [expensasAgrupadas]);
+
+  // Obtener lista de tipos de impuesto para el filtro
   const tiposImpuesto = useMemo(() => {
-    return Object.keys(itemsAgrupados).sort();
-  }, [itemsAgrupados]);
+    if (!impuestosData || !Array.isArray(impuestosData)) return [];
+    return impuestosData
+      .map(grupo => grupo.tipoImpuesto?.codigo)
+      .filter(Boolean)
+      .sort();
+  }, [impuestosData]);
 
   // Inicializar acordeones expandidos y valores editados cuando se cargan los datos
   useEffect(() => {
-    if (pendientesData?.data && pendientesData.data.length > 0) {
+    if (impuestosData && impuestosData.length > 0) {
       // Inicializar acordeones expandidos
       setExpandedAccordions(prev => {
         const newKeys = Object.keys(itemsAgrupados);
@@ -164,38 +207,115 @@ export default function PendientesImpuestos() {
         return prev;
       });
 
-      // Inicializar valores editados con importeAnterior para items pendientes
+      // Inicializar valores editados con importe para items pendientes
       setImportesEditados(prev => {
         const nuevos = { ...prev };
         let hayCambios = false;
         
-        pendientesData.data.forEach(item => {
-          if (item.estado === 'pendiente') {
-            // Solo inicializar si no existe en el estado previo o si el valor ha cambiado
+        impuestosData.forEach(grupo => {
+          (grupo.items || []).forEach(item => {
+            // Todos los items del nuevo endpoint están pendientes
             const valorActual = prev[item.itemId];
-            const valorNuevo = item.importeAnterior !== null && item.importeAnterior !== undefined
-              ? item.importeAnterior.toString()
+            const valorNuevo = item.importe !== null && item.importe !== undefined
+              ? item.importe.toString()
               : '';
             
-            // Si no existe en el estado previo, o si el valor ha cambiado (por ejemplo, después de recargar datos)
+            // Si no existe en el estado previo, inicializar
             if (valorActual === undefined || valorActual === null) {
               nuevos[item.itemId] = valorNuevo;
               hayCambios = true;
             }
-          }
+          });
+        });
+
+        // También inicializar expensas
+        Object.values(expensasAgrupadas).forEach(expensasGrupo => {
+          expensasGrupo.forEach(expensa => {
+            if (expensa.itemIdORD) {
+              const valorActualORD = prev[expensa.itemIdORD];
+              const valorNuevoORD = expensa.importeORD !== null && expensa.importeORD !== undefined
+                ? expensa.importeORD.toString()
+                : '';
+              if (valorActualORD === undefined || valorActualORD === null) {
+                nuevos[expensa.itemIdORD] = valorNuevoORD;
+                hayCambios = true;
+              }
+            }
+            if (expensa.itemIdEXT) {
+              const valorActualEXT = prev[expensa.itemIdEXT];
+              const valorNuevoEXT = expensa.importeEXT !== null && expensa.importeEXT !== undefined
+                ? expensa.importeEXT.toString()
+                : '';
+              if (valorActualEXT === undefined || valorActualEXT === null) {
+                nuevos[expensa.itemIdEXT] = valorNuevoEXT;
+                hayCambios = true;
+              }
+            }
+          });
+        });
+
+        return hayCambios ? nuevos : prev;
+      });
+
+      // Inicializar acordeones expandidos para expensas
+      setExpandedAccordions(prev => {
+        const newKeys = propiedadesExpensas;
+        const hasNewProps = newKeys.some(prop => !(prop in prev));
+        
+        if (hasNewProps || Object.keys(prev).length === 0) {
+          const initialExpanded = { ...prev };
+          newKeys.forEach(prop => {
+            if (!(prop in initialExpanded)) {
+              initialExpanded[prop] = true; // Por defecto expandidos
+            }
+          });
+          return initialExpanded;
+        }
+        
+        return prev;
+      });
+
+      // Inicializar actores editados en expensas
+      setActoresEditados(prev => {
+        const nuevos = { ...prev };
+        let hayCambios = false;
+
+        Object.values(expensasAgrupadas).forEach(expensasGrupo => {
+          expensasGrupo.forEach(expensa => {
+            if (expensa.itemIdORD) {
+              const actoresActuales = prev[expensa.itemIdORD];
+              if (!actoresActuales) {
+                nuevos[expensa.itemIdORD] = {
+                  actorFacturadoId: expensa.actorFacturadoIdORD || null,
+                  quienSoportaCostoId: expensa.quienSoportaCostoIdORD || null
+                };
+                hayCambios = true;
+              }
+            }
+            if (expensa.itemIdEXT) {
+              const actoresActuales = prev[expensa.itemIdEXT];
+              if (!actoresActuales) {
+                nuevos[expensa.itemIdEXT] = {
+                  actorFacturadoId: expensa.actorFacturadoIdEXT || null,
+                  quienSoportaCostoId: expensa.quienSoportaCostoIdEXT || null
+                };
+                hayCambios = true;
+              }
+            }
+          });
         });
         
         return hayCambios ? nuevos : prev;
       });
     }
-  }, [pendientesData?.data, itemsAgrupados]);
+  }, [impuestosData, expensasAgrupadas, itemsAgrupados, propiedadesExpensas]);
 
-  // Mutation para completar item
+  // Mutation para completar item (nuevo endpoint)
   const completarMutation = useMutation({
-    mutationFn: ({ itemId, importe, observaciones }) => 
-      api.post(`/liquidaciones/items/${itemId}/completar`, { importe, observaciones }),
+    mutationFn: ({ itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null }) => 
+      liquidacionApi.completarImporteItem(itemId, importe, actorFacturadoId, quienSoportaCostoId),
     onSuccess: (data, variables) => {
-      queryClient.invalidateQueries(['pendientes-items']);
+      queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
       // Limpiar estados editados para este item
       setImportesEditados(prev => {
@@ -203,52 +323,59 @@ export default function PendientesImpuestos() {
         delete nuevo[variables.itemId];
         return nuevo;
       });
-      setSuccessMessage('Item completado exitosamente');
+      setActoresEditados(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[variables.itemId];
+        return nuevo;
+      });
+      setSuccessMessage('Importe completado exitosamente');
       setSnackbarSeverity('success');
       setSnackbarOpen(true);
     },
     onError: (error) => {
-      setErrorMessage(error.response?.data?.error || 'Error al completar el item');
+      setErrorMessage(error.response?.data?.error || error.response?.data?.detalles || 'Error al completar el importe');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     }
   });
 
-  // Mutation para generar liquidaciones
+  // Mutation para generar liquidaciones de impuestos (nuevo endpoint)
   const generarMutation = useMutation({
     mutationFn: (periodoGen) => 
-      api.post(`/liquidaciones/cron/generar?periodo=${periodoGen}`),
+      liquidacionApi.generarImpuestos(periodoGen),
     onSuccess: (data) => {
-      queryClient.invalidateQueries(['pendientes-items']);
+      queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
       setGenerarDialog(false);
-      const resumen = data.data.resumen || {};
+      const resumen = {
+        creadas: data.creadas || 0,
+        itemsCreados: data.itemsCreados || 0,
+        errores: data.errores || 0
+      };
       const mensaje = `Generación completada:
-        • Unidades encontradas: ${resumen.unidadesEncontradas || 0}
-        • Liquidaciones creadas: ${resumen.creadas || 0}
-        • Omitidas (existentes): ${resumen.omitidas || 0}
-        • Omitidas (sin contrato): ${resumen.omitidosSinContrato || 0}
-        • Omitidas (sin items): ${resumen.omitidosSinItems || 0}
-        • Errores: ${resumen.errores || 0}`;
+        • Liquidaciones creadas/reutilizadas: ${resumen.creadas}
+        • Items de impuestos creados: ${resumen.itemsCreados}
+        • Errores: ${resumen.errores}`;
       setSuccessMessage(mensaje);
       setSnackbarSeverity('success');
       setSnackbarOpen(true);
       
-      // Si no se crearon liquidaciones, mostrar alerta más detallada
-      if (resumen.creadas === 0) {
+      // Si no se crearon items, mostrar alerta más detallada
+      if (resumen.itemsCreados === 0) {
         setTimeout(() => {
-          alert(`No se crearon liquidaciones. Revisa:\n${mensaje}\n\nPosibles causas:\n- Las unidades no tienen contratos vigentes en el período\n- Ya existen liquidaciones para ese período\n- Las unidades no tienen cuentas activas`);
+          alert(`No se crearon items de impuestos. Revisa:\n${mensaje}\n\nPosibles causas:\n- No hay contratos vigentes en el período\n- No hay impuestos activos configurados en las propiedades\n- Los impuestos no corresponden según su periodicidad\n- Ya existen items para ese período`);
         }, 1000);
       }
     },
     onError: (error) => {
-      setErrorMessage(error.response?.data?.error || error.response?.data?.detalles || 'Error al generar liquidaciones');
+      setErrorMessage(error.response?.data?.error || error.response?.data?.detalles || 'Error al generar liquidaciones de impuestos');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     }
   });
 
   const handleImporteChange = (itemId, value) => {
+    // Permitir comas como separador decimal
     setImportesEditados(prev => ({
       ...prev,
       [itemId]: value
@@ -256,11 +383,22 @@ export default function PendientesImpuestos() {
   };
 
   const handleCompletarItem = (item) => {
-    // Obtener el importe editado o usar el importe anterior como valor por defecto
-    const importeStr = importesEditados[item.itemId];
-    const importeNum = importeStr !== undefined && importeStr !== '' 
-      ? parseFloat(importeStr) 
-      : (item.importeAnterior ? parseFloat(item.importeAnterior) : 0);
+    // Obtener el importe editado o usar el importe actual como valor por defecto
+    let importeStr = importesEditados[item.itemId];
+    if (importeStr === undefined || importeStr === '') {
+      importeStr = item.importe !== null && item.importe !== undefined 
+        ? String(item.importe)
+        : '';
+    }
+    
+    // Limpiar el formato: quitar puntos (separadores de miles) y convertir coma a punto
+    const importeStrLimpio = importeStr.toString()
+      .replace(/\./g, '') // Quitar puntos (separadores de miles)
+      .replace(',', '.'); // Convertir coma decimal a punto
+    
+    const importeNum = importeStrLimpio !== '' 
+      ? parseFloat(importeStrLimpio) 
+      : 0;
     
     if (isNaN(importeNum) || importeNum < 0) {
       setErrorMessage('El importe debe ser un número mayor o igual a 0');
@@ -269,11 +407,79 @@ export default function PendientesImpuestos() {
       return;
     }
     
-    // Enviar observaciones vacías ya que no hay campo en la UI
+    // Usar el nuevo endpoint
     completarMutation.mutate({
       itemId: item.itemId,
+      importe: importeNum
+    });
+  };
+
+  // Funciones para manejar expensas
+  const handleImporteChangeExpensas = (itemId, value) => {
+    // Permitir comas como separador decimal
+    setImportesEditados(prev => ({
+      ...prev,
+      [itemId]: value
+    }));
+  };
+
+  const handleActorChangeExpensas = (itemId, tipo, actorId) => {
+    setActoresEditados(prev => ({
+      ...prev,
+      [itemId]: {
+        ...prev[itemId],
+        [tipo]: actorId ? parseInt(actorId) : null
+      }
+    }));
+  };
+
+  const handleCompletarItemExpensasIndividual = (expensa, tipo) => {
+    const itemId = tipo === 'ORD' ? expensa.itemIdORD : expensa.itemIdEXT;
+    if (!itemId) return;
+
+    // Obtener importe
+    let importeStr = tipo === 'ORD' 
+      ? importesEditados[expensa.itemIdORD]
+      : importesEditados[expensa.itemIdEXT];
+    
+    if (importeStr === undefined || importeStr === '') {
+      const importeOriginal = tipo === 'ORD' ? expensa.importeORD : expensa.importeEXT;
+      importeStr = importeOriginal !== null && importeOriginal !== undefined 
+        ? String(importeOriginal)
+        : '';
+    }
+    
+    // Limpiar el formato: quitar puntos (separadores de miles) y convertir coma a punto
+    const importeStrLimpio = importeStr.toString()
+      .replace(/\./g, '') // Quitar puntos (separadores de miles)
+      .replace(',', '.'); // Convertir coma decimal a punto
+    
+    const importeNum = importeStrLimpio !== '' 
+      ? parseFloat(importeStrLimpio) 
+      : 0;
+    
+    if (isNaN(importeNum) || importeNum < 0) {
+      setErrorMessage('El importe debe ser un número mayor o igual a 0');
+      setSnackbarSeverity('error');
+      setSnackbarOpen(true);
+      return;
+    }
+
+    // Obtener actores editados
+    const actoresItem = actoresEditados[itemId] || {};
+    const actorFacturadoId = actoresItem.actorFacturadoId !== undefined 
+      ? actoresItem.actorFacturadoId 
+      : (tipo === 'ORD' ? expensa.actorFacturadoIdORD : expensa.actorFacturadoIdEXT);
+    const quienSoportaCostoId = actoresItem.quienSoportaCostoId !== undefined
+      ? actoresItem.quienSoportaCostoId
+      : (tipo === 'ORD' ? expensa.quienSoportaCostoIdORD : expensa.quienSoportaCostoIdEXT);
+    
+    // Usar el nuevo endpoint con actores
+    completarMutation.mutate({
+      itemId: itemId,
       importe: importeNum,
-      observaciones: ''
+      actorFacturadoId: actorFacturadoId,
+      quienSoportaCostoId: quienSoportaCostoId
     });
   };
 
@@ -303,12 +509,6 @@ export default function PendientesImpuestos() {
     }).format(num);
   };
 
-  const togglePassword = (itemId) => {
-    setShowPasswords(prev => ({
-      ...prev,
-      [itemId]: !prev[itemId]
-    }));
-  };
 
 
   return (
@@ -337,7 +537,7 @@ export default function PendientesImpuestos() {
       <Card sx={{ mb: 2 }}>
         <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
           <Grid container spacing={1.5} alignItems="center">
-            <Grid item xs={12} sm={6} md={2.5}>
+            <Grid item xs={12} sm={6} md={3}>
               <TextField
                 fullWidth
                 size="small"
@@ -346,12 +546,11 @@ export default function PendientesImpuestos() {
                 value={periodo}
                 onChange={(e) => {
                   setPeriodo(e.target.value);
-                  setPage(1);
                 }}
                 InputLabelProps={{ shrink: true }}
               />
             </Grid>
-            <Grid item xs={12} sm={6} md={2.5}>
+            <Grid item xs={12} sm={6} md={3}>
               <FormControl fullWidth size="small">
                 <InputLabel>Tipo de Impuesto</InputLabel>
                 <Select
@@ -359,15 +558,17 @@ export default function PendientesImpuestos() {
                   label="Tipo de Impuesto"
                   onChange={(e) => {
                     setTipoImpuesto(e.target.value);
-                    setPage(1);
                   }}
                 >
                   <MenuItem value="">Todos</MenuItem>
-                  {tiposImpuesto.map(tipo => (
-                    <MenuItem key={tipo} value={tipo}>
-                      {getDescripcion(tipoImpuestoMap, tipo) || tipo}
-                    </MenuItem>
-                  ))}
+                  {tiposImpuesto.map(tipo => {
+                    const grupo = impuestosData?.find(g => g.tipoImpuesto?.codigo === tipo);
+                    return (
+                      <MenuItem key={tipo} value={tipo}>
+                        {grupo?.tipoImpuesto?.nombre || tipo}
+                      </MenuItem>
+                    );
+                  })}
                 </Select>
               </FormControl>
             </Grid>
@@ -379,45 +580,59 @@ export default function PendientesImpuestos() {
                 value={search}
                 onChange={(e) => {
                   setSearch(e.target.value);
-                  setPage(1);
                 }}
                 placeholder="Buscar..."
               />
             </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Switch
-                  size="small"
-                  checked={verCompletados}
-                  onChange={(e) => {
-                    setVerCompletados(e.target.checked);
-                    setPage(1);
-                  }}
-                />
-                <Typography variant="body2" sx={{ whiteSpace: 'nowrap' }}>
-                  Ver completados
-                </Typography>
-              </Box>
+            <Grid item xs={12} sm={6} md={2}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={verCompletados}
+                    onChange={(e) => setVerCompletados(e.target.checked)}
+                    size="small"
+                  />
+                }
+                label="Ver completados"
+                sx={{ mt: 0.5 }}
+              />
             </Grid>
           </Grid>
         </CardContent>
       </Card>
 
-      {/* Acordeones por tipo de impuesto */}
+      {/* Tabs para Impuestos y Expensas */}
+      <Card sx={{ mb: 2 }}>
+        <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)}>
+          <Tab label="Impuestos" />
+          <Tab label="Expensas" />
+        </Tabs>
+      </Card>
+
+      {/* Contenido según tab seleccionado */}
       {isLoading ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
           <CircularProgress />
         </Box>
-      ) : !pendientesData?.data || pendientesData.data.length === 0 ? (
-        <Alert severity="info">
-          No hay items {verCompletados ? 'completados' : 'pendientes'} para el período seleccionado.
-        </Alert>
-      ) : (
-        <Box sx={{ mb: 2 }}>
-          {/* Filtrar items según tipoImpuesto seleccionado */}
-          {Object.entries(itemsAgrupados)
-            .filter(([tipo]) => !tipoImpuesto || tipo === tipoImpuesto)
-            .map(([tipo, items]) => (
+      ) : tabValue === 0 ? (
+        // Tab de Impuestos
+        (!impuestosData || impuestosData.length === 0) ? (
+          <Alert severity="info">
+            No hay impuestos pendientes para el período seleccionado.
+          </Alert>
+        ) : (
+          <Box sx={{ mb: 2 }}>
+            {/* Mostrar grupos de impuestos */}
+          {impuestosData
+            .filter(grupo => {
+              const codigo = grupo.tipoImpuesto?.codigo;
+              return !tipoImpuesto || codigo === tipoImpuesto;
+            })
+            .map((grupo) => {
+              const tipo = grupo.tipoImpuesto?.codigo || 'SIN_TIPO';
+              const items = grupo.items || [];
+              
+              return (
               <Accordion
                 key={tipo}
                 expanded={expandedAccordions[tipo] !== false}
@@ -443,7 +658,7 @@ export default function PendientesImpuestos() {
                 >
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
                     <Typography variant="body1" sx={{ flexGrow: 1, fontWeight: 500, fontSize: '0.9rem' }}>
-                      {getDescripcion(tipoImpuestoMap, tipo) || tipo}
+                      {grupo.tipoImpuesto?.nombre || grupo.tipoImpuesto?.codigo || tipo}
                     </Typography>
                     <Chip
                       label={`${items.length} item${items.length !== 1 ? 's' : ''}`}
@@ -461,197 +676,168 @@ export default function PendientesImpuestos() {
                         <TableRow sx={{ '& .MuiTableCell-head': { py: 0.75, fontWeight: 600, fontSize: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}>
                           <TableCell>Propiedad</TableCell>
                           <TableCell>Inquilino</TableCell>
-                          {(() => {
-                            const columnas = getColumnasCodigo(tipo);
-                            return columnas.map((col, idx) => (
-                              <TableCell key={idx}>{col.label}</TableCell>
-                            ));
-                          })()}
-                          <TableCell>Usuario</TableCell>
-                          <TableCell>Contraseña</TableCell>
-                          <TableCell>Importe Anterior</TableCell>
-                          <TableCell>Importe Nuevo</TableCell>
+                          <TableCell>Período</TableCell>
+                          <TableCell>Importe</TableCell>
                           <TableCell align="center">Acción</TableCell>
                         </TableRow>
                       </TableHead>
                       <TableBody>
                         {items.map((item) => {
-                          // Para items pendientes, permitir edición inline
-                          // Priorizar siempre el estado local (importesEditados) si existe
-                          // Si no existe en el estado local, usar importeAnterior como valor inicial
-                          // Si no hay importeAnterior, dejar vacío para que el usuario lo ingrese
-                          const importeEditado = item.estado === 'pendiente'
-                            ? (importesEditados[item.itemId] !== undefined && importesEditados[item.itemId] !== null
-                                ? String(importesEditados[item.itemId]) 
-                                : (item.importeAnterior !== null && item.importeAnterior !== undefined 
-                                    ? String(item.importeAnterior)
-                                    : ''))
-                            : (item.importe !== null && item.importe !== undefined 
-                                ? String(item.importe)
-                                : '');
+                          // Obtener el valor editado del estado
+                          const valorEditado = importesEditados[item.itemId];
+                          const estaEnFoco = camposEnFoco[item.itemId] === true;
                           
-                          const columnasCodigo = getColumnasCodigo(tipo);
+                          // Determinar qué valor mostrar
+                          let valorAMostrar = '';
+                          if (estaEnFoco) {
+                            // Si está en foco, mostrar el valor sin formatear para edición
+                            if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
+                              valorAMostrar = String(valorEditado);
+                            } else {
+                              // Si no hay valor editado, convertir el importe original a formato editable
+                              const importeOriginal = item.importe !== null && item.importe !== undefined ? item.importe : 0;
+                              valorAMostrar = importeOriginal.toString().replace('.', ',');
+                            }
+                          } else {
+                            // Si no está en foco, mostrar formateado
+                            if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
+                              // Convertir el valor editado a número y formatearlo
+                              const valorNum = parseFloat(String(valorEditado).replace(/\./g, '').replace(',', '.'));
+                              if (!isNaN(valorNum)) {
+                                valorAMostrar = formatNumber(valorNum);
+                              } else {
+                                valorAMostrar = String(valorEditado);
+                              }
+                            } else {
+                              // Mostrar el importe original formateado
+                              valorAMostrar = item.importe !== null && item.importe !== undefined ? formatNumber(item.importe) : '';
+                            }
+                          }
                           
                           return (
                             <TableRow key={item.itemId} hover sx={{ '& .MuiTableCell-body': { py: 0.5 } }}>
                               <TableCell>
                                 <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem', lineHeight: 1.2 }}>
-                                  {item.unidad.direccion}
-                                </Typography>
-                                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.7rem', lineHeight: 1.2 }}>
-                                  {item.unidad.localidad}
+                                  {item.propiedad || '-'}
                                 </Typography>
                               </TableCell>
-                              <TableCell sx={{ fontSize: '0.8rem' }}>{item.inquilino.display}</TableCell>
-                              {columnasCodigo.map((col, idx) => (
-                                <TableCell key={idx} sx={{ fontSize: '0.8rem' }}>
-                                  {item.cuenta?.[col.campo] || '-'}
-                                </TableCell>
-                              ))}
-                              <TableCell sx={{ fontSize: '0.8rem' }}>{item.cuenta?.user || '-'}</TableCell>
-                              <TableCell>
-                                {item.cuenta?.password ? (
-                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
-                                    <Typography variant="body2" sx={{ fontSize: '0.75rem' }}>
-                                      {showPasswords[item.itemId] ? item.cuenta.password : '*****'}
-                                    </Typography>
-                                    <IconButton
-                                      size="small"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        togglePassword(item.itemId);
-                                      }}
-                                      sx={{ padding: '1px', ml: 0.25, '& .MuiSvgIcon-root': { fontSize: '0.9rem' } }}
-                                    >
-                                      {showPasswords[item.itemId] ? (
-                                        <VisibilityOff fontSize="inherit" />
-                                      ) : (
-                                        <Visibility fontSize="inherit" />
-                                      )}
-                                    </IconButton>
-                                  </Box>
-                                ) : (
-                                  <Typography sx={{ fontSize: '0.8rem' }}>-</Typography>
-                                )}
-                              </TableCell>
-                              <TableCell sx={{ fontSize: '0.8rem' }}>
-                                {item.importeAnterior ? formatNumber(item.importeAnterior) : '-'}
-                              </TableCell>
+                              <TableCell sx={{ fontSize: '0.8rem' }}>{item.inquilino || '-'}</TableCell>
+                              <TableCell sx={{ fontSize: '0.8rem' }}>{item.periodoRef || '-'}</TableCell>
                               <TableCell sx={{ width: '120px', padding: '2px 4px' }}>
-                                {item.estado === 'pendiente' ? (
-                                  <TextField
-                                    fullWidth
-                                    size="small"
-                                    type="number"
-                                    value={importeEditado}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      const nuevoValor = e.target.value;
-                                      handleImporteChange(item.itemId, nuevoValor);
-                                    }}
-                                    onFocus={(e) => {
-                                      e.stopPropagation();
-                                      setTimeout(() => {
-                                        if (e.target) {
-                                          e.target.select();
-                                        }
-                                      }, 0);
-                                    }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    onMouseDown={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-                                        e.stopPropagation();
+                                <TextField
+                                  fullWidth
+                                  size="small"
+                                  type="text"
+                                  value={valorAMostrar}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    // Permitir solo números, comas y puntos
+                                    const nuevoValor = e.target.value.replace(/[^\d,.-]/g, '');
+                                    handleImporteChange(item.itemId, nuevoValor);
+                                  }}
+                                  onFocus={(e) => {
+                                    e.stopPropagation();
+                                    // Marcar que este campo está en foco
+                                    setCamposEnFoco(prev => ({ ...prev, [item.itemId]: true }));
+                                    // Si el valor está formateado, convertirlo a número simple
+                                    const valorActual = e.target.value;
+                                    if (valorActual.includes('.') && valorActual.split('.').length > 2) {
+                                      // Tiene formato, convertir a número simple
+                                      const num = parseFloat(valorActual.replace(/\./g, '').replace(',', '.'));
+                                      if (!isNaN(num)) {
+                                        const valorSimple = num.toString().replace('.', ',');
+                                        handleImporteChange(item.itemId, valorSimple);
                                       }
-                                    }}
-                                    inputProps={{ 
-                                      min: 0, 
-                                      step: 0.01,
-                                      style: { 
-                                        textAlign: 'right', 
-                                        fontSize: '0.75rem',
-                                        MozAppearance: 'textfield',
-                                        padding: '4px 6px'
+                                    } else if (valorActual && !valorActual.includes(',')) {
+                                      // Si tiene puntos pero no comas, puede ser un número con punto decimal
+                                      const num = parseFloat(valorActual);
+                                      if (!isNaN(num)) {
+                                        const valorSimple = num.toString().replace('.', ',');
+                                        handleImporteChange(item.itemId, valorSimple);
                                       }
-                                    }}
-                                    sx={{
-                                      width: '100%',
-                                      '& .MuiOutlinedInput-root': {
-                                        height: '32px',
-                                        '& fieldset': {
-                                          borderWidth: '1px'
-                                        }
-                                      },
-                                      '& .MuiInputBase-input': {
-                                        padding: '4px 6px',
-                                        height: '32px',
-                                        fontSize: '0.75rem'
-                                      },
-                                      '& input[type=number]::-webkit-inner-spin-button': {
-                                        WebkitAppearance: 'none',
-                                        margin: 0
-                                      },
-                                      '& input[type=number]::-webkit-outer-spin-button': {
-                                        WebkitAppearance: 'none',
-                                        margin: 0
+                                    }
+                                    setTimeout(() => {
+                                      if (e.target) {
+                                        e.target.select();
                                       }
-                                    }}
-                                    disabled={completarMutation.isLoading}
-                                  />
-                                ) : item.estado === 'completado' && item.importe !== null && item.importe !== undefined ? (
-                                  <Typography variant="body2" sx={{ textAlign: 'right', fontSize: '0.75rem' }}>
-                                    {formatNumber(item.importe)}
-                                  </Typography>
-                                ) : (
-                                  <Typography sx={{ fontSize: '0.8rem' }}>-</Typography>
-                                )}
+                                    }, 0);
+                                  }}
+                                  onBlur={(e) => {
+                                    // Quitar el foco
+                                    setCamposEnFoco(prev => {
+                                      const nuevo = { ...prev };
+                                      delete nuevo[item.itemId];
+                                      return nuevo;
+                                    });
+                                    // Asegurar que el valor esté guardado correctamente
+                                    const valor = e.target.value;
+                                    if (valor && valor.trim() !== '') {
+                                      // Limpiar y normalizar el valor
+                                      const valorLimpio = valor.replace(/\./g, '').replace(',', '.');
+                                      const num = parseFloat(valorLimpio);
+                                      if (!isNaN(num)) {
+                                        handleImporteChange(item.itemId, num.toString().replace('.', ','));
+                                      }
+                                    }
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                  onMouseDown={(e) => {
+                                    e.stopPropagation();
+                                  }}
+                                  inputProps={{ 
+                                    style: { 
+                                      textAlign: 'right', 
+                                      fontSize: '0.75rem',
+                                      padding: '4px 6px'
+                                    }
+                                  }}
+                                  sx={{
+                                    width: '100%',
+                                    '& .MuiOutlinedInput-root': {
+                                      height: '32px',
+                                      '& fieldset': {
+                                        borderWidth: '1px'
+                                      }
+                                    },
+                                    '& .MuiInputBase-input': {
+                                      padding: '4px 6px',
+                                      height: '32px',
+                                      fontSize: '0.75rem'
+                                    }
+                                  }}
+                                  disabled={completarMutation.isLoading}
+                                />
                               </TableCell>
                               <TableCell align="center" sx={{ width: '50px', padding: '2px' }}>
-                                {item.estado === 'pendiente' ? (
-                                  <Tooltip title="Guardar">
-                                    <span>
-                                      <IconButton
-                                        size="small"
-                                        color="success"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleCompletarItem(item);
-                                        }}
-                                        disabled={completarMutation.isLoading}
-                                        sx={{
-                                          padding: '2px',
-                                          '& .MuiSvgIcon-root': { fontSize: '1rem' },
-                                          '&:hover': {
-                                            backgroundColor: 'success.light',
-                                            color: 'success.contrastText'
-                                          }
-                                        }}
-                                      >
-                                        {completarMutation.isLoading ? (
-                                          <CircularProgress size={16} />
-                                        ) : (
-                                          <SaveIcon fontSize="inherit" />
-                                        )}
-                                      </IconButton>
-                                    </span>
-                                  </Tooltip>
-                                ) : (
-                                  <Chip
-                                    label="✓"
-                                    color="success"
-                                    size="small"
-                                    sx={{ 
-                                      minWidth: '24px', 
-                                      height: '18px',
-                                      fontSize: '0.7rem',
-                                      '& .MuiChip-label': { px: 0.5 }
-                                    }}
-                                  />
-                                )}
+                                <Tooltip title="Guardar">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      color="success"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCompletarItem(item);
+                                      }}
+                                      disabled={completarMutation.isLoading}
+                                      sx={{
+                                        padding: '2px',
+                                        '& .MuiSvgIcon-root': { fontSize: '1rem' },
+                                        '&:hover': {
+                                          backgroundColor: 'success.light',
+                                          color: 'success.contrastText'
+                                        }
+                                      }}
+                                    >
+                                      {completarMutation.isLoading ? (
+                                        <CircularProgress size={16} />
+                                      ) : (
+                                        <SaveIcon fontSize="inherit" />
+                                      )}
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
                               </TableCell>
                             </TableRow>
                           );
@@ -661,22 +847,302 @@ export default function PendientesImpuestos() {
                   </TableContainer>
                 </AccordionDetails>
               </Accordion>
-            ))}
-          
-          {/* Paginación */}
-          {pendientesData.pagination && pendientesData.pagination.totalPages > 1 && (
-            <Box sx={{ display: 'flex', justifyContent: 'center', mt: 3 }}>
-              <Pagination
-                count={pendientesData.pagination.totalPages}
-                page={page}
-                onChange={(e, newPage) => setPage(newPage)}
-                color="primary"
-              />
-            </Box>
-          )}
-        </Box>
-      )}
+            );
+          })}
+          </Box>
+        )
+      ) : (
+        // Tab de Expensas
+        (propiedadesExpensas.length === 0) ? (
+          <Alert severity="info">
+            No hay expensas pendientes para el período seleccionado.
+          </Alert>
+        ) : (
+          <Box sx={{ mb: 2 }}>
+            {propiedadesExpensas.map((propiedad) => {
+              const expensasGrupo = expensasAgrupadas[propiedad] || [];
+              if (expensasGrupo.length === 0) return null;
+              
+              // Tomar la primera expensa del grupo para obtener datos comunes
+              const primeraExpensa = expensasGrupo[0];
+              const isExpanded = expandedAccordions[propiedad] !== false;
+              
+              return (
+                <Accordion
+                  key={propiedad}
+                  expanded={isExpanded}
+                  onChange={(e, expanded) => {
+                    setExpandedAccordions(prev => ({
+                      ...prev,
+                      [propiedad]: expanded
+                    }));
+                  }}
+                  sx={{ mb: 1, '&:before': { display: 'none' } }}
+                >
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreIcon />}
+                    sx={{
+                      backgroundColor: 'rgba(0, 0, 0, 0.02)',
+                      '&:hover': { backgroundColor: 'rgba(0, 0, 0, 0.04)' },
+                      minHeight: '48px',
+                      '&.Mui-expanded': { minHeight: '48px' }
+                    }}
+                  >
+                    <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', pr: 2 }}>
+                      <Typography variant="subtitle2" fontWeight={600} sx={{ flexGrow: 1 }}>
+                        {propiedad}
+                      </Typography>
+                      <Chip
+                        label={`${expensasGrupo.length} ${expensasGrupo.length === 1 ? 'expensa' : 'expensas'}`}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                        sx={{ ml: 2, fontSize: '0.7rem', height: '20px' }}
+                      />
+                    </Box>
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ p: 0 }}>
+                    <TableContainer component={Paper} variant="outlined">
+                      <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.8rem' } }}>
+                        <TableHead>
+                          <TableRow sx={{ '& .MuiTableCell-head': { py: 0.75, fontWeight: 600, fontSize: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.04)' } }}>
+                            <TableCell>Inquilino</TableCell>
+                            <TableCell>Tipo</TableCell>
+                            <TableCell>Valor anterior</TableCell>
+                            <TableCell>Importe</TableCell>
+                            <TableCell>Quién pagó</TableCell>
+                            <TableCell>A quién cobrar</TableCell>
+                            <TableCell align="center">Acción</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {expensasGrupo.map((expensa) => {
+                    // Renderizar fila para ORD
+                    const renderExpensaRow = (tipo, itemId, importe, importeAnterior, actorFacturadoId, quienSoportaCostoId, actorFacturado, quienSoportaCosto) => {
+                      if (!itemId) return null;
 
+                      // Obtener el valor editado del estado
+                      const valorEditado = importesEditados[itemId];
+                      const estaEnFoco = camposEnFoco[itemId] === true;
+                      
+                      // Determinar qué valor mostrar
+                      let valorAMostrar = '';
+                      if (estaEnFoco) {
+                        // Si está en foco, mostrar el valor sin formatear para edición
+                        if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
+                          valorAMostrar = String(valorEditado);
+                        } else {
+                          // Si no hay valor editado, convertir el importe original a formato editable
+                          const importeOriginal = importe !== null && importe !== undefined ? importe : 0;
+                          valorAMostrar = importeOriginal.toString().replace('.', ',');
+                        }
+                      } else {
+                        // Si no está en foco, mostrar formateado
+                        if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
+                          // Convertir el valor editado a número y formatearlo
+                          const valorNum = parseFloat(String(valorEditado).replace(/\./g, '').replace(',', '.'));
+                          if (!isNaN(valorNum)) {
+                            valorAMostrar = formatNumber(valorNum);
+                          } else {
+                            valorAMostrar = String(valorEditado);
+                          }
+                        } else {
+                          // Mostrar el importe original formateado
+                          valorAMostrar = importe !== null && importe !== undefined ? formatNumber(importe) : '';
+                        }
+                      }
+
+                      const actoresItem = actoresEditados[itemId] || {};
+                      const actorFacturadoIdActual = actoresItem.actorFacturadoId !== undefined
+                        ? actoresItem.actorFacturadoId
+                        : actorFacturadoId;
+                      const quienSoportaCostoIdActual = actoresItem.quienSoportaCostoId !== undefined
+                        ? actoresItem.quienSoportaCostoId
+                        : quienSoportaCostoId;
+
+                      return (
+                        <TableRow key={`${itemId}-${tipo}`} hover sx={{ '& .MuiTableCell-body': { py: 0.5 } }}>
+                          <TableCell sx={{ fontSize: '0.8rem' }}>{primeraExpensa.inquilino || '-'}</TableCell>
+                          <TableCell sx={{ fontSize: '0.8rem' }}>
+                            {tipo === 'ORD' ? 'Ordinarias' : 'Extraordinarias'}
+                          </TableCell>
+                          <TableCell sx={{ fontSize: '0.8rem' }}>
+                            {importeAnterior !== null && importeAnterior !== undefined
+                              ? formatNumber(importeAnterior)
+                              : '-'}
+                          </TableCell>
+                          <TableCell sx={{ width: '120px', padding: '2px 4px' }}>
+                            <TextField
+                              fullWidth
+                              size="small"
+                              type="text"
+                              value={valorAMostrar}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                // Permitir solo números, comas y puntos
+                                const nuevoValor = e.target.value.replace(/[^\d,.-]/g, '');
+                                handleImporteChangeExpensas(itemId, nuevoValor);
+                              }}
+                              onFocus={(e) => {
+                                e.stopPropagation();
+                                // Marcar que este campo está en foco
+                                setCamposEnFoco(prev => ({ ...prev, [itemId]: true }));
+                                // Si el valor está formateado, convertirlo a número simple
+                                const valorActual = e.target.value;
+                                if (valorActual.includes('.') && valorActual.split('.').length > 2) {
+                                  // Tiene formato, convertir a número simple
+                                  const num = parseFloat(valorActual.replace(/\./g, '').replace(',', '.'));
+                                  if (!isNaN(num)) {
+                                    const valorSimple = num.toString().replace('.', ',');
+                                    handleImporteChangeExpensas(itemId, valorSimple);
+                                  }
+                                } else if (valorActual && !valorActual.includes(',')) {
+                                  // Si tiene puntos pero no comas, puede ser un número con punto decimal
+                                  const num = parseFloat(valorActual);
+                                  if (!isNaN(num)) {
+                                    const valorSimple = num.toString().replace('.', ',');
+                                    handleImporteChangeExpensas(itemId, valorSimple);
+                                  }
+                                }
+                                setTimeout(() => {
+                                  if (e.target) {
+                                    e.target.select();
+                                  }
+                                }, 0);
+                              }}
+                              onBlur={(e) => {
+                                // Quitar el foco
+                                setCamposEnFoco(prev => {
+                                  const nuevo = { ...prev };
+                                  delete nuevo[itemId];
+                                  return nuevo;
+                                });
+                                // Asegurar que el valor esté guardado correctamente
+                                const valor = e.target.value;
+                                if (valor && valor.trim() !== '') {
+                                  // Limpiar y normalizar el valor
+                                  const valorLimpio = valor.replace(/\./g, '').replace(',', '.');
+                                  const num = parseFloat(valorLimpio);
+                                  if (!isNaN(num)) {
+                                    handleImporteChangeExpensas(itemId, num.toString().replace('.', ','));
+                                  }
+                                }
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              inputProps={{
+                                style: {
+                                  textAlign: 'right',
+                                  fontSize: '0.75rem',
+                                  padding: '4px 6px'
+                                }
+                              }}
+                              sx={{
+                                width: '100%',
+                                '& .MuiOutlinedInput-root': {
+                                  height: '32px',
+                                  '& fieldset': { borderWidth: '1px' }
+                                },
+                                '& .MuiInputBase-input': {
+                                  padding: '4px 6px',
+                                  height: '32px',
+                                  fontSize: '0.75rem'
+                                }
+                              }}
+                              disabled={completarMutation.isLoading}
+                            />
+                          </TableCell>
+                          <TableCell sx={{ width: '150px', padding: '2px 4px' }}>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={actorFacturadoIdActual || ''}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  handleActorChangeExpensas(itemId, 'actorFacturadoId', e.target.value);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                sx={{ fontSize: '0.75rem', height: '32px' }}
+                                disabled={completarMutation.isLoading}
+                              >
+                                <MenuItem value="">-</MenuItem>
+                                {actores.map((actor) => (
+                                  <MenuItem key={actor.id} value={actor.id}>
+                                    {actor.nombre || actor.codigo}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+                          <TableCell sx={{ width: '150px', padding: '2px 4px' }}>
+                            <FormControl fullWidth size="small">
+                              <Select
+                                value={quienSoportaCostoIdActual || ''}
+                                onChange={(e) => {
+                                  e.stopPropagation();
+                                  handleActorChangeExpensas(itemId, 'quienSoportaCostoId', e.target.value);
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                sx={{ fontSize: '0.75rem', height: '32px' }}
+                                disabled={completarMutation.isLoading}
+                              >
+                                <MenuItem value="">-</MenuItem>
+                                {actores.map((actor) => (
+                                  <MenuItem key={actor.id} value={actor.id}>
+                                    {actor.nombre || actor.codigo}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          </TableCell>
+                          <TableCell align="center" sx={{ width: '50px', padding: '2px' }}>
+                            <Tooltip title="Guardar">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  color="success"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCompletarItemExpensasIndividual(expensa, tipo);
+                                  }}
+                                  disabled={completarMutation.isLoading}
+                                  sx={{
+                                    padding: '2px',
+                                    '& .MuiSvgIcon-root': { fontSize: '1rem' },
+                                    '&:hover': {
+                                      backgroundColor: 'success.light',
+                                      color: 'success.contrastText'
+                                    }
+                                  }}
+                                >
+                                  {completarMutation.isLoading ? (
+                                    <CircularProgress size={16} />
+                                  ) : (
+                                    <SaveIcon fontSize="inherit" />
+                                  )}
+                                </IconButton>
+                              </span>
+                            </Tooltip>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    };
+
+                            return (
+                              <React.Fragment key={`${expensa.propiedad}-${expensa.inquilino || 'sin-inquilino'}`}>
+                                {renderExpensaRow('ORD', expensa.itemIdORD, expensa.importeORD, null, expensa.actorFacturadoIdORD, expensa.quienSoportaCostoIdORD, expensa.actorFacturadoORD, expensa.quienSoportaCostoORD)}
+                                {renderExpensaRow('EXT', expensa.itemIdEXT, expensa.importeEXT, null, expensa.actorFacturadoIdEXT, expensa.quienSoportaCostoIdEXT, expensa.actorFacturadoEXT, expensa.quienSoportaCostoEXT)}
+                              </React.Fragment>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  </AccordionDetails>
+                </Accordion>
+              );
+            })}
+          </Box>
+        )
+      )}
 
       {/* Dialog para generar liquidaciones */}
       <Dialog
@@ -689,16 +1155,16 @@ export default function PendientesImpuestos() {
         <DialogContent>
           <Box sx={{ pt: 1 }}>
             <Alert severity="info" sx={{ mb: 2 }}>
-              Este proceso generará liquidaciones y items para todos los contratos con estado "vigente" o "prorrogado" del período seleccionado.
-              Las liquidaciones existentes serán omitidas.
+              Este proceso generará liquidaciones e items de impuestos para todas las propiedades con contratos vigentes del período seleccionado.
+              Las liquidaciones existentes serán reutilizadas (no se duplicarán).
             </Alert>
             <Alert severity="warning" sx={{ mb: 2 }}>
               <strong>Requisitos:</strong>
               <ul style={{ margin: '8px 0', paddingLeft: '20px' }}>
-                <li>Propiedades (unidades) con cuentas tributarias activas</li>
-                <li>Contratos vigentes o prorrogados asociados a las propiedades</li>
+                <li>Propiedades con impuestos activos configurados (PropiedadImpuesto)</li>
+                <li>Contratos vigentes asociados a las propiedades</li>
                 <li>El período debe estar dentro del rango de fechas del contrato</li>
-                <li>Si una unidad no tiene contrato vigente, no se creará liquidación</li>
+                <li>Los impuestos se generarán según su periodicidad (MENSUAL, BIMESTRAL, etc.)</li>
               </ul>
             </Alert>
             <TextField

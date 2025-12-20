@@ -15,8 +15,8 @@ const router = express.Router();
 router.use(authenticateToken);
 
 router.get('/categorias', getAllCategorias);
-router.get('/categorias/:id', getCategoriaById);
 router.get('/categorias/:codigo/parametros', getParametrosByCategoria);
+router.get('/categorias/:id', getCategoriaById);
 router.get('/parametros', getAllParametros);
 router.post('/parametros', createParametro);
 router.put('/parametros/:id', updateParametro);

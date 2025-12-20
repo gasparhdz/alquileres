@@ -37,8 +37,36 @@ import dayjs from 'dayjs';
 import api from '../api';
 import ParametroSelect from '../components/ParametroSelect';
 import { useParametrosMap } from '../utils/parametros';
+import CatalogoABM from '../components/CatalogoABM';
 
 const INDICES_CODE = '__indices__';
+
+// Lista de catálogos disponibles
+const CATALOGOS = [
+  { codigo: 'tipos-persona', nombre: 'Tipos de Persona' },
+  { codigo: 'provincias', nombre: 'Provincias' },
+  { codigo: 'localidades', nombre: 'Localidades' },
+  { codigo: 'condiciones-iva', nombre: 'Condiciones IVA' },
+  { codigo: 'ambientes-propiedad', nombre: 'Ambientes de Propiedad' },
+  { codigo: 'tipos-propiedad', nombre: 'Tipos de Propiedad' },
+  { codigo: 'estados-propiedad', nombre: 'Estados de Propiedad' },
+  { codigo: 'destinos-propiedad', nombre: 'Destinos de Propiedad' },
+  { codigo: 'tipos-impuesto-propiedad', nombre: 'Tipos de Impuesto' },
+  { codigo: 'tipos-cargo', nombre: 'Tipos de Cargo' },
+  { codigo: 'tipos-expensa', nombre: 'Tipos de Expensa' },
+  { codigo: 'periodicidades-impuesto', nombre: 'Periodicidades' },
+  { codigo: 'tipos-documento-propiedad', nombre: 'Tipos de Documento' },
+  { codigo: 'monedas', nombre: 'Monedas' },
+  { codigo: 'estados-contrato', nombre: 'Estados de Contrato' },
+  { codigo: 'metodos-ajuste-contrato', nombre: 'Índices de Ajuste' },
+  { codigo: 'indices-ajuste', nombre: 'Valores Índices de Ajuste' },
+  { codigo: 'actores-responsable-contrato', nombre: 'Responsables' },
+  { codigo: 'tipos-garantia-contrato', nombre: 'Tipos de Garantía' },
+  { codigo: 'estados-garantia-contrato', nombre: 'Estados de Garantía' },
+  { codigo: 'tipos-gasto-inicial-contrato', nombre: 'Tipos de Gasto Inicial' },
+  { codigo: 'estados-liquidacion', nombre: 'Estados de Liquidación' },
+  { codigo: 'estados-item-liquidacion', nombre: 'Estados de Item Liquidación' }
+];
 
 const emptyParametroForm = {
   codigo: '',
@@ -230,23 +258,6 @@ function ParametrosCategoriaSection({
           <Typography variant="h5">{categoria.descripcion}</Typography>
         </Box>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" justifyContent="flex-end">
-          {categorias.length > 0 && (
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel id="categoria-selector-label">Sección</InputLabel>
-              <Select
-                labelId="categoria-selector-label"
-                value={selectedCategoriaCodigo}
-                label="Sección"
-                onChange={(e) => onCategoriaChange?.(e.target.value)}
-              >
-                {categorias.map((cat) => (
-                  <MenuItem key={cat.codigo} value={cat.codigo}>
-                    {cat.descripcion}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
           <FormControlLabel
             control={
               <Switch
@@ -299,13 +310,6 @@ function ParametrosCategoriaSection({
             </TableRow>
           </TableHead>
           <TableBody>
-            {isLoading && (
-              <TableRow>
-                <TableCell colSpan={categoria.parametroCodigo === 'tipo_cargo' ? 7 : 6} align="center">
-                  Cargando parámetros...
-                </TableCell>
-              </TableRow>
-            )}
             {!isLoading && (!parametros || parametros.length === 0) && (
               <TableRow>
                 <TableCell colSpan={categoria.parametroCodigo === 'tipo_cargo' ? 7 : 6} align="center">
@@ -425,7 +429,21 @@ function ParametrosCategoriaSection({
               type="number"
               value={formValues.orden}
               onChange={(e) => setFormValues({ ...formValues, orden: e.target.value })}
-              inputProps={{ min: 0 }}
+              inputProps={{ 
+                min: 0,
+                style: { MozAppearance: 'textfield' },
+                onWheel: (e) => e.target.blur()
+              }}
+              sx={{
+                '& input[type=number]::-webkit-outer-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                },
+                '& input[type=number]::-webkit-inner-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                }
+              }}
             />
             <FormControlLabel
               control={
@@ -579,23 +597,6 @@ function IndicesSection({
           <Typography variant="h5">Índices de ajuste</Typography>
         </Box>
         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" justifyContent="flex-end">
-          {categorias.length > 0 && (
-            <FormControl size="small" sx={{ minWidth: 200 }}>
-              <InputLabel id="categoria-indice-selector">Sección</InputLabel>
-              <Select
-                labelId="categoria-indice-selector"
-                value={selectedCategoriaCodigo}
-                label="Sección"
-                onChange={(e) => onCategoriaChange?.(e.target.value)}
-              >
-                {categorias.map((cat) => (
-                  <MenuItem key={cat.codigo} value={cat.codigo}>
-                    {cat.descripcion}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
           <FormControl size="small" sx={{ minWidth: 180 }}>
             <InputLabel id="tipo-indice-selector">Tipo de índice</InputLabel>
             <Select
@@ -687,13 +688,6 @@ function IndicesSection({
             </TableRow>
           </TableHead>
           <TableBody>
-            {isLoading && (
-              <TableRow>
-                <TableCell colSpan={8} align="center">
-                  Cargando índices...
-                </TableCell>
-              </TableRow>
-            )}
             {!isLoading && indices.length === 0 && (
               <TableRow>
                 <TableCell colSpan={8} align="center">
@@ -764,7 +758,21 @@ function IndicesSection({
             <TextField
               label="Valor"
               type="number"
-              inputProps={{ step: '0.000001' }}
+              inputProps={{ 
+                step: '0.000001',
+                style: { MozAppearance: 'textfield' },
+                onWheel: (e) => e.target.blur()
+              }}
+              sx={{
+                '& input[type=number]::-webkit-outer-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                },
+                '& input[type=number]::-webkit-inner-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                }
+              }}
               value={formValues.valor}
               onChange={(e) => setFormValues({ ...formValues, valor: e.target.value })}
               required
@@ -772,7 +780,21 @@ function IndicesSection({
             <TextField
               label="Variación (%)"
               type="number"
-              inputProps={{ step: '0.0001' }}
+              inputProps={{ 
+                step: '0.0001',
+                style: { MozAppearance: 'textfield' },
+                onWheel: (e) => e.target.blur()
+              }}
+              sx={{
+                '& input[type=number]::-webkit-outer-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                },
+                '& input[type=number]::-webkit-inner-spin-button': {
+                  WebkitAppearance: 'none',
+                  margin: 0
+                }
+              }}
               value={formValues.variacion}
               onChange={(e) => setFormValues({ ...formValues, variacion: e.target.value })}
             />
@@ -828,45 +850,61 @@ export default function Configuracion() {
   });
 
   const categoriasConIndices = useMemo(() => {
-    if (!categorias) return [];
+    const lista = [];
 
-    const categoriaTipoCargo = categorias.find((cat) => cat.codigo === 'tipo_cargo');
+    // Agregar categorías de parámetros si existen
+    if (categorias && categorias.length > 0) {
+      const categoriaTipoCargo = categorias.find((cat) => cat.codigo === 'tipo_cargo');
 
-    const lista = categorias.reduce((acc, cat) => {
-      if (cat.codigo === 'tipo_cargo') {
-        return acc;
-      }
+      categorias.forEach((cat) => {
+        if (cat.codigo === 'tipo_cargo') {
+          return;
+        }
 
-      if (cat.codigo === 'tipo_impuesto') {
-        acc.push({
+        if (cat.codigo === 'tipo_impuesto') {
+          lista.push({
+            codigo: cat.codigo,
+            parametroCodigo: 'tipo_cargo',
+            descripcion: 'Impuestos y servicios',
+            totalParametros: categoriaTipoCargo?._count?.parametros || 0,
+            especial: false
+          });
+          return;
+        }
+
+        lista.push({
           codigo: cat.codigo,
-          parametroCodigo: 'tipo_cargo',
-          descripcion: 'Impuestos y servicios',
-          totalParametros: categoriaTipoCargo?._count?.parametros || 0,
+          parametroCodigo: cat.codigo,
+          descripcion: cat.descripcion,
+          totalParametros: cat._count?.parametros || 0,
           especial: false
         });
-        return acc;
-      }
-
-      acc.push({
-        codigo: cat.codigo,
-        parametroCodigo: cat.codigo,
-        descripcion: cat.descripcion,
-        totalParametros: cat._count?.parametros || 0,
-        especial: false
       });
-      return acc;
-    }, []);
+    }
 
+    /*// Siempre agregar Índices de ajuste
     lista.push({
       codigo: INDICES_CODE,
       parametroCodigo: INDICES_CODE,
       descripcion: 'Índices de ajuste',
       totalParametros: null,
       especial: true
+    });*/
+
+    // Agregar cada catálogo como una opción individual
+    CATALOGOS.forEach((cat) => {
+      lista.push({
+        codigo: `catalogo-${cat.codigo}`,
+        parametroCodigo: `catalogo-${cat.codigo}`,
+        descripcion: cat.nombre,
+        totalParametros: null,
+        especial: true,
+        catalogoTipo: cat.codigo
+      });
     });
 
-    return lista;
+    // Ordenar alfabéticamente por descripción
+    return lista.sort((a, b) => a.descripcion.localeCompare(b.descripcion));
   }, [categorias]);
 
   useEffect(() => {
@@ -892,13 +930,29 @@ export default function Configuracion() {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3 }}>
-        Configuración
-      </Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+        <Typography variant="h4">
+          Configuración
+        </Typography>
+        {categoriasConIndices.length > 0 && (
+          <FormControl size="small" sx={{ minWidth: 250 }}>
+            <InputLabel>Sección</InputLabel>
+            <Select
+              value={selectedCategoriaCodigo}
+              onChange={(e) => setSelectedCategoriaCodigo(e.target.value)}
+              label="Sección"
+            >
+              {categoriasConIndices.map((cat) => (
+                <MenuItem key={cat.codigo} value={cat.codigo}>
+                  {cat.descripcion}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
+      </Box>
 
-      {isLoading ? (
-        <Paper sx={{ p: 3 }}>Cargando categorías...</Paper>
-      ) : categoriasConIndices.length === 0 ? (
+      {!isLoading && categoriasConIndices.length === 0 ? (
         <Paper sx={{ p: 3 }}>No hay categorías configuradas.</Paper>
       ) : (
         categoriaSeleccionada ? (
@@ -907,6 +961,12 @@ export default function Configuracion() {
               categorias={categoriasConIndices}
               selectedCategoriaCodigo={selectedCategoriaCodigo}
               onCategoriaChange={setSelectedCategoriaCodigo}
+            />
+          ) : categoriaSeleccionada.catalogoTipo ? (
+            <CatalogoABM
+              tipo={categoriaSeleccionada.catalogoTipo}
+              mostrarInactivos={mostrarInactivos}
+              onMostrarInactivosChange={setMostrarInactivos}
             />
           ) : (
             <ParametrosCategoriaSection

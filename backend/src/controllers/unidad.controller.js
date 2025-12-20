@@ -1,9 +1,25 @@
 import { PrismaClient } from '@prisma/client';
 
-const prisma = new PrismaClient();
+// Singleton pattern para asegurar que prisma siempre esté inicializado
+let prismaInstance = null;
+
+const getPrisma = () => {
+  if (!prismaInstance) {
+    prismaInstance = new PrismaClient();
+  }
+  return prismaInstance;
+};
+
+const prisma = getPrisma();
 
 export const getAllUnidades = async (req, res) => {
   try {
+    // Validar que prisma esté inicializado
+    if (!prisma || !prisma.unidad) {
+      console.error('Prisma client no está inicializado correctamente');
+      return res.status(500).json({ error: 'Error de configuración del servidor' });
+    }
+
     const { search, propietarioId, page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
@@ -73,6 +89,7 @@ export const getUnidadById = async (req, res) => {
         id,
         isDeleted: false
       },
+
       include: {
         propietario: true,
         cuentas: {
@@ -133,7 +150,6 @@ export const createUnidad = async (req, res) => {
     if (unidadData.codigoInterno === '') unidadData.codigoInterno = null;
     if (unidadData.tipo === '') unidadData.tipo = null;
     if (unidadData.estado === '') unidadData.estado = null;
-
     const unidad = await prisma.unidad.create({
       data: unidadData,
       include: {
@@ -288,4 +304,5 @@ export const deleteUnidad = async (req, res) => {
     res.status(500).json({ error: 'Error al eliminar unidad' });
   }
 };
+
 

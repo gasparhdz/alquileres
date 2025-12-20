@@ -71,11 +71,15 @@ const formatNumberWithThousands = (value) => {
 };
 
 // Función para parsear número removiendo separadores de miles
+// Convierte "250.000" -> "250000" -> 250000
 const parseNumberFromFormatted = (value) => {
-  if (!value) return '';
-  // Remover todos los puntos (separadores de miles) y reemplazar coma por punto
-  const cleaned = value.toString().replace(/\./g, '').replace(',', '.');
+  if (!value && value !== 0) return '';
+  // Convertir a string y remover todos los puntos (separadores de miles)
+  const str = value.toString();
+  // Remover puntos (separadores de miles) y reemplazar coma por punto (decimal)
+  const cleaned = str.replace(/\./g, '').replace(',', '.');
   const parsed = parseFloat(cleaned);
+  // Retornar como string para mantener consistencia, o número vacío si es NaN
   return isNaN(parsed) ? '' : parsed.toString();
 };
 
@@ -89,7 +93,7 @@ export default function Contratos() {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
   const [formData, setFormData] = useState({
-    unidadId: '',
+    propiedadId: '',
     inquilinoId: '',
     nroContrato: '',
     fechaInicio: '',
@@ -99,14 +103,10 @@ export default function Contratos() {
     montoActual: '',
     gastosAdministrativos: '',
     honorariosPropietario: '',
-    metodoAjuste: '',
+    metodoAjusteContratoId: '',
     frecuenciaAjusteMeses: '',
-    indiceAumento: '',
-    periodoAumento: '',
-    ultimoAjusteAt: '',
-    registradoAfip: false,
-    moneda: 'ARS',
-    estado: ''
+    monedaId: '',
+    estadoContratoId: '',
   });
   const [propietarioNombre, setPropietarioNombre] = useState('');
   const [montoTotalContrato, setMontoTotalContrato] = useState(0);
@@ -116,13 +116,14 @@ export default function Contratos() {
   const [responsabilidadesTemporales, setResponsabilidadesTemporales] = useState([]);
   const [garantiasTemporales, setGarantiasTemporales] = useState([]);
   const [gastosInicialesTemporales, setGastosInicialesTemporales] = useState([]);
+  
+  // Ref para acceder a los gastos editables desde updateMutation
+  const gastosEditablesRef = useRef([]);
+  const responsabilidadesEditablesRef = useRef([]);
   // Estado para filtro
   const [filtroEstado, setFiltroEstado] = useState('');
 
   const queryClient = useQueryClient();
-
-  // Obtener parámetros de moneda para establecer valor por defecto
-  const monedaData = useParametrosMap('moneda');
 
   const { data, isLoading } = useQuery({
     queryKey: ['contratos'],
@@ -132,10 +133,10 @@ export default function Contratos() {
     }
   });
 
-  const { data: unidades } = useQuery({
-    queryKey: ['unidades'],
+  const { data: propiedades } = useQuery({
+    queryKey: ['propiedades'],
     queryFn: async () => {
-      const response = await api.get('/unidades?activo=true');
+      const response = await api.get('/propiedades');
       return response.data;
     }
   });
@@ -148,12 +149,72 @@ export default function Contratos() {
     }
   });
 
-  // Obtener unidad seleccionada para mostrar propietario
-  const unidadSeleccionada = useMemo(() => {
-    if (!formData.unidadId || !unidades?.data) return null;
-    return unidades.data.find(u => u.id === formData.unidadId);
-  }, [formData.unidadId, unidades]);
+  // Catálogos para contratos
+  const { data: monedas } = useQuery({
+    queryKey: ['monedas'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/monedas');
+      return response.data;
+    }
+  });
 
+  const { data: estadosContrato } = useQuery({
+    queryKey: ['estados-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/estados-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: metodosAjusteContrato } = useQuery({
+    queryKey: ['metodos-ajuste-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/metodos-ajuste-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: tiposGarantiaContrato } = useQuery({
+    queryKey: ['tipos-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: estadosGarantiaContrato } = useQuery({
+    queryKey: ['estados-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/estados-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: tiposGastoInicialContrato } = useQuery({
+    queryKey: ['tipos-gasto-inicial-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-gasto-inicial-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: actoresResponsablesContrato } = useQuery({
+    queryKey: ['actores-responsable-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/actores-responsable-contrato');
+      return response.data;
+    }
+  });
+
+  // Obtener propiedad seleccionada para mostrar propietarios
+  const propiedadSeleccionada = useMemo(() => {
+    if (!formData.propiedadId || !propiedades) return null;
+    return Array.isArray(propiedades) 
+      ? propiedades.find(p => p.id === formData.propiedadId)
+      : propiedades.data?.find(p => p.id === formData.propiedadId);
+  }, [formData.propiedadId, propiedades]);
+
+  // Obtener índices de ajuste activos
   const { data: indicesAjusteActivos } = useQuery({
     queryKey: ['indices-ajuste', 'activos'],
     queryFn: async () => {
@@ -167,10 +228,26 @@ export default function Contratos() {
     }
   });
 
-  // Obtener mapas de parámetros para mostrar descripciones
-  const metodoAjusteMap = useParametrosMap('metodo_ajuste');
-  const monedaMap = useParametrosMap('moneda');
-  const estadoContratoMap = useParametrosMap('estado_contrato');
+  // Función auxiliar para obtener nombre de estado por código
+  const getEstadoNombre = (codigo) => {
+    if (!codigo || !estadosContrato) return 'Sin estado';
+    const estado = estadosContrato.find(e => e.codigo === codigo);
+    return estado?.nombre || codigo;
+  };
+
+  // Función auxiliar para obtener nombre de moneda por ID
+  const getMonedaNombre = (monedaId) => {
+    if (!monedaId || !monedas) return 'Sin moneda';
+    const moneda = monedas.find(m => m.id === monedaId);
+    return moneda?.nombre || moneda?.codigo || 'Sin moneda';
+  };
+
+  // Función auxiliar para obtener nombre de método de ajuste por ID
+  const getMetodoAjusteNombre = (metodoAjusteId) => {
+    if (!metodoAjusteId || !metodosAjusteContrato) return 'Sin método';
+    const metodo = metodosAjusteContrato.find(m => m.id === metodoAjusteId);
+    return metodo?.nombre || metodo?.codigo || 'Sin método';
+  };
 
   // Filtrar contratos por estado
   const contratosFiltrados = useMemo(() => {
@@ -182,11 +259,13 @@ export default function Contratos() {
         if (!contrato.fechaFin) return false;
         const fechaFin = dayjs(contrato.fechaFin);
         const hoy = dayjs();
-        // Un contrato está vencido si la fecha fin pasó y no está finalizado, anulado, cancelado o rescindido
+        // Un contrato está vencido si la fecha fin pasó y el estado no es final
+        const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo;
         return fechaFin.isBefore(hoy, 'day') && 
-               !['finalizado', 'anulado', 'cancelado', 'rescindido'].includes(contrato.estado);
+               !['FINALIZADO', 'ANULADO', 'CANCELADO', 'RESCINDIDO'].includes(estadoCodigo);
       }
-      return contrato.estado === filtroEstado;
+      const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo || contrato.estado;
+      return estadoCodigo === filtroEstado;
     });
   }, [data?.data, filtroEstado]);
 
@@ -217,42 +296,107 @@ export default function Contratos() {
         });
       }
       
-      // Guardar gastos iniciales
-      console.log('📊 Gastos temporales al crear contrato:', gastosInicialesTemporales);
+      // Crear automáticamente todos los gastos iniciales activos
+      // Obtener los tipos de gasto activos desde el catálogo
+      const tiposGastoResponse = await api.get('/catalogos-abm/tipos-gasto-inicial-contrato');
+      const tiposGastoActivos = tiposGastoResponse.data?.filter(t => t.activo === true) || [];
+      
+      // Calcular montoInicial y duracionMeses para calcular importes
+      const montoInicialStr = data.montoInicial || '0';
+      const montoInicialParsed = montoInicialStr.toString().replace(/\./g, '').replace(',', '.');
+      const montoInicialNum = parseFloat(montoInicialParsed) || 0;
+      const duracionMesesNum = parseInt(String(data.duracionMeses || '0'), 10) || 0;
+      const montoTotalContrato = montoInicialNum * duracionMesesNum;
+      
+      // Función para calcular el importe de un gasto
+      const calcularImporteGasto = (tipoGasto) => {
+        const valorDefault = tipoGasto.valorDefault ? parseFloat(tipoGasto.valorDefault) : null;
+        
+        if (tipoGasto.esPorcentaje && valorDefault !== null && montoTotalContrato > 0) {
+          // Si es porcentaje, calcular sobre el monto total del contrato
+          const porcentajeDecimal = valorDefault / 100;
+          const importeCalculado = montoTotalContrato * porcentajeDecimal;
+          return Math.round(importeCalculado * 100) / 100;
+        } else if (!tipoGasto.esPorcentaje && valorDefault !== null && montoInicialNum > 0) {
+          // Si no es porcentaje (ej: Depósito), multiplicar el valor por el monto inicial
+          return montoInicialNum * valorDefault;
+        }
+        
+        // Si no hay valorDefault o no se puede calcular, retornar 0
+        return 0;
+      };
+      
+      // Crear un gasto inicial para cada tipo activo
+      tiposGastoActivos.forEach(tipoGasto => {
+        const valorCalculo = tipoGasto.valorDefault ? parseFloat(tipoGasto.valorDefault) : null;
+        const importe = calcularImporteGasto(tipoGasto);
+        
+        promises.push(
+          api.post(`/contratos/${contratoCreado.id}/gastos-iniciales`, {
+            tipoGastoInicialId: tipoGasto.id,
+            valorCalculo: valorCalculo,
+            importe: importe
+          }).catch(error => {
+            console.error(`❌ Error al crear gasto inicial: ${tipoGasto.codigo}`, error);
+            // No lanzar error para que no falle la creación del contrato
+            // Solo loguear el error
+          })
+        );
+      });
+      
+      // También guardar los gastos temporales si existen (por si el usuario editó alguno antes de crear)
       if (gastosInicialesTemporales.length > 0) {
-        gastosInicialesTemporales.forEach(gasto => {
-          // Validar que el gasto tenga tipoGastoInicial válido
-          if (!gasto.tipoGastoInicial) {
-            console.warn('⚠️ Gasto sin tipoGastoInicial:', gasto);
-            return;
+        // Obtener el contrato completo una sola vez para buscar gastos existentes
+        const contratoCompleto = await api.get(`/contratos/${contratoCreado.id}`);
+        const gastosExistentes = contratoCompleto.data?.gastosIniciales || [];
+        
+        // Procesar cada gasto temporal
+        for (const gasto of gastosInicialesTemporales) {
+          // Validar que el gasto tenga tipoGastoInicialId válido
+          if (!gasto.tipoGastoInicialId) {
+            console.warn('⚠️ Gasto sin tipoGastoInicialId:', gasto);
+            continue;
           }
           
-          const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
-          console.log(`💰 Guardando gasto: ${gasto.tipoGastoInicialCodigo}, importe: ${importeNum}, tipoGastoInicial: ${gasto.tipoGastoInicial}`);
-          // Guardar todos los gastos, incluso con importe 0 (pueden ser editados después)
-          // Solo validar que el importe sea un número válido (puede ser 0)
-          if (!isNaN(importeNum) && importeNum >= 0) {
-            promises.push(
-              api.post(`/contratos/${contratoCreado.id}/gastos-iniciales`, {
-                tipoGastoInicial: gasto.tipoGastoInicial,
-                valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
-                importe: importeNum,
-                estado: gasto.estado || null,
-                observaciones: gasto.observaciones || null
-              }).then(response => {
-                console.log(`✅ Gasto guardado: ${gasto.tipoGastoInicialCodigo}`, response.data);
-                return response;
-              }).catch(error => {
-                console.error(`❌ Error al guardar gasto: ${gasto.tipoGastoInicialCodigo}`, error);
-                throw error;
-              })
-            );
+          // Verificar si ya se creó este tipo de gasto automáticamente
+          const yaExiste = tiposGastoActivos.some(t => t.id === gasto.tipoGastoInicialId);
+          if (yaExiste) {
+            // Si ya existe, actualizar en lugar de crear
+            const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
+            if (!isNaN(importeNum) && importeNum >= 0) {
+              // Buscar el gasto existente en la lista que ya obtuvimos
+              const gastoExistente = gastosExistentes.find(
+                g => g.tipoGastoInicialId === gasto.tipoGastoInicialId
+              );
+              
+              if (gastoExistente) {
+                promises.push(
+                  api.put(`/contratos/gastos-iniciales/${gastoExistente.id}`, {
+                    tipoGastoInicialId: gasto.tipoGastoInicialId,
+                    valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
+                    importe: importeNum
+                  }).catch(error => {
+                    console.error(`❌ Error al actualizar gasto: ${gasto.tipoGastoInicialCodigo}`, error);
+                  })
+                );
+              }
+            }
           } else {
-            console.warn('⚠️ Gasto con importe inválido:', gasto);
+            // Si no existe en los tipos activos, crear como gasto adicional
+            const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
+            if (!isNaN(importeNum) && importeNum >= 0) {
+              promises.push(
+                api.post(`/contratos/${contratoCreado.id}/gastos-iniciales`, {
+                  tipoGastoInicialId: gasto.tipoGastoInicialId,
+                  valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
+                  importe: importeNum
+                }).catch(error => {
+                  console.error(`❌ Error al guardar gasto: ${gasto.tipoGastoInicialCodigo}`, error);
+                })
+              );
+            }
           }
-        });
-      } else {
-        console.warn('⚠️ No hay gastos temporales para guardar');
+        }
       }
       
       // Esperar a que se guarden todas las responsabilidades, garantías y gastos iniciales
@@ -278,9 +422,142 @@ export default function Contratos() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }) => api.put(`/contratos/${id}`, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries(['contratos']);
+    mutationFn: async ({ id, data }) => {
+      // Actualizar el contrato
+      const contratoResponse = await api.put(`/contratos/${id}`, data);
+      const contratoActualizado = contratoResponse.data;
+      
+      // Guardar/actualizar gastos iniciales si hay contratoId
+      const gastosEditables = gastosEditablesRef.current;
+      if (id && gastosEditables.length > 0) {
+        const promises = [];
+        
+        // Obtener gastos existentes en la BD
+        const contratoData = await api.get(`/contratos/${id}`);
+        const gastosExistentes = contratoData.data?.gastosIniciales || [];
+        
+        for (const gasto of gastosEditables) {
+          // Guardar todos los gastos que tienen valores válidos
+          // No importa si fueron editados manualmente o no, si tienen valores deben guardarse
+          const valorCalculoNum = gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null;
+          const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
+          
+          if (isNaN(importeNum) || importeNum < 0) {
+            continue; // Saltar gastos con importe inválido
+          }
+          
+          // Buscar si ya existe en la BD
+          const gastoExistente = gastosExistentes.find(g => g.tipoGastoInicialId === gasto.tipoGastoInicialId);
+          
+          // Determinar quienPagaId: priorizar el valor del estado local (gasto.quienPagaId), 
+          // luego el del gasto existente, y finalmente un valor por defecto
+          let quienPagaId = gasto.quienPagaId || gastoExistente?.quienPagaId;
+          if (!quienPagaId) {
+            // Intentar obtener el ID del actor "INQ" o cualquier actor activo
+            try {
+              const actoresResponse = await api.get('/catalogos-abm/actores-responsable-contrato');
+              const actores = actoresResponse.data || [];
+              const inquilinoActor = actores.find(a => a.codigo === 'INQ' && a.activo);
+              quienPagaId = inquilinoActor ? inquilinoActor.id : (actores.find(a => a.activo)?.id || null);
+            } catch (error) {
+              console.error('Error al obtener actores responsables:', error);
+            }
+          }
+          
+          const payload = {
+            tipoGastoInicialId: gasto.tipoGastoInicialId,
+            valorCalculo: valorCalculoNum > 0 ? valorCalculoNum : null,
+            importe: importeNum,
+            quienPagaId: quienPagaId
+          };
+          
+          if (gastoExistente) {
+            // Actualizar existente
+            promises.push(
+              api.put(`/contratos/gastos-iniciales/${gastoExistente.id}`, payload).catch(error => {
+                console.error(`❌ Error al actualizar gasto: ${gasto.tipoGastoInicialCodigo}`, error);
+                throw error; // Lanzar el error para que se maneje correctamente
+              })
+            );
+          } else {
+            // Crear nuevo solo si no existe
+            promises.push(
+              api.post(`/contratos/${id}/gastos-iniciales`, payload).catch(error => {
+                console.error(`❌ Error al crear gasto: ${gasto.tipoGastoInicialCodigo}`, error);
+                throw error; // Lanzar el error para que se maneje correctamente
+              })
+            );
+          }
+        }
+        
+        // Esperar a que se guarden todos los gastos
+        await Promise.all(promises);
+      }
+      
+      // Guardar/actualizar responsabilidades si hay contratoId
+      const responsabilidadesEditables = responsabilidadesEditablesRef.current;
+      if (id && responsabilidadesEditables.length > 0) {
+        const promises = [];
+        
+        // Obtener responsabilidades existentes en la BD
+        const contratoData = await api.get(`/contratos/${id}`);
+        const responsabilidadesExistentes = contratoData.data?.responsabilidades || [];
+        
+        for (const responsabilidad of responsabilidadesEditables) {
+          // Procesar tanto impuestos como cargos
+          if (!responsabilidad.tipoImpuestoId && !responsabilidad.tipoCargoId) {
+            continue;
+          }
+          
+          const payload = {
+            ...(responsabilidad.tipoImpuestoId && { tipoImpuestoId: parseInt(responsabilidad.tipoImpuestoId) }),
+            ...(responsabilidad.tipoCargoId && { tipoCargoId: parseInt(responsabilidad.tipoCargoId) }),
+            quienPagaProveedorId: responsabilidad.quienPagaProveedorId ? parseInt(responsabilidad.quienPagaProveedorId) : null,
+            quienSoportaCostoId: responsabilidad.quienSoportaCostoId ? parseInt(responsabilidad.quienSoportaCostoId) : null
+          };
+          
+          // Buscar si ya existe en la BD
+          const responsabilidadExistente = responsabilidadesExistentes.find(
+            r => (responsabilidad.tipoImpuestoId && r.tipoImpuestoId === responsabilidad.tipoImpuestoId) ||
+                 (responsabilidad.tipoCargoId && r.tipoCargoId === responsabilidad.tipoCargoId)
+          );
+          
+          if (responsabilidadExistente) {
+            // Actualizar existente
+            const tipoDesc = responsabilidad.tipoImpuestoId ? `impuesto ${responsabilidad.tipoImpuestoId}` : `cargo ${responsabilidad.tipoCargoId}`;
+            promises.push(
+              api.put(`/contratos/responsabilidades/${responsabilidadExistente.id}`, payload).catch(error => {
+                console.error(`❌ Error al actualizar responsabilidad: ${tipoDesc}`, error);
+                throw error;
+              })
+            );
+          } else {
+            // Crear nuevo solo si no existe
+            const tipoDesc = responsabilidad.tipoImpuestoId ? `impuesto ${responsabilidad.tipoImpuestoId}` : `cargo ${responsabilidad.tipoCargoId}`;
+            promises.push(
+              api.post(`/contratos/${id}/responsabilidades`, payload).catch(error => {
+                console.error(`❌ Error al crear responsabilidad: ${tipoDesc}`, error);
+                throw error;
+              })
+            );
+          }
+        }
+        
+        // Esperar a que se guarden todas las responsabilidades
+        await Promise.all(promises);
+      }
+      
+      return contratoActualizado;
+    },
+    onSuccess: async (data, variables) => {
+      // Invalidar todas las queries relacionadas con contratos
+      await queryClient.invalidateQueries(['contratos']);
+      await queryClient.invalidateQueries({ queryKey: ['contrato', variables.id] });
+      if (editing?.id && editing.id !== variables.id) {
+        await queryClient.invalidateQueries({ queryKey: ['contrato', editing.id] });
+      }
+      // Forzar refetch de la query del contrato para actualizar los gastos
+      await queryClient.refetchQueries({ queryKey: ['contrato', variables.id] });
       setOpen(false);
       resetForm();
       setSuccessMessage('Contrato actualizado exitosamente');
@@ -323,9 +600,6 @@ export default function Contratos() {
       setSuccessMessage(errorMessage);
       setSnackbarOpen(true);
       
-      console.log('Mensaje de error establecido:', errorMessage);
-      console.log('Severity:', 'error');
-      console.log('Snackbar abierto:', true);
     }
   });
 
@@ -341,7 +615,7 @@ export default function Contratos() {
 
   const resetForm = () => {
     setFormData({
-      unidadId: '',
+      propiedadId: '',
       inquilinoId: '',
       nroContrato: '',
       fechaInicio: '',
@@ -351,14 +625,11 @@ export default function Contratos() {
       montoActual: '',
       gastosAdministrativos: '',
       honorariosPropietario: '',
-      metodoAjuste: '',
+      metodoAjusteContratoId: '',
       frecuenciaAjusteMeses: '',
-      indiceAumento: '',
-      periodoAumento: '',
-      ultimoAjusteAt: '',
-      registradoAfip: false,
-      moneda: '', // Se establecerá automáticamente cuando monedaData esté disponible
-      estado: '' // Se establecerá automáticamente cuando estadoContratoData esté disponible
+      monedaId: '',
+      estadoContratoId: '',
+      registradoAfip: false
     });
     setPropietarioNombre('');
     setMontoTotalContrato(0);
@@ -379,10 +650,15 @@ export default function Contratos() {
   const handleEdit = (contrato) => {
     setEditing(contrato);
     setTabValue(0); // Resetear a la primera pestaña al editar
-    const unidad = contrato.unidad || unidades?.data?.find(u => u.id === contrato.unidadId);
-    const propietario = unidad?.propietario;
-    const nombrePropietario = propietario 
-      ? (propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim())
+    
+    // Obtener propietarios de la propiedad
+    const propiedad = contrato.propiedad;
+    const propietarios = propiedad?.propietarios || [];
+    const nombrePropietario = propietarios.length > 0
+      ? propietarios.map(p => {
+          const prop = p.propietario || p;
+          return prop.razonSocial || `${prop.nombre || ''} ${prop.apellido || ''}`.trim();
+        }).join(', ')
       : 'Sin propietario';
     
     setPropietarioNombre(nombrePropietario);
@@ -392,8 +668,8 @@ export default function Contratos() {
     setMontoTotalContrato(montoInicial * duracionMeses);
     
     setFormData({
-      unidadId: contrato.unidadId,
-      inquilinoId: contrato.inquilinoId,
+      propiedadId: contrato.propiedadId || '',
+      inquilinoId: contrato.inquilinoId || '',
       nroContrato: contrato.nroContrato || '',
       fechaInicio: contrato.fechaInicio ? dayjs(contrato.fechaInicio).format('YYYY-MM-DD') : '',
       fechaFin: contrato.fechaFin ? dayjs(contrato.fechaFin).format('YYYY-MM-DD') : '',
@@ -402,18 +678,10 @@ export default function Contratos() {
       montoActual: contrato.montoActual || contrato.montoInicial ? formatNumberWithThousands(contrato.montoActual || contrato.montoInicial) : '',
       gastosAdministrativos: contrato.gastosAdministrativos || '',
       honorariosPropietario: contrato.honorariosPropietario || '',
-      metodoAjuste: contrato.metodoAjuste || '',
+      metodoAjusteContratoId: contrato.metodoAjusteContratoId || '',
       frecuenciaAjusteMeses: contrato.frecuenciaAjusteMeses || '',
-      indiceAumento: contrato.indiceAumento || '',
-      periodoAumento: contrato.periodoAumento || contrato.frecuenciaAjusteMeses || '',
-      ultimoAjusteAt: contrato.ultimoAjusteAt ? dayjs(contrato.ultimoAjusteAt).format('YYYY-MM-DD') : '',
-      registradoAfip: contrato.registradoAfip || false,
-      // Guardar el código de moneda tal cual viene del backend
-      // Se convertirá a ID en el useEffect cuando monedaData esté disponible
-      moneda: contrato.moneda || '',
-      // Guardar el código de estado tal cual viene del backend
-      // Se convertirá a ID en el useEffect cuando estadoContratoData esté disponible
-      estado: contrato.estado || ''
+      monedaId: contrato.monedaId || '',
+      estadoContratoId: contrato.estadoContratoId || '',
     });
     setOpen(true);
   };
@@ -423,76 +691,43 @@ export default function Contratos() {
     setViewOpen(true);
   };
 
-  // Efecto para actualizar propietario cuando se selecciona unidad
+  // Efecto para actualizar propietario cuando se selecciona propiedad
   useEffect(() => {
-    if (unidadSeleccionada) {
-      const propietario = unidadSeleccionada.propietario;
-      const nombre = propietario 
-        ? (propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim())
+    if (propiedadSeleccionada) {
+      const propietarios = propiedadSeleccionada.propietarios || [];
+      const nombre = propietarios.length > 0
+        ? propietarios.map(p => {
+            const prop = p.propietario || p;
+            return prop.razonSocial || `${prop.nombre || ''} ${prop.apellido || ''}`.trim();
+          }).join(', ')
         : 'Sin propietario';
       setPropietarioNombre(nombre);
     } else {
       setPropietarioNombre('');
     }
-  }, [unidadSeleccionada]);
+  }, [propiedadSeleccionada]);
 
-  // Efecto para establecer moneda por defecto y convertir código a ID cuando se cargan los parámetros
+  // Efecto para establecer moneda por defecto cuando se abre el diálogo
   useEffect(() => {
-    if (open && monedaData?.lista) {
-      if (!editing) {
-        // Si es nuevo contrato y no hay moneda seleccionada, buscar el ID del parámetro 'ARS'
-        if (!formData.moneda) {
-          const arsParam = monedaData.lista.find(p => p.codigo === 'ARS');
-          if (arsParam) {
-            setFormData(prev => ({ ...prev, moneda: arsParam.id }));
-          }
-        }
-      } else {
-        // Si es edición, convertir el código de moneda a ID
-        // El backend devuelve el código (ej: 'ARS'), pero el selector necesita el ID
-        if (formData.moneda) {
-          // Verificar si es un código (no está en el mapa de parámetros por ID)
-          const esCodigo = !monedaData.parametros[formData.moneda];
-          if (esCodigo) {
-            // Buscar el parámetro por código y convertir a ID
-            const monedaParam = monedaData.lista.find(p => p.codigo === formData.moneda);
-            if (monedaParam && formData.moneda !== monedaParam.id) {
-              setFormData(prev => ({ ...prev, moneda: monedaParam.id }));
-            }
-          }
-        }
+    if (open && !editing && monedas && !formData.monedaId) {
+      // Buscar moneda ARS por defecto
+      const arsMoneda = monedas.find(m => m.codigo === 'ARS');
+      if (arsMoneda) {
+        setFormData(prev => ({ ...prev, monedaId: arsMoneda.id }));
       }
     }
-  }, [open, editing, monedaData?.lista, monedaData?.parametros, formData.moneda]);
+  }, [open, editing, monedas, formData.monedaId]);
 
-  // Efecto para establecer estado por defecto y convertir código a ID cuando se cargan los parámetros
+  // Efecto para establecer estado por defecto cuando se abre el diálogo
   useEffect(() => {
-    if (open && estadoContratoMap?.lista) {
-      if (!editing) {
-        // Si es nuevo contrato y no hay estado seleccionado, buscar el ID del parámetro 'borrador'
-        if (!formData.estado) {
-          const borradorParam = estadoContratoMap.lista.find(p => p.codigo === 'borrador');
-          if (borradorParam) {
-            setFormData(prev => ({ ...prev, estado: borradorParam.id }));
-          }
-        }
-      } else {
-        // Si es edición, convertir el código de estado a ID
-        // El backend devuelve el código (ej: 'borrador'), pero el selector necesita el ID
-        if (formData.estado) {
-          // Verificar si es un código (no está en el mapa de parámetros por ID)
-          const esCodigo = !estadoContratoMap.parametros[formData.estado];
-          if (esCodigo) {
-            // Buscar el parámetro por código y convertir a ID
-            const estadoParam = estadoContratoMap.lista.find(p => p.codigo === formData.estado);
-            if (estadoParam && formData.estado !== estadoParam.id) {
-              setFormData(prev => ({ ...prev, estado: estadoParam.id }));
-            }
-          }
-        }
+    if (open && !editing && estadosContrato && !formData.estadoContratoId) {
+      // Buscar estado BORRADOR por defecto
+      const borradorEstado = estadosContrato.find(e => e.codigo === 'BORRADOR');
+      if (borradorEstado) {
+        setFormData(prev => ({ ...prev, estadoContratoId: borradorEstado.id }));
       }
     }
-  }, [open, editing, estadoContratoMap?.lista, estadoContratoMap?.parametros, formData.estado]);
+  }, [open, editing, estadosContrato, formData.estadoContratoId]);
 
   // Efecto para calcular fecha fin cuando cambian fecha inicio o duración
   useEffect(() => {
@@ -518,9 +753,9 @@ export default function Contratos() {
     const newErrors = {};
 
     // Validar Propiedad (obligatorio)
-    const unidadIdStr = formData.unidadId ? String(formData.unidadId).trim() : '';
-    if (!unidadIdStr) {
-      newErrors.unidadId = 'La propiedad es obligatoria';
+    const propiedadIdStr = formData.propiedadId ? String(formData.propiedadId).trim() : '';
+    if (!propiedadIdStr) {
+      newErrors.propiedadId = 'La propiedad es obligatoria';
     }
 
     // Validar Inquilino (obligatorio)
@@ -574,10 +809,9 @@ export default function Contratos() {
       }
     }
 
-    // Validar Índice Ajuste (obligatorio)
-    const metodoAjusteStr = formData.metodoAjuste ? String(formData.metodoAjuste).trim() : '';
-    if (!metodoAjusteStr) {
-      newErrors.metodoAjuste = 'El índice de ajuste es obligatorio';
+    // Validar Método de Ajuste (obligatorio)
+    if (!formData.metodoAjusteContratoId) {
+      newErrors.metodoAjusteContratoId = 'El método de ajuste es obligatorio';
     }
 
     // Validar Actualización (obligatorio)
@@ -592,9 +826,8 @@ export default function Contratos() {
     }
 
     // Validar Moneda (obligatorio)
-    const monedaStr = formData.moneda ? String(formData.moneda).trim() : '';
-    if (!monedaStr) {
-      newErrors.moneda = 'La moneda es obligatoria';
+    if (!formData.monedaId) {
+      newErrors.monedaId = 'La moneda es obligatoria';
     }
 
     setErrors(newErrors);
@@ -632,7 +865,7 @@ export default function Contratos() {
     };
     
     const submitData = {
-      unidadId: formData.unidadId || null,
+      propiedadId: formData.propiedadId || null,
       inquilinoId: formData.inquilinoId || null,
       fechaInicio: formData.fechaInicio ? new Date(formData.fechaInicio) : null,
       fechaFin: formData.fechaFin ? new Date(formData.fechaFin) : null,
@@ -642,19 +875,9 @@ export default function Contratos() {
       montoActual: parseMonto(formData.montoActual),
       gastosAdministrativos: parseSafeNumber(formData.gastosAdministrativos),
       honorariosPropietario: parseSafeNumber(formData.honorariosPropietario),
-      metodoAjuste: formData.metodoAjuste || null,
-      indiceAumento: formData.indiceAumento || null,
-      periodoAumento: parseSafeInteger(formData.periodoAumento),
-      ultimoAjusteAt: formData.ultimoAjusteAt ? new Date(formData.ultimoAjusteAt) : null,
-      registradoAfip: Boolean(formData.registradoAfip),
-      // Convertir ID de moneda a código para el backend
-      moneda: formData.moneda && monedaData?.codigos?.[formData.moneda] 
-        ? monedaData.codigos[formData.moneda] 
-        : (formData.moneda || 'ARS'),
-      // Convertir ID de estado a código para el backend
-      estado: formData.estado && estadoContratoMap?.codigos?.[formData.estado] 
-        ? estadoContratoMap.codigos[formData.estado] 
-        : (formData.estado || 'borrador')
+      metodoAjusteContratoId: formData.metodoAjusteContratoId || null,
+      monedaId: formData.monedaId || null,
+      estadoContratoId: formData.estadoContratoId || null,
     };
 
     if (editing) {
@@ -663,8 +886,6 @@ export default function Contratos() {
       createMutation.mutate(submitData);
     }
   };
-
-  if (isLoading) return <div>Cargando...</div>;
 
   return (
     <Box>
@@ -679,9 +900,9 @@ export default function Contratos() {
               label="Filtrar por Estado"
             >
               <MenuItem value="">Todos</MenuItem>
-              {estadoContratoMap?.lista?.map((estado) => (
+              {estadosContrato?.map((estado) => (
                 <MenuItem key={estado.id} value={estado.codigo}>
-                  {estado.descripcion}
+                  {estado.nombre}
                 </MenuItem>
               ))}
               <MenuItem value="vencido">Vencidos (automático)</MenuItem>
@@ -720,14 +941,15 @@ export default function Contratos() {
           <TableBody>
             {contratosFiltrados?.map((contrato) => {
               // Determinar estado real (si está vencido pero no marcado como tal)
-              let estadoReal = contrato.estado;
+              const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo || contrato.estado || '';
+              let estadoReal = estadoCodigo;
               let esVencido = false;
-              if (contrato.fechaFin && contrato.estado !== 'finalizado' && contrato.estado !== 'cancelado') {
+              if (contrato.fechaFin && !['FINALIZADO', 'CANCELADO', 'ANULADO'].includes(estadoCodigo)) {
                 const fechaFin = dayjs(contrato.fechaFin);
                 const hoy = dayjs();
                 if (fechaFin.isBefore(hoy, 'day')) {
                   esVencido = true;
-                  if (contrato.estado === 'activo' || contrato.estado === 'borrador') {
+                  if (estadoCodigo === 'VIGENTE' || estadoCodigo === 'BORRADOR' || estadoCodigo === 'vigente' || estadoCodigo === 'borrador') {
                     estadoReal = 'vencido';
                   }
                 }
@@ -740,11 +962,17 @@ export default function Contratos() {
                   {contrato.inquilino?.razonSocial ||
                     `${contrato.inquilino?.nombre || ''} ${contrato.inquilino?.apellido || ''}`.trim()}
                 </TableCell>
-                <TableCell>{contrato.unidad?.direccion}</TableCell>
                 <TableCell>
-                  {contrato.unidad?.propietario 
-                    ? (contrato.unidad.propietario.razonSocial ||
-                       `${contrato.unidad.propietario.nombre || ''} ${contrato.unidad.propietario.apellido || ''}`.trim())
+                  {contrato.propiedad 
+                    ? `${contrato.propiedad.dirCalle} ${contrato.propiedad.dirNro || ''}${contrato.propiedad.dirPiso ? `, Piso ${contrato.propiedad.dirPiso}` : ''}${contrato.propiedad.dirDepto ? `, Dto. ${contrato.propiedad.dirDepto}` : ''}`
+                    : 'Sin propiedad'}
+                </TableCell>
+                <TableCell>
+                  {contrato.propiedad?.propietarios && contrato.propiedad.propietarios.length > 0
+                    ? contrato.propiedad.propietarios.map(p => {
+                        const prop = p.propietario || p;
+                        return prop.razonSocial || `${prop.nombre || ''} ${prop.apellido || ''}`.trim();
+                      }).join(', ')
                     : <em style={{ color: '#999' }}>Sin propietario</em>}
                 </TableCell>
                 <TableCell>{dayjs(contrato.fechaInicio).format('DD/MM/YYYY')}</TableCell>
@@ -759,16 +987,16 @@ export default function Contratos() {
                 </TableCell>
                 <TableCell>
                   <Chip 
-                    label={String(getDescripcion(estadoContratoMap, estadoReal) || estadoReal || 'Sin estado')} 
+                    label={String(getEstadoNombre(estadoReal) || 'Sin estado')} 
                     size="small"
                     color={
-                      estadoReal === 'activo' || estadoReal === 'vigente' ? 'success' :
+                      estadoReal === 'VIGENTE' || estadoReal === 'vigente' || estadoReal === 'activo' ? 'success' :
                       estadoReal === 'vencido' || esVencido ? 'error' :
-                      estadoReal === 'finalizado' ? 'default' :
-                      estadoReal === 'cancelado' || estadoReal === 'anulado' ? 'warning' :
+                      estadoReal === 'FINALIZADO' || estadoReal === 'finalizado' ? 'default' :
+                      estadoReal === 'CANCELADO' || estadoReal === 'ANULADO' || estadoReal === 'cancelado' || estadoReal === 'anulado' ? 'warning' :
                       'default'
                     }
-                    title={esVencido && contrato.estado !== 'vencido' ? 'Contrato vencido (no actualizado en BD)' : ''}
+                    title={esVencido && contrato.estadoContratoId && contrato.estado?.codigo !== 'VENCIDO' ? 'Contrato vencido (no actualizado en BD)' : ''}
                   />
                 </TableCell>
                 <TableCell sx={{ padding: '4px 8px' }}>
@@ -800,7 +1028,7 @@ export default function Contratos() {
               <TableRow>
                 <TableCell colSpan={9} align="center" sx={{ py: 3 }}>
                   <Typography variant="body2" color="text.secondary">
-                    No se encontraron contratos {filtroEstado ? `con estado "${estadoContratoMap?.lista?.find(e => e.codigo === filtroEstado)?.descripcion || filtroEstado}"` : ''}
+                    No se encontraron contratos {filtroEstado ? `con estado "${getEstadoNombre(filtroEstado)}"` : ''}
                   </Typography>
                 </TableCell>
               </TableRow>
@@ -814,15 +1042,16 @@ export default function Contratos() {
         <Grid container spacing={2}>
           {contratosFiltrados?.map((contrato) => {
             // Determinar estado real (si está vencido pero no marcado como tal)
-            let estadoReal = contrato.estado;
+            const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo || contrato.estado || '';
+            let estadoReal = estadoCodigo;
             let esVencido = false;
-            if (contrato.fechaFin && !['finalizado', 'anulado', 'cancelado', 'rescindido'].includes(contrato.estado)) {
+            if (contrato.fechaFin && !['FINALIZADO', 'ANULADO', 'CANCELADO', 'RESCINDIDO'].includes(estadoCodigo)) {
               const fechaFin = dayjs(contrato.fechaFin);
               const hoy = dayjs();
               if (fechaFin.isBefore(hoy, 'day')) {
                 esVencido = true;
                 // Solo mostrar como vencido si el estado actual permite esa transición
-                if (['activo', 'vigente', 'borrador', 'pendiente_de_firma', 'prorrogado'].includes(contrato.estado)) {
+                if (['VIGENTE', 'BORRADOR', 'vigente', 'borrador', 'activo', 'pendiente_de_firma', 'prorrogado'].includes(estadoCodigo)) {
                   estadoReal = 'vencido';
                 }
               }
@@ -914,7 +1143,7 @@ export default function Contratos() {
                         <strong>Estado:</strong>
                       </Typography>
                       <Chip 
-                        label={String(getDescripcion(estadoContratoMap, estadoReal) || estadoReal || 'Sin estado')} 
+                        label={String(getEstadoNombre(estadoReal) || 'Sin estado')} 
                         size="small"
                         color={
                           estadoReal === 'activo' || estadoReal === 'vigente' ? 'success' :
@@ -937,7 +1166,7 @@ export default function Contratos() {
               <Card>
                 <CardContent>
                   <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 3 }}>
-                    No se encontraron contratos {filtroEstado ? `con estado "${estadoContratoMap?.lista?.find(e => e.codigo === filtroEstado)?.descripcion || filtroEstado}"` : ''}
+                    No se encontraron contratos {filtroEstado ? `con estado "${getEstadoNombre(filtroEstado)}"` : ''}
                   </Typography>
                 </CardContent>
               </Card>
@@ -964,10 +1193,6 @@ export default function Contratos() {
               <Tabs 
                 value={tabValue} 
                 onChange={(e, v) => {
-                  // Si no hay edición y se intenta acceder a Ajustes (index 4), no permitirlo
-                  if (!editing && v === 4) {
-                    return;
-                  }
                   setTabValue(v);
                 }}
               >
@@ -975,33 +1200,38 @@ export default function Contratos() {
                 <Tab label="Gastos Iniciales" />
                 <Tab label="Responsabilidades" />
                 <Tab label="Garantías" />
-                {editing && <Tab label="Ajustes" />}
               </Tabs>
 
               <TabPanel value={tabValue} index={0}>
                 <Grid container spacing={2}>
                   {/* Fila 1: Propiedad, Propietario, Inquilino */}
                   <Grid item xs={12} sm={4}>
-                    <FormControl fullWidth size="small" error={!!errors.unidadId}>
+                    <FormControl fullWidth size="small" error={!!errors.propiedadId}>
                       <InputLabel>Propiedad *</InputLabel>
                       <Select
-                        value={formData.unidadId}
+                        value={formData.propiedadId}
                         onChange={(e) => {
-                          setFormData({ ...formData, unidadId: e.target.value });
-                          if (errors.unidadId) {
-                            setErrors({ ...errors, unidadId: '' });
+                          setFormData({ ...formData, propiedadId: e.target.value });
+                          if (errors.propiedadId) {
+                            setErrors({ ...errors, propiedadId: '' });
                           }
                         }}
                         label="Propiedad *"
                       >
-                        {unidades?.data?.map((unidad) => (
-                          <MenuItem key={unidad.id} value={unidad.id}>
-                            {unidad.direccion}, {unidad.localidad}
-                          </MenuItem>
-                        ))}
+                        {Array.isArray(propiedades) 
+                          ? propiedades.map((propiedad) => (
+                              <MenuItem key={propiedad.id} value={propiedad.id}>
+                                {propiedad.dirCalle} {propiedad.dirNro}{propiedad.dirPiso ? `, Piso ${propiedad.dirPiso}` : ''}{propiedad.dirDepto ? `, Dto. ${propiedad.dirDepto}` : ''}, {propiedad.localidad?.nombre || propiedad.provincia?.nombre || ''}
+                              </MenuItem>
+                            ))
+                          : propiedades?.data?.map((propiedad) => (
+                              <MenuItem key={propiedad.id} value={propiedad.id}>
+                                {propiedad.dirCalle} {propiedad.dirNro}{propiedad.dirPiso ? `, Piso ${propiedad.dirPiso}` : ''}{propiedad.dirDepto ? `, Dto. ${propiedad.dirDepto}` : ''}, {propiedad.localidad?.nombre || propiedad.provincia?.nombre || ''}
+                              </MenuItem>
+                            ))}
                       </Select>
-                      {errors.unidadId && (
-                        <FormHelperText error>{errors.unidadId}</FormHelperText>
+                      {errors.propiedadId && (
+                        <FormHelperText error>{errors.propiedadId}</FormHelperText>
                       )}
                     </FormControl>
                   </Grid>
@@ -1239,22 +1469,34 @@ export default function Contratos() {
                     />
                   </Grid>
 
-                  {/* Fila 4: Índice Ajuste, Actualización, Moneda, Registrado AFIP */}
+                  {/* Fila 4: Índice Ajuste, Actualización, Moneda */}
                   <Grid item xs={12} sm={3}>
-                    <ParametroSelect
-                      categoriaCodigo="metodo_ajuste"
-                      label="Índice Ajuste *"
-                      value={formData.metodoAjuste}
-                      onChange={(e) => {
-                        setFormData({ ...formData, metodoAjuste: e.target.value });
-                        if (errors.metodoAjuste) {
-                          setErrors({ ...errors, metodoAjuste: '' });
-                        }
-                      }}
-                      mostrarAbreviatura={true}
-                      error={!!errors.metodoAjuste}
-                      helperText={errors.metodoAjuste || ''}
-                    />
+                    <FormControl fullWidth size="small" error={!!errors.metodoAjusteContratoId}>
+                      <InputLabel>Método de Ajuste *</InputLabel>
+                      <Select
+                        value={formData.metodoAjusteContratoId}
+                        onChange={(e) => {
+                          setFormData({ ...formData, metodoAjusteContratoId: e.target.value });
+                          if (errors.metodoAjusteContratoId) {
+                            setErrors({ ...errors, metodoAjusteContratoId: '' });
+                          }
+                        }}
+                        label="Método de Ajuste *"
+                      >
+                        {metodosAjusteContrato && metodosAjusteContrato.length > 0 ? (
+                          metodosAjusteContrato.map((metodo) => (
+                            <MenuItem key={metodo.id} value={metodo.id}>
+                              {metodo.nombre}
+                            </MenuItem>
+                          ))
+                        ) : (
+                          <MenuItem disabled>No hay métodos disponibles</MenuItem>
+                        )}
+                      </Select>
+                      {errors.metodoAjusteContratoId && (
+                        <FormHelperText error>{errors.metodoAjusteContratoId}</FormHelperText>
+                      )}
+                    </FormControl>
                   </Grid>
                   <Grid item xs={12} sm={3}>
                     <TextField
@@ -1292,43 +1534,62 @@ export default function Contratos() {
                     />
                   </Grid>
                   <Grid item xs={12} sm={3}>
-                    <ParametroSelect
-                      categoriaCodigo="moneda"
-                      label="Moneda *"
-                      value={formData.moneda}
-                      onChange={(e) => {
-                        setFormData({ ...formData, moneda: e.target.value });
-                        if (errors.moneda) {
-                          setErrors({ ...errors, moneda: '' });
-                        }
-                      }}
-                      error={!!errors.moneda}
-                      helperText={errors.moneda || ''}
-                    />
+                    <FormControl fullWidth size="small" error={!!errors.monedaId}>
+                      <InputLabel>Moneda *</InputLabel>
+                      <Select
+                        value={formData.monedaId}
+                        onChange={(e) => {
+                          setFormData({ ...formData, monedaId: e.target.value });
+                          if (errors.monedaId) {
+                            setErrors({ ...errors, monedaId: '' });
+                          }
+                        }}
+                        label="Moneda *"
+                      >
+                        {monedas && monedas.length > 0 ? (
+                          monedas.map((moneda) => (
+                            <MenuItem key={moneda.id} value={moneda.id}>
+                              {moneda.nombre} ({moneda.codigo})
+                            </MenuItem>
+                          ))
+                        ) : (
+                          <MenuItem disabled>No hay monedas disponibles</MenuItem>
+                        )}
+                      </Select>
+                      {errors.monedaId && (
+                        <FormHelperText error>{errors.monedaId}</FormHelperText>
+                      )}
+                    </FormControl>
                   </Grid>
                   <Grid item xs={12} sm={3}>
-                    <ParametroSelect
-                      categoriaCodigo="estado_contrato"
-                      label="Estado"
-                      value={formData.estado}
-                      onChange={(e) => {
-                        setFormData({ ...formData, estado: e.target.value });
-                      }}
-                    />
+                    <FormControl fullWidth size="small" error={!!errors.estadoContratoId}>
+                      <InputLabel>Estado</InputLabel>
+                      <Select
+                        value={formData.estadoContratoId}
+                        onChange={(e) => {
+                          setFormData({ ...formData, estadoContratoId: e.target.value });
+                          if (errors.estadoContratoId) {
+                            setErrors({ ...errors, estadoContratoId: '' });
+                          }
+                        }}
+                        label="Estado"
+                      >
+                        {estadosContrato && estadosContrato.length > 0 ? (
+                          estadosContrato.map((estado) => (
+                            <MenuItem key={estado.id} value={estado.id}>
+                              {estado.nombre}
+                            </MenuItem>
+                          ))
+                        ) : (
+                          <MenuItem disabled>No hay estados disponibles</MenuItem>
+                        )}
+                      </Select>
+                      {errors.estadoContratoId && (
+                        <FormHelperText error>{errors.estadoContratoId}</FormHelperText>
+                      )}
+                    </FormControl>
                   </Grid>
                   
-                  {/* Fila 5: Registrado AFIP */}
-                  <Grid item xs={12} sm={3}>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={formData.registradoAfip}
-                          onChange={(e) => setFormData({ ...formData, registradoAfip: e.target.checked })}
-                        />
-                      }
-                      label="Registrado AFIP"
-                    />
-                  </Grid>
                 </Grid>
               </TabPanel>
 
@@ -1339,15 +1600,17 @@ export default function Contratos() {
                   duracionMeses={formData.duracionMeses}
                   gastosTemporales={gastosInicialesTemporales}
                   setGastosTemporales={setGastosInicialesTemporales}
+                  gastosEditablesRef={gastosEditablesRef}
                 />
               </TabPanel>
 
               <TabPanel value={tabValue} index={2}>
                 <ContratoResponsabilidades 
                   contratoId={editing?.id}
-                  unidadId={formData.unidadId}
+                  propiedadId={formData.propiedadId}
                   responsabilidadesTemporales={responsabilidadesTemporales}
                   setResponsabilidadesTemporales={setResponsabilidadesTemporales}
+                  responsabilidadesEditablesRef={responsabilidadesEditablesRef}
                 />
               </TabPanel>
 
@@ -1358,19 +1621,6 @@ export default function Contratos() {
                   setGarantiasTemporales={setGarantiasTemporales}
                 />
               </TabPanel>
-
-              {editing && (
-                <TabPanel value={tabValue} index={4}>
-                  <ContratoAjustesTab
-                    contratoId={editing?.id}
-                    formData={formData}
-                    setFormData={setFormData}
-                    indices={indicesAjusteActivos?.data || []}
-                    setSuccessMessage={setSuccessMessage}
-                    setSnackbarOpen={setSnackbarOpen}
-                  />
-                </TabPanel>
-              )}
             </Box>
           </DialogContent>
           <DialogActions>
@@ -1379,7 +1629,7 @@ export default function Contratos() {
               resetForm(); // Limpiar todos los estados temporales al cancelar
             }}>Cancelar</Button>
             <Button type="submit" variant="contained">
-              {editing ? 'Actualizar' : 'Crear'}
+              {editing ? 'Guardar' : 'Crear'}
             </Button>
           </DialogActions>
         </form>
@@ -1415,389 +1665,28 @@ export default function Contratos() {
   );
 }
 
-function ContratoAjustesTab({
-  contratoId,
-  formData,
-  setFormData,
-  indices,
-  setSuccessMessage,
-  setSnackbarOpen
-}) {
-  const [errorMessage, setErrorMessage] = useState('');
-  const [calculando, setCalculando] = useState(false);
-  const [resultadoCalculo, setResultadoCalculo] = useState(null);
-
-  const indiceOptions = useMemo(() => {
-    if (!indices || indices.length === 0) return [];
-    const map = new Map();
-    indices.forEach((item) => {
-      if (!map.has(item.codigo)) {
-        map.set(item.codigo, { codigo: item.codigo, descripcion: item.descripcion });
-      }
-    });
-    return Array.from(map.values());
-  }, [indices]);
-
-  const calcularMutation = useMutation({
-    mutationFn: async (data) => {
-      const response = await api.post(`/contratos/${contratoId}/ajustes/calcular`, data);
-      return response.data;
-    },
-    onSuccess: (data) => {
-      setResultadoCalculo(data);
-      setErrorMessage('');
-    },
-    onError: (error) => {
-      const message =
-        error.response?.data?.error ||
-        error.message ||
-        'No se pudo calcular los ajustes proyectados';
-      setErrorMessage(message);
-      setResultadoCalculo(null);
-    },
-    onSettled: () => {
-      setCalculando(false);
-    }
-  });
-
-  const handleCalcular = () => {
-    if (!formData.indiceAumento) {
-      setErrorMessage('Debe seleccionar un índice de ajuste');
-      return;
-    }
-    if (!formData.periodoAumento) {
-      setErrorMessage('Debe ingresar el período de ajuste');
-      return;
-    }
-    if (!formData.montoActual) {
-      setErrorMessage('Debe ingresar el monto actual');
-      return;
-    }
-    if (!formData.fechaInicio) {
-      setErrorMessage('Debe ingresar la fecha de inicio del contrato');
-      return;
-    }
-
-    setCalculando(true);
-    setErrorMessage('');
-    
-    const payload = {
-      fechaInicio: formData.fechaInicio,
-      fechaFin: formData.fechaFin || null,
-      indiceAumento: formData.indiceAumento,
-      periodoAumento: parseInt(formData.periodoAumento),
-      montoActual: parseFloat(parseNumberFromFormatted(formData.montoActual))
-    };
-
-    calcularMutation.mutate(payload);
-  };
-
-  if (!contratoId) {
-    return (
-      <Alert severity="info">
-        Guardá el contrato para configurar los ajustes.
-      </Alert>
-    );
-  }
-
-  return (
-    <Box sx={{ pt: 1 }}>
-      <Stack spacing={2}>
-        {errorMessage && <Alert severity="error">{errorMessage}</Alert>}
-
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={6}>
-            <Typography variant="subtitle2" fontWeight="bold" gutterBottom>
-              Configuración
-            </Typography>
-            <Grid container spacing={2}>
-              <Grid item xs={12} sm={6}>
-                <FormControl fullWidth size="small">
-                  <InputLabel>Índice de Ajuste</InputLabel>
-                  <Select
-                    value={formData.indiceAumento || ''}
-                    label="Índice de Ajuste"
-                    onChange={(e) =>
-                      setFormData((prev) => ({
-                        ...prev,
-                        indiceAumento: e.target.value
-                      }))
-                    }
-                  >
-                    <MenuItem value="">
-                      <em>Sin índice</em>
-                    </MenuItem>
-                    {indiceOptions.map((option) => (
-                      <MenuItem key={option.codigo} value={option.codigo}>
-                        {option.codigo} — {option.descripcion}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Período (meses)"
-                  type="number"
-                  fullWidth
-                  size="small"
-                  value={formData.periodoAumento || ''}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      periodoAumento: e.target.value
-                    }))
-                  }
-                  inputProps={{ 
-                    min: 0,
-                    style: { MozAppearance: 'textfield' },
-                    onWheel: (e) => e.target.blur()
-                  }}
-                  sx={{
-                    '& input[type=number]': {
-                      MozAppearance: 'textfield',
-                    },
-                    '& input[type=number]::-webkit-outer-spin-button': {
-                      WebkitAppearance: 'none',
-                      margin: 0,
-                    },
-                    '& input[type=number]::-webkit-inner-spin-button': {
-                      WebkitAppearance: 'none',
-                      margin: 0,
-                    },
-                  }}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Monto Actual"
-                  type="text"
-                  fullWidth
-                  size="small"
-                  value={formData.montoActual || ''}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    // Permitir solo números, puntos y comas
-                    if (value === '' || /^[\d.,]*$/.test(value)) {
-                      setFormData((prev) => ({
-                        ...prev,
-                        montoActual: value
-                      }));
-                    }
-                  }}
-                  onBlur={(e) => {
-                    const formatted = formatNumberWithThousands(parseNumberFromFormatted(e.target.value));
-                    setFormData((prev) => ({
-                      ...prev,
-                      montoActual: formatted
-                    }));
-                  }}
-                />
-              </Grid>
-              <Grid item xs={12} sm={6}>
-                <TextField
-                  label="Fecha Inicio Contrato"
-                  type="date"
-                  fullWidth
-                  size="small"
-                  value={formData.fechaInicio || ''}
-                  onChange={(e) =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      fechaInicio: e.target.value
-                    }))
-                  }
-                  InputLabelProps={{ shrink: true }}
-                />
-              </Grid>
-            </Grid>
-            <Box sx={{ mt: 2 }}>
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={handleCalcular}
-                disabled={calculando || !formData.indiceAumento || !formData.periodoAumento || !formData.montoActual || !formData.fechaInicio}
-                fullWidth
-              >
-                {calculando ? 'Calculando...' : 'Calcular'}
-              </Button>
-            </Box>
-          </Grid>
-
-          {resultadoCalculo && (
-            <Grid item xs={12}>
-              <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mt: 2 }}>
-                Resultado del Cálculo
-              </Typography>
-              <CalculoAjustesResultado resultado={resultadoCalculo} />
-            </Grid>
-          )}
-        </Grid>
-      </Stack>
-    </Box>
-  );
-}
-
-// Componente para mostrar el resultado del cálculo
-function CalculoAjustesResultado({ resultado }) {
-  const [expandedCuatrimestres, setExpandedCuatrimestres] = useState({});
-
-  const toggleExpand = (numero) => {
-    setExpandedCuatrimestres(prev => ({
-      ...prev,
-      [numero]: !prev[numero]
-    }));
-  };
-
-  if (!resultado || !resultado.cuatrimestres || resultado.cuatrimestres.length === 0) {
-    return <Alert severity="info">No hay datos para mostrar.</Alert>;
-  }
-
-  return (
-    <Box sx={{ mt: 2 }}>
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        {resultado.cuatrimestres.map((cuatrimestre, index) => {
-          const isExpanded = expandedCuatrimestres[cuatrimestre.numero];
-          const tieneMeses = cuatrimestre.meses && cuatrimestre.meses.length > 0;
-          
-          return (
-            <Box key={cuatrimestre.numero} sx={{ mb: index < resultado.cuatrimestres.length - 1 ? 2 : 0 }}>
-              {/* Resumen del cuatrimestre */}
-              <Box
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  p: 1.5,
-                  cursor: tieneMeses ? 'pointer' : 'default',
-                  bgcolor: 'grey.100',
-                  borderRadius: 1,
-                  border: '1px solid',
-                  borderColor: 'divider',
-                  '&:hover': tieneMeses ? {
-                    bgcolor: 'grey.200'
-                  } : {}
-                }}
-                onClick={() => tieneMeses && toggleExpand(cuatrimestre.numero)}
-              >
-                <Typography variant="body1" fontWeight="bold">
-                  Cuatr. {cuatrimestre.numero}
-                </Typography>
-                <Box sx={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                  <Box sx={{ minWidth: 120 }}>
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      Fecha
-                    </Typography>
-                    <Typography variant="body2" fontWeight="medium">
-                      {dayjs(cuatrimestre.fechaInicio).format('DD/MM/YYYY')}
-                    </Typography>
-                  </Box>
-                  <Box sx={{ minWidth: 100, textAlign: 'right' }}>
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      Aumento
-                    </Typography>
-                    <Typography variant="body2" fontWeight="medium">
-                      {parseFloat(cuatrimestre.aumento).toLocaleString('es-AR', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2
-                      })}%
-                    </Typography>
-                  </Box>
-                  <Box sx={{ minWidth: 130, textAlign: 'right' }}>
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      Valor
-                    </Typography>
-                    <Typography variant="body2" fontWeight="bold" color="primary.main">
-                      {parseFloat(cuatrimestre.valor).toLocaleString('es-AR', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2
-                      })}
-                    </Typography>
-                  </Box>
-                  {tieneMeses && (
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleExpand(cuatrimestre.numero);
-                      }}
-                    >
-                      {isExpanded ? '▼' : '▲'}
-                    </IconButton>
-                  )}
-                </Box>
-              </Box>
-
-              {/* Desglose mensual (expandible) */}
-              {isExpanded && tieneMeses && (
-                <Box sx={{ mt: 1, ml: 2, mr: 2, mb: 2 }}>
-                  <TableContainer>
-                    <Table size="small">
-                      <TableHead>
-                        <TableRow>
-                          <TableCell>Fecha</TableCell>
-                          <TableCell align="right">Valor Índice</TableCell>
-                          <TableCell align="right">Mes Anterior (%)</TableCell>
-                          <TableCell align="right">Acumulado (%)</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {cuatrimestre.meses.map((mes, mesIndex) => (
-                          <TableRow
-                            key={mesIndex}
-                            sx={{
-                              bgcolor: mesIndex === cuatrimestre.meses.length - 1 ? 'action.hover' : 'transparent'
-                            }}
-                          >
-                            <TableCell>
-                              {dayjs(mes.fecha).format('DD/MM/YYYY')}
-                            </TableCell>
-                            <TableCell align="right">
-                              {parseFloat(mes.valorIndice).toLocaleString('es-AR', {
-                                minimumFractionDigits: 3,
-                                maximumFractionDigits: 6,
-                                useGrouping: true
-                              })}
-                            </TableCell>
-                            <TableCell align="right">
-                              {parseFloat(mes.porcentajeMesAnterior).toLocaleString('es-AR', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2
-                              })}%
-                            </TableCell>
-                            <TableCell align="right">
-                              {parseFloat(mes.acumulado).toLocaleString('es-AR', {
-                                minimumFractionDigits: 2,
-                                maximumFractionDigits: 2
-                              })}%
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </Box>
-              )}
-            </Box>
-          );
-        })}
-      </Paper>
-      <Alert severity="info" sx={{ mt: 2 }}>
-        *Se repiten los valores de meses anteriores para calcular el aumento
-      </Alert>
-    </Box>
-  );
-}
-
 // Componente para Responsabilidades
-function ContratoResponsabilidades({ contratoId, unidadId, responsabilidadesTemporales, setResponsabilidadesTemporales }) {
+function ContratoResponsabilidades({ contratoId, propiedadId, responsabilidadesTemporales, setResponsabilidadesTemporales, responsabilidadesEditablesRef }) {
   const [successMessage, setSuccessMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const queryClient = useQueryClient();
 
-  // Mapas de parámetros para mostrar descripciones
-  const tipoImpuestoMap = useParametrosMap('tipo_cargo');
-  const quienPagaMap = useParametrosMap('quien_paga');
+  // Obtener tipos de impuesto y actores responsables desde catálogos
+  const { data: tiposImpuestoPropiedad } = useQuery({
+    queryKey: ['tipos-impuesto-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-impuesto-propiedad');
+      return response.data;
+    }
+  });
+
+  const { data: actoresResponsables } = useQuery({
+    queryKey: ['actores-responsable-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/actores-responsable-contrato');
+      return response.data;
+    }
+  });
 
   const { data: contrato } = useQuery({
     queryKey: ['contrato', contratoId],
@@ -1809,66 +1698,113 @@ function ContratoResponsabilidades({ contratoId, unidadId, responsabilidadesTemp
     enabled: !!contratoId
   });
 
-  // Obtener cuentas tributarias de la unidad (puede venir de contrato o de unidadId)
-  const unidadIdParaCuentas = contrato?.unidadId || unidadId;
-  const { data: cuentasTributarias } = useQuery({
-    queryKey: ['cuentasTributarias', unidadIdParaCuentas],
+  // Obtener impuestos y cargos de la propiedad (puede venir de contrato o de propiedadId)
+  const propiedadIdParaImpuestos = contrato?.propiedadId || propiedadId;
+  
+  const { data: impuestosPropiedad } = useQuery({
+    queryKey: ['impuestos-propiedad', propiedadIdParaImpuestos],
     queryFn: async () => {
-      if (!unidadIdParaCuentas) return [];
-      const response = await api.get(`/cuentas/unidad/${unidadIdParaCuentas}`);
+      if (!propiedadIdParaImpuestos) return [];
+      const response = await api.get(`/propiedad-impuestos/propiedad/${propiedadIdParaImpuestos}`);
       return response.data || [];
     },
-    enabled: !!unidadIdParaCuentas
+    enabled: !!propiedadIdParaImpuestos
   });
 
-  // Obtener IDs de parámetros para las 4 responsabilidades
-  const { data: quienPagaParams } = useQuery({
-    queryKey: ['parametros', 'quien_paga'],
+  const { data: cargosPropiedad } = useQuery({
+    queryKey: ['cargos-propiedad', propiedadIdParaImpuestos],
     queryFn: async () => {
-      const response = await api.get(`/parametros/categorias/quien_paga/parametros`);
-      return response.data;
-    }
+      if (!propiedadIdParaImpuestos) return [];
+      const response = await api.get(`/propiedad-cargos/propiedad/${propiedadIdParaImpuestos}`);
+      return response.data || [];
+    },
+    enabled: !!propiedadIdParaImpuestos
   });
 
-  // Códigos esperados para las 4 responsabilidades (orden: según la imagen del usuario)
-  const responsabilidadesConfig = [
-    { codigo: 'inm_inq', label: 'Paga Inmobiliaria - Cobra a Inquilino' },
-    { codigo: 'inm_prop', label: 'Paga Inmobiliaria - Cobra a Propietario' },
-    { codigo: 'paga_inq', label: 'Paga Inquilino - Controla Inmobiliaria' },
-    { codigo: 'paga_prop', label: 'Paga Propietario - Controla Inmobiliaria' }
-  ];
+  // Actores responsables (incluir todos, incluyendo Inmobiliaria)
+  const actoresResponsablesFiltrados = useMemo(() => {
+    if (!actoresResponsables) return [];
+    return actoresResponsables.filter(a => a.activo === true);
+  }, [actoresResponsables]);
 
-  // Obtener IDs de los parámetros
-  const responsabilidadesConIds = responsabilidadesConfig.map(config => ({
-    ...config,
-    id: quienPagaParams?.find(p => p.codigo === config.codigo)?.id,
-    parametro: quienPagaParams?.find(p => p.codigo === config.codigo)
-  }));
-
-  // Función para verificar si existe una responsabilidad (en BD o temporal)
-  const getResponsabilidad = (tipoImpuestoId, quienPagaId) => {
-    // Si hay contratoId, buscar en BD
-    if (contratoId && contrato?.responsabilidades) {
-      return contrato.responsabilidades.find(
-        resp => resp.tipoCargo === tipoImpuestoId && resp.quienPaga === quienPagaId
-      );
+  // Combinar impuestos y cargos en una sola lista
+  const itemsCombinados = useMemo(() => {
+    const items = [];
+    
+    // Agregar impuestos
+    if (impuestosPropiedad && impuestosPropiedad.length > 0) {
+      impuestosPropiedad.forEach(impuesto => {
+        items.push({
+          id: impuesto.id,
+          tipoId: impuesto.tipoImpuestoId,
+          tipoNombre: impuesto.tipoImpuesto?.nombre || impuesto.tipoImpuesto?.codigo || 'Sin nombre',
+          tipoCodigo: impuesto.tipoImpuesto?.codigo || '',
+          esImpuesto: true,
+          esCargo: false
+        });
+      });
     }
-    // Si no hay contratoId, buscar en estado temporal
-    return responsabilidadesTemporales.find(
-      resp => resp.tipoCargo === tipoImpuestoId && resp.quienPaga === quienPagaId
-    );
-  };
+    
+    // Agregar cargos
+    if (cargosPropiedad && cargosPropiedad.length > 0) {
+      cargosPropiedad.forEach(cargo => {
+        items.push({
+          id: cargo.id,
+          tipoId: cargo.tipoCargoId,
+          tipoNombre: cargo.tipoCargo?.nombre || cargo.tipoCargo?.codigo || 'Sin nombre',
+          tipoCodigo: cargo.tipoCargo?.codigo || '',
+          esImpuesto: false,
+          esCargo: true
+        });
+      });
+    }
+    
+    return items;
+  }, [impuestosPropiedad, cargosPropiedad]);
 
-  // Función para verificar si una responsabilidad está marcada
-  const isResponsabilidadMarcada = (tipoImpuestoId, quienPagaId) => {
-    return !!getResponsabilidad(tipoImpuestoId, quienPagaId);
+  // Obtener responsabilidades existentes del contrato
+  const responsabilidadesExistentes = contrato?.responsabilidades || [];
+
+  // Función para obtener la responsabilidad de un item
+  // Prioriza responsabilidadesTemporales (cambios locales) sobre responsabilidadesExistentes (BD)
+  const getResponsabilidadItem = (item) => {
+    // Primero buscar en responsabilidadesTemporales (cambios locales no guardados)
+    const responsabilidadTemporal = responsabilidadesTemporales.find(
+      resp => (item.esImpuesto && resp.tipoImpuestoId === item.tipoId) ||
+              (item.esCargo && resp.tipoCargoId === item.tipoId)
+    );
+    
+    if (responsabilidadTemporal) {
+      return responsabilidadTemporal;
+    }
+    
+    // Si no hay cambios locales, buscar en responsabilidadesExistentes (BD)
+    if (contratoId && responsabilidadesExistentes.length > 0) {
+      if (item.esImpuesto) {
+        return responsabilidadesExistentes.find(
+          resp => resp.tipoImpuestoId === item.tipoId
+        );
+      }
+      if (item.esCargo) {
+        return responsabilidadesExistentes.find(
+          resp => resp.tipoCargoId === item.tipoId
+        );
+      }
+    }
+    
+    return null;
   };
 
   const createMutation = useMutation({
     mutationFn: (data) => api.post(`/contratos/${contratoId}/responsabilidades`, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries(['contrato', contratoId]);
-      setSuccessMessage('Responsabilidad actualizada exitosamente');
+    onSuccess: async () => {
+      await queryClient.invalidateQueries(['contrato', contratoId]);
+      setSuccessMessage('Responsabilidad creada exitosamente');
+      setSnackbarOpen(true);
+    },
+    onError: (error) => {
+      console.error('Error al crear responsabilidad:', error);
+      setSuccessMessage('Error al crear responsabilidad');
       setSnackbarOpen(true);
     }
   });
@@ -1882,151 +1818,168 @@ function ContratoResponsabilidades({ contratoId, unidadId, responsabilidadesTemp
     }
   });
 
-  const handleCheckboxChange = async (cuenta, quienPagaId, checked) => {
-    if (contratoId) {
-      // Si hay contratoId, guardar inmediatamente en BD
-      const responsabilidad = getResponsabilidad(cuenta.tipoImpuesto, quienPagaId);
+  // Handler para cambiar "Quién Paga"
+  // Solo actualiza el estado local, no guarda en BD hasta que se guarde el contrato
+  const handleQuienPagaChange = (item, nuevoQuienPagaId) => {
+    const responsabilidadExistente = getResponsabilidadItem(item);
+    
+    setResponsabilidadesTemporales(prev => {
+      const sinEsteItem = prev.filter(
+        r => (item.esImpuesto && r.tipoImpuestoId !== item.tipoId) ||
+             (item.esCargo && r.tipoCargoId !== item.tipoId)
+      );
       
-      if (checked) {
-        // Eliminar todas las responsabilidades existentes para este tipoCargo (solo puede haber una por fila)
-        const responsabilidadesExistentes = contrato?.responsabilidades?.filter(
-          r => r.tipoCargo === cuenta.tipoImpuesto
-        ) || [];
-        
-        // Eliminar todas las responsabilidades existentes para este tipoCargo
-        for (const respExistente of responsabilidadesExistentes) {
-          if (respExistente.id) {
-            await deleteMutation.mutateAsync(respExistente.id);
-          }
-        }
-        
-        // Crear la nueva responsabilidad
-        await createMutation.mutateAsync({
-          tipoCargo: cuenta.tipoImpuesto,
-          quienPaga: quienPagaId,
-          titular: null
-        });
-      } else {
-        // Eliminar responsabilidad
-        if (responsabilidad && responsabilidad.id) {
-          await deleteMutation.mutateAsync(responsabilidad.id);
-        }
-      }
-    } else {
-      // Si no hay contratoId, actualizar estado temporal
+      // Preservar el ID si existe (para actualizar) o crear nuevo
       const nuevaResponsabilidad = {
-        tipoCargo: cuenta.tipoImpuesto,
-        quienPaga: quienPagaId,
-        titular: null
+        ...(responsabilidadExistente?.id && { id: responsabilidadExistente.id }),
+        ...(item.esImpuesto ? { tipoImpuestoId: item.tipoId } : {}),
+        ...(item.esCargo ? { tipoCargoId: item.tipoId } : {}),
+        quienPagaProveedorId: nuevoQuienPagaId ? parseInt(nuevoQuienPagaId) : null,
+        quienSoportaCostoId: responsabilidadExistente?.quienSoportaCostoId || null
       };
       
-      if (checked) {
-        // Agregar a estado temporal, pero primero eliminar cualquier otra responsabilidad del mismo tipoCargo
-        setResponsabilidadesTemporales(prev => {
-          // Filtrar todas las responsabilidades del mismo tipoCargo
-          const sinEsteTipoCargo = prev.filter(
-            r => r.tipoCargo !== cuenta.tipoImpuesto
-          );
-          // Agregar la nueva responsabilidad
-          return [...sinEsteTipoCargo, nuevaResponsabilidad];
-        });
-      } else {
-        // Remover de estado temporal
-        setResponsabilidadesTemporales(prev => 
-          prev.filter(
-            r => !(r.tipoCargo === nuevaResponsabilidad.tipoCargo && 
-                   r.quienPaga === nuevaResponsabilidad.quienPaga)
-          )
-        );
+      if (nuevoQuienPagaId || responsabilidadExistente?.quienSoportaCostoId) {
+        return [...sinEsteItem, nuevaResponsabilidad];
       }
-    }
+      return sinEsteItem;
+    });
   };
 
-  if (!unidadIdParaCuentas) {
-    return <Alert severity="info">Seleccione una propiedad en el contrato para ver las cuentas tributarias</Alert>;
-  }
+  // Handler para cambiar "Cobra a"
+  // Solo actualiza el estado local, no guarda en BD hasta que se guarde el contrato
+  const handleQuienCobraChange = (item, nuevoQuienCobraId) => {
+    const responsabilidadExistente = getResponsabilidadItem(item);
+    
+    setResponsabilidadesTemporales(prev => {
+      const sinEsteItem = prev.filter(
+        r => (item.esImpuesto && r.tipoImpuestoId !== item.tipoId) ||
+             (item.esCargo && r.tipoCargoId !== item.tipoId)
+      );
+      
+      // Preservar el ID si existe (para actualizar) o crear nuevo
+      const nuevaResponsabilidad = {
+        ...(responsabilidadExistente?.id && { id: responsabilidadExistente.id }),
+        ...(item.esImpuesto ? { tipoImpuestoId: item.tipoId } : {}),
+        ...(item.esCargo ? { tipoCargoId: item.tipoId } : {}),
+        quienPagaProveedorId: responsabilidadExistente?.quienPagaProveedorId || null,
+        quienSoportaCostoId: nuevoQuienCobraId ? parseInt(nuevoQuienCobraId) : null
+      };
+      
+      if (nuevoQuienCobraId || responsabilidadExistente?.quienPagaProveedorId) {
+        return [...sinEsteItem, nuevaResponsabilidad];
+      }
+      return sinEsteItem;
+    });
+  };
 
-  // Verificar si faltan parámetros
-  const parametrosFaltantes = responsabilidadesConIds.filter(r => !r.id);
-  const todosLosParametrosExisten = parametrosFaltantes.length === 0;
+  // Sincronizar responsabilidadesTemporales con el ref cuando cambien
+  useEffect(() => {
+    if (responsabilidadesEditablesRef) {
+      responsabilidadesEditablesRef.current = responsabilidadesTemporales;
+    }
+  }, [responsabilidadesTemporales]);
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) => api.put(`/contratos/responsabilidades/${id}`, data),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries(['contrato', contratoId]);
+      setSuccessMessage('Responsabilidad actualizada exitosamente');
+      setSnackbarOpen(true);
+    },
+    onError: (error) => {
+      console.error('Error al actualizar responsabilidad:', error);
+      setSuccessMessage('Error al actualizar responsabilidad');
+      setSnackbarOpen(true);
+    }
+  });
+
+  if (!propiedadIdParaImpuestos) {
+    return <Alert severity="info">Seleccione una propiedad en el contrato para ver las responsabilidades</Alert>;
+  }
 
   return (
     <Box>
       <Typography variant="h6" sx={{ mb: 2 }}>Responsabilidades de Pago</Typography>
 
-      {!todosLosParametrosExisten && (
-        <Alert severity="warning" sx={{ mb: 2 }}>
-          Faltan parámetros de responsabilidades. Por favor, configure los siguientes parámetros en la sección de Configuración:
-          <ul style={{ marginTop: 8, marginBottom: 0 }}>
-            {parametrosFaltantes.map(param => (
-              <li key={param.codigo}>{param.label} (código: {param.codigo})</li>
-            ))}
-          </ul>
-        </Alert>
-      )}
-
-      {cuentasTributarias && cuentasTributarias.length > 0 ? (
+      {itemsCombinados && itemsCombinados.length > 0 ? (
         <TableContainer>
           <Table size="small" sx={{ width: '100%', '& .MuiTableCell-root': { py: 0.5, px: 0.75 } }}>
             <TableHead>
               <TableRow>
-                <TableCell sx={{ width: '25%', py: 1, fontWeight: 'bold' }}>Concepto</TableCell>
-                {responsabilidadesConIds.map((resp) => {
-                  // Dividir el label por el guion para hacer salto de línea
-                  const [parte1, parte2] = resp.label.split(' - ');
-                  return (
-                    <TableCell 
-                      key={resp.codigo} 
-                      align="center" 
-                      sx={{ 
-                        width: `${75 / responsabilidadesConIds.length}%`,
-                        whiteSpace: 'normal', 
-                        lineHeight: 1.2,
-                        py: 1,
-                        px: 0.5,
-                        fontWeight: 'bold'
-                      }}
-                    >
-                      <Typography variant="body2" sx={{ fontSize: '0.7rem' }}>
-                        {parte1}
-                        {parte2 && (
-                          <>
-                            <br />
-                            - {parte2}
-                          </>
-                        )}
-                      </Typography>
-                    </TableCell>
-                  );
-                })}
+                <TableCell sx={{ width: '30%', py: 1, fontWeight: 'bold' }}>Concepto</TableCell>
+                <TableCell sx={{ width: '35%', py: 1, fontWeight: 'bold' }}>Quién Paga</TableCell>
+                <TableCell sx={{ width: '35%', py: 1, fontWeight: 'bold' }}>Cobra a</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
-              {cuentasTributarias.map((cuenta) => (
-                <TableRow key={cuenta.id} sx={{ '& .MuiTableCell-root': { py: 0.5 } }}>
-                  <TableCell sx={{ py: 0.5, fontSize: '0.875rem', width: '25%' }}>{getDescripcion(tipoImpuestoMap, cuenta.tipoImpuesto)}</TableCell>
-                  {responsabilidadesConIds.map((resp) => (
-                    <TableCell key={resp.codigo} align="center" sx={{ py: 0.5, px: 0.5, width: `${75 / responsabilidadesConIds.length}%` }}>
-                      <Checkbox
-                        checked={isResponsabilidadMarcada(cuenta.tipoImpuesto, resp.id)}
-                        onChange={(e) => handleCheckboxChange(cuenta, resp.id, e.target.checked)}
-                        size="small"
-                        disabled={!resp.id}
-                        sx={{ 
-                          padding: '3px',
-                          '& .MuiSvgIcon-root': { fontSize: '18px' }
-                        }}
-                      />
+              {itemsCombinados.map((item) => {
+                const responsabilidad = getResponsabilidadItem(item);
+                return (
+                  <TableRow key={`${item.esImpuesto ? 'imp' : 'carg'}-${item.id}`} sx={{ '& .MuiTableCell-root': { py: 0.5 } }}>
+                    <TableCell sx={{ py: 0.5, fontSize: '0.875rem' }}>
+                      {item.tipoNombre}
                     </TableCell>
-                  ))}
-                </TableRow>
-              ))}
+                    <TableCell sx={{ py: 0.5 }}>
+                      <FormControl size="small" fullWidth>
+                        <Select
+                          value={responsabilidad?.quienPagaProveedorId ? Number(responsabilidad.quienPagaProveedorId) : ''}
+                          onChange={(e) => handleQuienPagaChange(item, e.target.value)}
+                          displayEmpty
+                          sx={{ 
+                            height: '32px',
+                            fontSize: '0.875rem',
+                            '& .MuiSelect-select': {
+                              py: 0.5,
+                              px: 1
+                            }
+                          }}
+                        >
+                          <MenuItem value="">
+                            <em>Seleccionar</em>
+                          </MenuItem>
+                          {actoresResponsablesFiltrados?.map((actor) => (
+                            <MenuItem key={actor.id} value={actor.id}>
+                              {actor.nombre || actor.codigo}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </TableCell>
+                    <TableCell sx={{ py: 0.5 }}>
+                      <FormControl size="small" fullWidth>
+                        <Select
+                          value={responsabilidad?.quienSoportaCostoId ? Number(responsabilidad.quienSoportaCostoId) : ''}
+                          onChange={(e) => handleQuienCobraChange(item, e.target.value)}
+                          displayEmpty
+                          sx={{ 
+                            height: '32px',
+                            fontSize: '0.875rem',
+                            '& .MuiSelect-select': {
+                              py: 0.5,
+                              px: 1
+                            }
+                          }}
+                        >
+                          <MenuItem value="">
+                            <em>Seleccionar</em>
+                          </MenuItem>
+                          {actoresResponsablesFiltrados?.map((actor) => (
+                            <MenuItem key={actor.id} value={actor.id}>
+                              {actor.nombre || actor.codigo}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </TableContainer>
       ) : (
         <Alert severity="info">
-          No hay cuentas tributarias asociadas a esta propiedad. Agregue cuentas tributarias en la sección de Propiedades.
+          No hay impuestos ni cargos asociados a esta propiedad. Agregue impuestos o cargos en la sección de Propiedades.
         </Alert>
       )}
 
@@ -2055,7 +2008,8 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
     cuit: '',
     telefono: '',
     mail: '',
-    direccion: ''
+    direccion: '',
+    costoAveriguacion: ''
   });
   const [open, setOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState(null);
@@ -2063,9 +2017,35 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const queryClient = useQueryClient();
 
-  // Mapas de parámetros para mostrar descripciones
-  const tipoGarantiaMap = useParametrosMap('tipo_garantia');
-  const estadoGarantiaMap = useParametrosMap('estado_garantia');
+  // Obtener catálogos necesarios
+  const { data: tiposGarantiaContrato } = useQuery({
+    queryKey: ['tipos-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: estadosGarantiaContrato } = useQuery({
+    queryKey: ['estados-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/estados-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  // Funciones auxiliares
+  const getTipoGarantiaNombre = (tipoGarantiaId) => {
+    if (!tipoGarantiaId || !tiposGarantiaContrato) return 'Sin tipo';
+    const tipo = tiposGarantiaContrato.find(t => t.id === tipoGarantiaId);
+    return tipo?.nombre || tipo?.codigo || 'Sin tipo';
+  };
+
+  const getEstadoGarantiaNombre = (estadoGarantiaId) => {
+    if (!estadoGarantiaId || !estadosGarantiaContrato) return 'Sin estado';
+    const estado = estadosGarantiaContrato.find(e => e.id === estadoGarantiaId);
+    return estado?.nombre || estado?.codigo || 'Sin estado';
+  };
 
   const { data: contrato } = useQuery({
     queryKey: ['contrato', contratoId],
@@ -2096,9 +2076,33 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
         cuit: '',
         telefono: '',
         mail: '',
-        direccion: ''
+        direccion: '',
+        costoAveriguacion: ''
       });
       setSuccessMessage('Garantía agregada exitosamente');
+      setSnackbarOpen(true);
+    }
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }) => api.put(`/contratos/garantias/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['contrato', contratoId]);
+      setOpen(false);
+      setFormData({
+        tipoGarantia: '',
+        estadoGarantia: '',
+        apellido: '',
+        nombre: '',
+        dni: '',
+        cuit: '',
+        telefono: '',
+        mail: '',
+        direccion: '',
+        costoAveriguacion: ''
+      });
+      setEditingIndex(null);
+      setSuccessMessage('Garantía actualizada exitosamente');
       setSnackbarOpen(true);
     }
   });
@@ -2114,20 +2118,30 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
 
   const handleSubmit = () => {
     const nuevaGarantia = {
-      tipoGarantia: formData.tipoGarantia || null,
-      estadoGarantia: formData.estadoGarantia || null,
+      tipoGarantiaId: formData.tipoGarantia || null,
+      estadoGarantiaId: formData.estadoGarantia || null,
       apellido: formData.apellido || null,
       nombre: formData.nombre || null,
       dni: formData.dni || null,
       cuit: formData.cuit || null,
       telefono: formData.telefono || null,
       mail: formData.mail || null,
-      direccion: formData.direccion || null
+      direccion: formData.direccion || null,
+      costoAveriguacion: formData.costoAveriguacion ? parseFloat(parseNumberFromFormatted(formData.costoAveriguacion)) : null
     };
 
     if (contratoId) {
       // Si hay contratoId, guardar inmediatamente en BD
-      createMutation.mutate(nuevaGarantia);
+      if (editingIndex !== null && garantias[editingIndex]?.id) {
+        // Actualizar garantía existente
+        updateMutation.mutate({
+          id: garantias[editingIndex].id,
+          data: nuevaGarantia
+        });
+      } else {
+        // Crear nueva garantía
+        createMutation.mutate(nuevaGarantia);
+      }
     } else {
       // Si no hay contratoId, actualizar estado temporal
       if (editingIndex !== null) {
@@ -2151,7 +2165,8 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
         cuit: '',
         telefono: '',
         mail: '',
-        direccion: ''
+        direccion: '',
+        costoAveriguacion: ''
       });
       setEditingIndex(null);
     }
@@ -2160,15 +2175,16 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
   const handleEdit = (index) => {
     const garantia = garantias[index];
     setFormData({
-      tipoGarantia: garantia.tipoGarantia || '',
-      estadoGarantia: garantia.estadoGarantia || '',
+      tipoGarantia: garantia.tipoGarantiaId || '',
+      estadoGarantia: garantia.estadoGarantiaId || '',
       apellido: garantia.apellido || '',
       nombre: garantia.nombre || '',
       dni: garantia.dni || '',
       cuit: garantia.cuit || '',
       telefono: garantia.telefono || '',
       mail: garantia.mail || '',
-      direccion: garantia.direccion || ''
+      direccion: garantia.direccion || '',
+      costoAveriguacion: garantia.costoAveriguacion ? formatNumberWithThousands(String(garantia.costoAveriguacion)) : ''
     });
     setEditingIndex(index);
     setOpen(true);
@@ -2221,6 +2237,7 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
               <TableCell>Estado</TableCell>
               <TableCell>Nombre</TableCell>
               <TableCell>DNI/CUIT</TableCell>
+              <TableCell align="right">Costo Averiguación</TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
           </TableHead>
@@ -2228,10 +2245,15 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
             {garantias && garantias.length > 0 ? (
               garantias.map((garantia, index) => (
                 <TableRow key={garantia.id || `temp-${index}`}>
-                  <TableCell>{getDescripcion(tipoGarantiaMap, garantia.tipoGarantia)}</TableCell>
-                  <TableCell>{getDescripcion(estadoGarantiaMap, garantia.estadoGarantia)}</TableCell>
+                  <TableCell>{getTipoGarantiaNombre(garantia.tipoGarantiaId)}</TableCell>
+                  <TableCell>{getEstadoGarantiaNombre(garantia.estadoGarantiaId)}</TableCell>
                   <TableCell>{garantia.nombre} {garantia.apellido}</TableCell>
                   <TableCell>{garantia.dni || garantia.cuit || '-'}</TableCell>
+                  <TableCell align="right">
+                    {garantia.costoAveriguacion 
+                      ? `$${formatNumberWithThousands(String(garantia.costoAveriguacion))}` 
+                      : '-'}
+                  </TableCell>
                   <TableCell>
                     {!contratoId && (
                       <IconButton
@@ -2253,7 +2275,7 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={5} align="center">
+                <TableCell colSpan={6} align="center">
                   <Typography variant="body2" color="text.secondary">
                     No hay garantías agregadas
                   </Typography>
@@ -2269,20 +2291,42 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
         <DialogContent>
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid item xs={12} sm={6}>
-              <ParametroSelect
-                categoriaCodigo="tipo_garantia"
-                label="Tipo de Garantía"
-                value={formData.tipoGarantia}
-                onChange={(e) => setFormData({ ...formData, tipoGarantia: e.target.value })}
-              />
+              <FormControl fullWidth size="small">
+                <InputLabel>Tipo de Garantía</InputLabel>
+                <Select
+                  value={formData.tipoGarantia || ''}
+                  onChange={(e) => setFormData({ ...formData, tipoGarantia: e.target.value })}
+                  label="Tipo de Garantía"
+                >
+                  <MenuItem value="">
+                    <em>Seleccione...</em>
+                  </MenuItem>
+                  {tiposGarantiaContrato?.filter(t => t.activo !== false).map((tipo) => (
+                    <MenuItem key={tipo.id} value={tipo.id}>
+                      {tipo.nombre || tipo.codigo}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <ParametroSelect
-                categoriaCodigo="estado_garantia"
-                label="Estado"
-                value={formData.estadoGarantia}
-                onChange={(e) => setFormData({ ...formData, estadoGarantia: e.target.value })}
-              />
+              <FormControl fullWidth size="small">
+                <InputLabel>Estado</InputLabel>
+                <Select
+                  value={formData.estadoGarantia || ''}
+                  onChange={(e) => setFormData({ ...formData, estadoGarantia: e.target.value })}
+                  label="Estado"
+                >
+                  <MenuItem value="">
+                    <em>Seleccione...</em>
+                  </MenuItem>
+                  {estadosGarantiaContrato?.filter(e => e.activo !== false).map((estado) => (
+                    <MenuItem key={estado.id} value={estado.id}>
+                      {estado.nombre || estado.codigo}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField
@@ -2354,6 +2398,28 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
                 onChange={(e) => setFormData({ ...formData, direccion: e.target.value })}
               />
             </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Costo Averiguación"
+                type="text"
+                fullWidth
+                value={formData.costoAveriguacion}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  // Permitir solo números, puntos y comas
+                  if (value === '' || /^[\d.,]*$/.test(value)) {
+                    setFormData({ ...formData, costoAveriguacion: value });
+                  }
+                }}
+                onBlur={(e) => {
+                  const formatted = formatNumberWithThousands(parseNumberFromFormatted(e.target.value));
+                  setFormData({ ...formData, costoAveriguacion: formatted });
+                }}
+                InputProps={{
+                  startAdornment: <InputAdornment position="start">$</InputAdornment>,
+                }}
+              />
+            </Grid>
           </Grid>
         </DialogContent>
         <DialogActions>
@@ -2362,7 +2428,7 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
             variant="contained"
             onClick={handleSubmit}
           >
-            {editingIndex !== null ? 'Actualizar' : 'Agregar'}
+            {editingIndex !== null ? 'Guardar' : 'Agregar'}
           </Button>
         </DialogActions>
       </Dialog>
@@ -2382,11 +2448,39 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
 }
 
 // Componente para Gastos Iniciales
-function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gastosTemporales, setGastosTemporales }) {
+function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gastosTemporales, setGastosTemporales, gastosEditablesRef }) {
   // Si no hay contratoId, usar el estado temporal del padre; si hay, usar estado local
   const [gastosEditablesLocal, setGastosEditablesLocal] = useState([]);
   const gastosEditables = contratoId ? gastosEditablesLocal : (gastosTemporales || []);
   const setGastosEditables = contratoId ? setGastosEditablesLocal : setGastosTemporales;
+  
+  // Sincronizar el ref con el estado actual
+  useEffect(() => {
+    if (gastosEditablesRef) {
+      gastosEditablesRef.current = gastosEditables;
+    }
+  }, [gastosEditables, gastosEditablesRef]);
+  
+  // Función helper para parsear el importe correctamente (puede venir como string, number, o Decimal de Prisma)
+  const parseImporte = (importeValue) => {
+    if (!importeValue && importeValue !== 0) return '';
+    
+    // Si es un objeto (Decimal de Prisma), convertirlo a string
+    if (typeof importeValue === 'object' && importeValue !== null) {
+      importeValue = String(importeValue);
+    }
+    
+    // Si es número, convertirlo a string
+    if (typeof importeValue === 'number') {
+      importeValue = Number.isInteger(importeValue) 
+        ? importeValue.toString() 
+        : importeValue.toFixed(2);
+    }
+    
+    // Parsear y formatear
+    const parsed = parseNumberFromFormatted(String(importeValue));
+    return formatNumberWithThousands(parsed);
+  };
   
   const [successMessage, setSuccessMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -2396,16 +2490,38 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
   // Ref para rastrear los valores anteriores y evitar recálculos innecesarios
   const valoresPreviosRef = useRef({ montoInicial: null, duracionMeses: null });
 
-  // Mapas de parámetros para mostrar descripciones
-  const tipoGastoInicialData = useParametrosMap('tipo_gasto_inicial');
-  const estadoGastoMap = useParametrosMap('estado_gasto');
+  // Obtener tipos de gasto inicial desde el catálogo (solo activos)
+  const { data: tiposGastoInicialContrato } = useQuery({
+    queryKey: ['tipos-gasto-inicial-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-gasto-inicial-contrato');
+      return response.data;
+    }
+  });
+
+  // Filtrar solo los tipos activos
+  const tiposGastoActivos = useMemo(() => {
+    if (!tiposGastoInicialContrato) return [];
+    return tiposGastoInicialContrato.filter(t => t.activo === true);
+  }, [tiposGastoInicialContrato]);
+
+  // Obtener actores responsables desde el catálogo (solo activos)
+  const { data: actoresResponsablesGastos } = useQuery({
+    queryKey: ['actores-responsable-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/actores-responsable-contrato');
+      return response.data;
+    }
+  });
   
-  // Obtener el ID del parámetro 'pendiente' para estado por defecto
-  const estadoPendienteId = useMemo(() => {
-    if (!estadoGastoMap?.lista) return '';
-    const pendiente = estadoGastoMap.lista.find(p => p.codigo === 'pendiente');
-    return pendiente?.id || '';
-  }, [estadoGastoMap]);
+  const actoresResponsablesContrato = useMemo(() => {
+    if (!actoresResponsablesGastos) return [];
+    return actoresResponsablesGastos.filter(a => 
+      a.activo === true && 
+      a.codigo !== 'INMO' && 
+      !a.nombre?.toLowerCase().includes('inmobiliaria')
+    );
+  }, [actoresResponsablesGastos]);
 
   const { data: contrato } = useQuery({
     queryKey: ['contrato', contratoId],
@@ -2440,16 +2556,16 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     }
   }, [montoInicial, duracionMeses]);
 
-  // Inicializar y sincronizar gastos precargados
+  // Inicializar y sincronizar gastos desde el catálogo (solo activos)
   // Este efecto debe ejecutarse cuando:
-  // 1. Se cargan los parámetros por primera vez
+  // 1. Se cargan los tipos de gasto del catálogo por primera vez
   // 2. Cambia el contrato (gastosIniciales) - solo si hay contratoId
   // 3. Cambia el contratoId
   // 4. Cambian montoInicial o duracionMeses (para recalcular importes)
   useEffect(() => {
-    // Esperar a que los parámetros se carguen
-    if (!tipoGastoInicialData?.lista || tipoGastoInicialData.lista.length === 0) {
-      return; // No podemos inicializar sin parámetros
+    // Esperar a que los tipos de gasto se carguen
+    if (!tiposGastoActivos || tiposGastoActivos.length === 0) {
+      return; // No podemos inicializar sin tipos de gasto
     }
     
     // Si ya se inicializaron los gastos, verificar si realmente cambiaron montoInicial o duracionMeses
@@ -2464,78 +2580,65 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
           valoresPrevios.duracionMeses === duracionMesesActual) {
         // Los valores no cambiaron, no recalcular para evitar sobrescribir cambios manuales
         // Esto evita que se recalculen los gastos cuando solo se actualizan manualmente (como cambiar valorCalculo)
-        console.log('⏭️ Saltando recálculo: montoInicial y duracionMeses no cambiaron');
         return;
-      } else {
-        console.log('🔄 Valores cambiaron, recalculando:', {
-          montoInicial: { anterior: valoresPrevios.montoInicial, nuevo: montoInicialActual },
-          duracionMeses: { anterior: valoresPrevios.duracionMeses, nuevo: duracionMesesActual }
-        });
       }
     }
 
-    // Calcular importe localmente para evitar dependencia de calcularImporte
-    const calcularImporteLocal = (codigoTipoGasto, valorCalculo = null) => {
-      const montoInicialNum = parseFloat(parseNumberFromFormatted(montoInicial || '0')) || 0;
+    // Calcular importe localmente usando los valores del catálogo
+    const calcularImporteLocal = (tipoGasto, valorCalculo = null) => {
+      // Parsear montoInicial correctamente (puede venir con formato de miles como "250.000")
+      // parseNumberFromFormatted convierte "250.000" -> "250000" (string)
+      // Luego parseFloat convierte "250000" -> 250000 (number)
+      const montoInicialStr = montoInicial || '0';
+      const montoInicialParsed = parseNumberFromFormatted(montoInicialStr);
+      const montoInicialNum = montoInicialParsed && montoInicialParsed !== '' 
+        ? parseFloat(montoInicialParsed) 
+        : 0;
       const duracionMesesNum = parseInt(duracionMeses || '0') || 0;
       const montoTotalContrato = montoInicialNum * duracionMesesNum;
 
-      switch (codigoTipoGasto) {
-        case 'sellado':
-          // Si hay valorCalculo, usar ese porcentaje, sino usar 2% por defecto
-          const porcentajeSellado = valorCalculo !== null && valorCalculo !== undefined 
-            ? parseFloat(valorCalculo) / 100 
-            : 0.02;
-          return montoTotalContrato * porcentajeSellado;
-        case 'honorarios':
-          // Si hay valorCalculo, usar ese porcentaje, sino usar 5% por defecto
-          const porcentajeHonorarios = valorCalculo !== null && valorCalculo !== undefined 
-            ? parseFloat(valorCalculo) / 100 
-            : 0.05;
-          return montoTotalContrato * porcentajeHonorarios;
-        case 'deposito':
-          // Si hay valorCalculo (meses), multiplicar montoInicial por meses, sino usar 1 mes
-          const mesesDeposito = valorCalculo !== null && valorCalculo !== undefined 
-            ? parseFloat(valorCalculo) 
-            : 1;
-          return montoInicialNum * mesesDeposito;
-        case 'averiguacion_garantias':
-        default:
-          // Para averiguacion, el importe es libre (no se calcula automáticamente)
-          return 0;
+      // Si es porcentaje (Sellado, Honorarios), calcular sobre el monto total del contrato
+      if (tipoGasto.esPorcentaje) {
+        let porcentaje = 0;
+        if (valorCalculo !== null && valorCalculo !== undefined && valorCalculo !== '') {
+          const parsed = parseFloat(String(valorCalculo));
+          porcentaje = !isNaN(parsed) && isFinite(parsed) ? parsed / 100 : 0;
+        } else if (tipoGasto.valorDefault) {
+          const parsed = parseFloat(String(tipoGasto.valorDefault));
+          porcentaje = !isNaN(parsed) && isFinite(parsed) ? parsed / 100 : 0;
+        }
+        const resultadoCalculado = montoTotalContrato * porcentaje;
+        // Redondear a 2 decimales para evitar problemas de precisión de punto flotante
+        // Ejemplo: 420000.00000000006 -> Math.round(42000000.000000006) / 100 -> 42000000 / 100 -> 420000
+        const resultado = Math.round(resultadoCalculado * 100) / 100;
+        return isNaN(resultado) || !isFinite(resultado) ? 0 : resultado;
+      } else {
+        // Si NO es porcentaje (Depósito), multiplicar el valor por el monto inicial
+        let cantidad = 0;
+        if (valorCalculo !== null && valorCalculo !== undefined && valorCalculo !== '') {
+          const parsed = parseFloat(String(valorCalculo));
+          cantidad = !isNaN(parsed) && isFinite(parsed) ? parsed : 0;
+        } else if (tipoGasto.valorDefault) {
+          const parsed = parseFloat(String(tipoGasto.valorDefault));
+          cantidad = !isNaN(parsed) && isFinite(parsed) ? parsed : 0;
+        }
+        // Multiplicar cantidad por montoInicial (ej: 1 * 250000 = 250000)
+        const resultadoCalculado = cantidad >= 0 ? montoInicialNum * cantidad : 0;
+        // Redondear a 2 decimales para evitar problemas de precisión de punto flotante
+        const resultado = Math.round(resultadoCalculado * 100) / 100;
+        return isNaN(resultado) || !isFinite(resultado) ? 0 : resultado;
       }
     };
-
-    // Obtener IDs de parámetros por código (función local)
-    const getParametroIdByCodigo = (codigo) => {
-      const param = tipoGastoInicialData.lista.find(p => p.codigo === codigo);
-      return param?.id || null;
-    };
-
-    // Obtener el ID del parámetro 'otro' como fallback
-    const parametroOtroId = getParametroIdByCodigo('otro');
-
-    const gastosPrecargados = [
-      { codigo: 'sellado', descripcion: 'Sellado Contrato', parametroCodigo: 'sellado' },
-      { codigo: 'honorarios', descripcion: 'Honorarios Inmobiliarios', parametroCodigo: 'honorarios' },
-      { codigo: 'deposito', descripcion: 'Deposito en garantia Inicial', parametroCodigo: 'deposito' },
-      { codigo: 'averiguacion_garantias', descripcion: 'Averiguacion de garantias', parametroCodigo: 'otro' }
-    ];
 
     const gastosExistentes = contrato?.gastosIniciales || [];
     
-    let gastosActualizados = gastosPrecargados.map(gastoPrecargado => {
-      // Obtener el ID del parámetro, usar 'otro' como fallback si no existe
-      let parametroId = getParametroIdByCodigo(gastoPrecargado.parametroCodigo);
-      if (!parametroId) {
-        // Si no existe el parámetro específico, usar 'otro' como fallback
-        parametroId = parametroOtroId;
-        if (!parametroId) {
-          // Si tampoco existe 'otro', no podemos crear el gasto
-          console.error(`No se encontró parámetro para ${gastoPrecargado.codigo} ni 'otro' como fallback`);
-          return null;
-        }
-      }
+    // Crear gastos para todos los tipos activos del catálogo
+    // Filtrar solo los tipos que tienen id válido
+    let gastosActualizados = tiposGastoActivos
+      .filter(tipoGasto => tipoGasto && tipoGasto.id)
+      .map(tipoGasto => {
+      const tipoGastoId = tipoGasto.id;
+      const tipoGastoCodigo = tipoGasto.codigo;
 
       // Buscar gastos existentes:
       // 1. Si hay contratoId, buscar primero en BD (gastosExistentes), luego en gastosEditables (estado local)
@@ -2543,31 +2646,29 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
       let gastoExistente = null;
       
       if (contratoId) {
-        // Si hay contratoId, buscar primero en BD
+        // Si hay contratoId, buscar primero en BD (prioridad)
         if (gastosExistentes && gastosExistentes.length > 0) {
-          const paramPrecargado = tipoGastoInicialData.lista.find(p => p.id === parametroId);
           gastoExistente = gastosExistentes.find(g => {
             if (!g) return false;
-            const paramExistente = tipoGastoInicialData.lista.find(p => p.id === g.tipoGastoInicial);
-            // Para averiguacion_garantias, buscar cualquier gasto con código 'otro'
-            if (gastoPrecargado.parametroCodigo === 'otro') {
-              return paramExistente?.codigo === 'otro';
-            }
-            return paramExistente?.codigo === paramPrecargado?.codigo;
+            return g.tipoGastoInicialId === tipoGastoId;
           });
         }
         
         // Si no se encontró en BD, buscar en gastosEditables (estado local)
+        // pero solo si tiene id (para preservar el id del gasto existente)
         if (!gastoExistente && gastosEditables && gastosEditables.length > 0) {
-          gastoExistente = gastosEditables.find(g => 
-            g && g.tipoGastoInicialCodigo === gastoPrecargado.codigo
+          const gastoLocal = gastosEditables.find(g => 
+            g && g.tipoGastoInicialId === tipoGastoId && g.id
           );
+          if (gastoLocal) {
+            gastoExistente = gastoLocal;
+          }
         }
       } else {
         // Si no hay contratoId, buscar en gastosTemporales
         if (gastosTemporales && gastosTemporales.length > 0) {
           gastoExistente = gastosTemporales.find(g => 
-            g && g.tipoGastoInicialCodigo === gastoPrecargado.codigo
+            g && g.tipoGastoInicialId === tipoGastoId
           );
         }
       }
@@ -2578,81 +2679,101 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
         if (gastoExistente.importeEditado) {
           return {
             id: gastoExistente.id || null,
-            tipoGastoInicial: parametroId, // Asegurar que el ID del parámetro esté actualizado
-            tipoGastoInicialCodigo: gastoPrecargado.codigo,
+            tipoGastoInicialId: tipoGastoId,
+            tipoGastoInicialCodigo: tipoGastoCodigo,
             valorCalculo: gastoExistente.valorCalculo ? (typeof gastoExistente.valorCalculo === 'string' ? gastoExistente.valorCalculo : parseFloat(gastoExistente.valorCalculo).toString()) : '',
-            importe: gastoExistente.importe ? (typeof gastoExistente.importe === 'string' ? gastoExistente.importe : parseFloat(gastoExistente.importe).toString()) : '',
-            estado: gastoExistente.estado || estadoPendienteId || '',
-            observaciones: gastoExistente.observaciones || '',
+            importe: gastoExistente.importe 
+              ? (typeof gastoExistente.importe === 'string' 
+                  ? gastoExistente.importe 
+                  : (typeof gastoExistente.importe === 'number' 
+                      ? (Number.isInteger(gastoExistente.importe) 
+                          ? gastoExistente.importe.toString() 
+                          : gastoExistente.importe.toFixed(2))
+                      : String(gastoExistente.importe))) 
+              : '',
+            quienPagaId: gastoExistente.quienPagaId || null,
             esNuevo: !gastoExistente.id,
             importeEditado: true // Mantener como editado
           };
         }
         
-        // Si el gasto existe pero no fue editado, recalcular el importe si cambió montoInicial o duracionMeses
-        // Obtener valorCalculo por defecto si no existe
-        let valorCalculoDefault = '';
-        if (gastoPrecargado.codigo === 'sellado') {
-          valorCalculoDefault = '2';
-        } else if (gastoPrecargado.codigo === 'honorarios') {
-          valorCalculoDefault = '5';
-        } else if (gastoPrecargado.codigo === 'deposito') {
-          valorCalculoDefault = '1';
+        // Si el gasto existe pero no fue editado, mantener el importe existente de la BD
+        // NO recalcular para evitar sobrescribir valores guardados
+        // Solo usar el importe de la BD si existe
+        let importeFinal = '0';
+        if (gastoExistente.importe !== null && gastoExistente.importe !== undefined) {
+          if (typeof gastoExistente.importe === 'string') {
+            importeFinal = gastoExistente.importe;
+          } else if (typeof gastoExistente.importe === 'number') {
+            if (Number.isInteger(gastoExistente.importe)) {
+              importeFinal = gastoExistente.importe.toString();
+            } else {
+              importeFinal = gastoExistente.importe.toFixed(2);
+            }
+          } else {
+            importeFinal = String(gastoExistente.importe);
+          }
         }
         
-        // Usar el valorCalculo existente si está disponible, sino usar el default
-        const valorCalculoFinal = gastoExistente.valorCalculo || valorCalculoDefault;
-        const importeCalculado = calcularImporteLocal(gastoPrecargado.codigo, valorCalculoFinal);
-        const importeFinal = importeCalculado.toString();
+        // Usar valorCalculo existente o valorDefault del catálogo
+        const valorCalculoFinal = gastoExistente.valorCalculo 
+          ? (typeof gastoExistente.valorCalculo === 'string' 
+              ? gastoExistente.valorCalculo 
+              : parseFloat(gastoExistente.valorCalculo).toString())
+          : (tipoGasto.valorDefault ? tipoGasto.valorDefault.toString() : '');
         
         return {
-          id: gastoExistente.id || null,
-          tipoGastoInicial: parametroId,
-          tipoGastoInicialCodigo: gastoPrecargado.codigo,
+          id: gastoExistente.id || null, // SIEMPRE preservar el ID si existe
+          tipoGastoInicialId: tipoGastoId,
+          tipoGastoInicialCodigo: tipoGastoCodigo,
           valorCalculo: valorCalculoFinal,
-          importe: importeFinal, // Recalcular el importe solo si no fue editado manualmente
-          estado: gastoExistente.estado || estadoPendienteId || '',
-          observaciones: gastoExistente.observaciones || '',
+          importe: importeFinal, // Mantener el importe de la BD
+          quienPagaId: gastoExistente.quienPagaId || null,
           esNuevo: !gastoExistente.id,
           importeEditado: false // No fue editado manualmente, puede recalcularse
         };
       }
 
       // Si no existe en el estado, crear uno nuevo con importe calculado y estado pendiente
-      // Obtener valorCalculo por defecto
-      let valorCalculoDefault = '';
-      if (gastoPrecargado.codigo === 'sellado') {
-        valorCalculoDefault = '2';
-      } else if (gastoPrecargado.codigo === 'honorarios') {
-        valorCalculoDefault = '5';
-      } else if (gastoPrecargado.codigo === 'deposito') {
-        valorCalculoDefault = '1';
+      // Usar valorDefault del catálogo si existe
+      const valorCalculoDefault = tipoGasto.valorDefault ? tipoGasto.valorDefault.toString() : '';
+      const importeCalculado = calcularImporteLocal(tipoGasto, valorCalculoDefault);
+      // Guardar como número sin decimales si es entero, o con 2 decimales si tiene decimales
+      let importeFinal = '0';
+      if (!isNaN(importeCalculado) && isFinite(importeCalculado) && importeCalculado >= 0) {
+        if (Number.isInteger(importeCalculado)) {
+          importeFinal = importeCalculado.toString();
+        } else {
+          importeFinal = importeCalculado.toFixed(2);
+        }
       }
-      
-      const importeCalculado = calcularImporteLocal(gastoPrecargado.codigo, valorCalculoDefault);
-      // Siempre guardar el importe como string, incluso si es 0 (para que se guarde en BD)
-      const importeFinal = importeCalculado.toString();
+
+      // Determinar quienPagaId por defecto: buscar "INQ" (Inquilino) primero, sino cualquier actor activo
+      let quienPagaIdDefault = null;
+      if (actoresResponsablesContrato && actoresResponsablesContrato.length > 0) {
+        const inquilinoActor = actoresResponsablesContrato.find(a => a.activo && (a.codigo === 'INQ' || a.nombre?.toLowerCase().includes('inquilino')));
+        quienPagaIdDefault = inquilinoActor ? inquilinoActor.id : (actoresResponsablesContrato.find(a => a.activo)?.id || null);
+      }
 
       return {
         id: null,
-        tipoGastoInicial: parametroId,
-        tipoGastoInicialCodigo: gastoPrecargado.codigo,
+        tipoGastoInicialId: tipoGastoId,
+        tipoGastoInicialCodigo: tipoGastoCodigo,
         valorCalculo: valorCalculoDefault,
         importe: importeFinal, // Puede ser '0' si no hay montoInicial o duracionMeses
-        estado: estadoPendienteId || '',
-        observaciones: '',
+        quienPagaId: quienPagaIdDefault,
         esNuevo: true,
-        importeEditado: false
+        importeEditado: false // No fue editado manualmente, no se guardará hasta que el usuario lo edite
       };
-    }).filter(g => g !== null && g.tipoGastoInicial); // Filtrar solo los que no tienen tipoGastoInicial válido
+    }).filter(g => g !== null && g.tipoGastoInicialId); // Filtrar solo los que tienen tipoGastoInicialId válido
 
-    // Eliminar duplicados basándose en tipoGastoInicialCodigo (debería haber solo uno de cada tipo)
+    // Eliminar duplicados basándose en tipoGastoInicialId (debería haber solo uno de cada tipo)
     // Esto previene que se creen gastos duplicados si el useEffect se ejecuta múltiples veces
     const gastosUnicos = [];
-    const codigosVistos = new Set();
+    const idsVistos = new Set();
     for (const gasto of gastosActualizados) {
-      if (!codigosVistos.has(gasto.tipoGastoInicialCodigo)) {
-        codigosVistos.add(gasto.tipoGastoInicialCodigo);
+      if (!idsVistos.has(gasto.tipoGastoInicialId)) {
+        idsVistos.add(gasto.tipoGastoInicialId);
         gastosUnicos.push(gasto);
       } else {
         console.warn('⚠️ Gasto duplicado detectado y eliminado:', gasto.tipoGastoInicialCodigo, gasto);
@@ -2660,58 +2781,6 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     }
     gastosActualizados = gastosUnicos;
 
-    // Asegurar que siempre haya exactamente 4 gastos (los precargados)
-    // Si faltan algunos, agregarlos
-    if (gastosActualizados.length < 4) {
-      const codigosExistentes = new Set(gastosActualizados.map(g => g.tipoGastoInicialCodigo));
-      const gastosFaltantes = gastosPrecargados.filter(g => !codigosExistentes.has(g.codigo));
-      
-      gastosFaltantes.forEach(gastoPrecargado => {
-        let parametroId = getParametroIdByCodigo(gastoPrecargado.parametroCodigo);
-        if (!parametroId && parametroOtroId) {
-          parametroId = parametroOtroId;
-        }
-        if (parametroId) {
-          // Obtener valorCalculo por defecto
-          let valorCalculoDefault = '';
-          if (gastoPrecargado.codigo === 'sellado') {
-            valorCalculoDefault = '2';
-          } else if (gastoPrecargado.codigo === 'honorarios') {
-            valorCalculoDefault = '5';
-          } else if (gastoPrecargado.codigo === 'deposito') {
-            valorCalculoDefault = '1';
-          }
-          
-          const importeCalculado = calcularImporteLocal(gastoPrecargado.codigo, valorCalculoDefault);
-          // Siempre guardar el importe como string, incluso si es 0 (para que se guarde en BD)
-          gastosActualizados.push({
-            id: null,
-            tipoGastoInicial: parametroId,
-            tipoGastoInicialCodigo: gastoPrecargado.codigo,
-            valorCalculo: valorCalculoDefault,
-            importe: importeCalculado.toString(), // Puede ser '0' si no hay montoInicial o duracionMeses
-            estado: estadoPendienteId || '',
-            observaciones: '',
-            esNuevo: true,
-            importeEditado: false
-          });
-        }
-      });
-    }
-
-    console.log('🔄 Actualizando gastos editables:', {
-      contratoId,
-      montoInicial,
-      duracionMeses,
-      gastosActualizados: gastosActualizados.length,
-      razon: !contratoId && gastosInicializadosRef.current ? 'Recálculo por cambio en montoInicial/duracionMeses' : 'Inicialización',
-      importesEditados: gastosActualizados.filter(g => g.importeEditado).length,
-      detalles: gastosActualizados.map(g => ({
-        codigo: g.tipoGastoInicialCodigo,
-        importeEditado: g.importeEditado,
-        importe: g.importe
-      }))
-    });
     setGastosEditables(gastosActualizados);
     gastosInicializadosRef.current = true;
     // Actualizar referencias después de inicializar
@@ -2720,85 +2789,11 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
       duracionMeses: duracionMeses || '' 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tipoGastoInicialData?.lista, estadoGastoMap?.lista, contrato?.gastosIniciales, contratoId, montoInicial, duracionMeses, estadoPendienteId]);
+  }, [tiposGastoActivos, contrato?.gastosIniciales, contratoId, montoInicial, duracionMeses, actoresResponsablesContrato]);
 
-  // Ref para rastrear si ya se intentó guardar los gastos para este contratoId
-  const gastosGuardadosRef = useRef(new Set());
-  const prevContratoIdRef = useRef(contratoId);
-
-  // Efecto para guardar gastos automáticamente cuando se crea el contrato
-  // Este efecto se ejecuta cuando cambia contratoId de null/undefined a un valor
-  useEffect(() => {
-    const contratoIdAnterior = prevContratoIdRef.current;
-    const contratoIdNuevo = contratoId && !contratoIdAnterior;
-    
-    // Actualizar la referencia
-    prevContratoIdRef.current = contratoId;
-    
-    // Si hay un contratoId nuevo y los gastos están inicializados, guardar los gastos que no tienen ID
-    if (contratoIdNuevo && gastosInicializadosRef.current) {
-      // Verificar si ya se guardaron los gastos para este contratoId
-      if (gastosGuardadosRef.current.has(contratoId)) {
-        return; // Ya se guardaron los gastos para este contrato
-      }
-
-      // Usar el estado actual de gastosEditables
-      const gastosActuales = gastosEditables;
-      
-      // Guardar gastos que no tienen ID (son nuevos y no están guardados en BD)
-      const gastosAGuardar = gastosActuales.filter(g => 
-        g && !g.id && g.importe && parseFloat(parseNumberFromFormatted(g.importe || '0')) > 0
-      );
-      
-      if (gastosAGuardar.length > 0) {
-        // Marcar que se están guardando los gastos para este contrato
-        gastosGuardadosRef.current.add(contratoId);
-        
-        // Guardar cada gasto de forma secuencial
-        (async () => {
-          for (const gasto of gastosAGuardar) {
-            try {
-              const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
-              if (isNaN(importeNum) || importeNum < 0) continue;
-
-              const payload = {
-                tipoGastoInicial: gasto.tipoGastoInicial,
-                valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
-                importe: importeNum,
-                estado: gasto.estado || null,
-                observaciones: gasto.observaciones || null
-              };
-
-              const nuevoGasto = await createMutation.mutateAsync(payload);
-              
-              // Actualizar el estado local con el ID asignado
-              setGastosEditables(prev => {
-                return prev.map(g => {
-                  if (g.tipoGastoInicialCodigo === gasto.tipoGastoInicialCodigo && !g.id) {
-                    return {
-                      ...g,
-                      id: nuevoGasto.id,
-                      esNuevo: false,
-                      importeEditado: true
-                    };
-                  }
-                  return g;
-                });
-              });
-            } catch (error) {
-              console.error('Error al guardar gasto automáticamente:', error);
-              // Remover el contratoId del Set si hay error para permitir reintento
-              gastosGuardadosRef.current.delete(contratoId);
-            }
-          }
-        })();
-      } else {
-        // Si no hay gastos para guardar, marcar como guardado igualmente
-        gastosGuardadosRef.current.add(contratoId);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contratoId]);
+  // NO guardar automáticamente los gastos al inicializar
+  // Los gastos solo se guardarán cuando el usuario edite manualmente un valor
+  // (handleValorCalculoBlur o handleImporteBlur)
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => api.put(`/contratos/gastos-iniciales/${id}`, data),
@@ -2812,7 +2807,7 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     }
   });
 
-  const createMutation = useMutation({
+  const createGastoInicialMutation = useMutation({
     mutationFn: (data) => api.post(`/contratos/${contratoId}/gastos-iniciales`, data),
     onSuccess: () => {
       queryClient.invalidateQueries(['contrato', contratoId]);
@@ -2824,11 +2819,63 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     }
   });
 
-  const handleImporteChange = (index, nuevoImporte) => {
+  const updateGastoInicialMutation = useMutation({
+    mutationFn: ({ id, data }) => api.put(`/contratos/gastos-iniciales/${id}`, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['contrato', contratoId]);
+      setSuccessMessage('Gasto inicial actualizado exitosamente');
+      setSnackbarOpen(true);
+    },
+    onError: (error) => {
+      console.error('Error al actualizar gasto inicial:', error);
+    }
+  });
+
+  const handleQuienPagaChange = (gasto, nuevoQuienPagaId) => {
     setGastosEditables(prev => {
       const actualizados = [...prev];
-      actualizados[index] = {
-        ...actualizados[index],
+      
+      // Buscar el gasto en el array original por tipoGastoInicialId
+      const indiceReal = actualizados.findIndex(g => 
+        g && g.tipoGastoInicialId === gasto.tipoGastoInicialId
+      );
+      
+      // Si no se encuentra el gasto, no hacer nada
+      if (indiceReal === -1 || !actualizados[indiceReal]) {
+        return actualizados;
+      }
+      
+      actualizados[indiceReal] = {
+        ...actualizados[indiceReal],
+        quienPagaId: nuevoQuienPagaId ? parseInt(nuevoQuienPagaId) : null,
+        importeEditado: true // Marcar como editado para que se guarde
+      };
+      
+      // Sincronizar con el ref inmediatamente
+      if (gastosEditablesRef) {
+        gastosEditablesRef.current = actualizados;
+      }
+      
+      return actualizados;
+    });
+  };
+
+  const handleImporteChange = (index, nuevoImporte, gasto) => {
+    setGastosEditables(prev => {
+      const actualizados = [...prev];
+      
+      // Buscar el gasto en el array original por tipoGastoInicialId en lugar de usar el índice
+      const indiceReal = actualizados.findIndex(g => 
+        g && g.tipoGastoInicialId === gasto.tipoGastoInicialId
+      );
+      
+      // Si no se encuentra el gasto, no hacer nada
+      if (indiceReal === -1 || !actualizados[indiceReal]) {
+        return actualizados;
+      }
+      
+      actualizados[indiceReal] = {
+        ...actualizados[indiceReal],
         importe: nuevoImporte,
         importeEditado: true // Marcar como editado manualmente
       };
@@ -2836,96 +2883,121 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     });
   };
 
-  const handleImporteBlur = async (gasto, index) => {
-    // Si no hay contratoId, solo actualizar el estado local
-    if (!contratoId) {
-      // Marcar como editado para que no se recalcule automáticamente
-      setGastosEditables(prev => {
-        const actualizados = [...prev];
-        if (actualizados[index]) {
-          actualizados[index] = {
-            ...actualizados[index],
-            importeEditado: true
-          };
-        }
-        return actualizados;
-      });
-      return;
-    }
-
-    const importeNum = parseFloat(parseNumberFromFormatted(gasto.importe || '0'));
-    if (isNaN(importeNum) || importeNum < 0) {
-      setSuccessMessage('El importe debe ser un número válido mayor o igual a 0');
-      setSnackbarOpen(true);
-      return;
-    }
-
-    const payload = {
-      tipoGastoInicial: gasto.tipoGastoInicial,
-      valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
-      importe: importeNum,
-      estado: gasto.estado || null,
-      observaciones: gasto.observaciones || null
-    };
-
-    try {
-      if (gasto.id) {
-        // Actualizar existente
-        await updateMutation.mutateAsync({ id: gasto.id, data: payload });
-      } else {
-        // Crear nuevo
-        const nuevoGasto = await createMutation.mutateAsync(payload);
-        // Actualizar el estado local con el ID asignado
-        setGastosEditables(prev => {
-          const actualizados = [...prev];
-          actualizados[index] = {
-            ...actualizados[index],
-            id: nuevoGasto.id,
-            esNuevo: false,
-            importeEditado: true // Mantener la marca de editado
-          };
-          return actualizados;
-        });
+  const handleImporteBlur = (gasto, index) => {
+    // Solo actualizar el estado local, no guardar en BD
+    // Los gastos se guardarán cuando se haga click en "Guardar" del contrato
+    // Marcar como editado para que no se recalcule automáticamente
+    setGastosEditables(prev => {
+      const actualizados = [...prev];
+      
+      // Buscar el gasto en el array original por tipoGastoInicialId
+      const indiceReal = actualizados.findIndex(g => 
+        g && g.tipoGastoInicialId === gasto.tipoGastoInicialId
+      );
+      
+      if (indiceReal !== -1 && actualizados[indiceReal]) {
+        actualizados[indiceReal] = {
+          ...actualizados[indiceReal],
+          importeEditado: true
+        };
       }
-    } catch (error) {
-      console.error('Error al guardar gasto:', error);
-      setSuccessMessage('Error al guardar el gasto. Por favor, intente nuevamente.');
-      setSnackbarOpen(true);
-    }
+      return actualizados;
+    });
   };
 
   const handleValorCalculoChange = (index, nuevoValor, gasto) => {
     setGastosEditables(prev => {
       const actualizados = [...prev];
       
-      // Recalcular el importe automáticamente si es sellado, honorarios o deposito
-      if (gasto.tipoGastoInicialCodigo === 'sellado' || 
-          gasto.tipoGastoInicialCodigo === 'honorarios' || 
-          gasto.tipoGastoInicialCodigo === 'deposito') {
-        const montoInicialNum = parseFloat(parseNumberFromFormatted(montoInicial || '0')) || 0;
-        const duracionMesesNum = parseInt(duracionMeses || '0') || 0;
+      // Buscar el gasto en el array original por tipoGastoInicialId en lugar de usar el índice
+      // Esto es necesario porque el índice puede ser del array filtrado/ordenado, no del original
+      const indiceReal = actualizados.findIndex(g => 
+        g && g.tipoGastoInicialId === gasto.tipoGastoInicialId
+      );
+      
+      // Si no se encuentra el gasto, no hacer nada
+      if (indiceReal === -1 || !actualizados[indiceReal]) {
+        return actualizados;
+      }
+      
+      // Buscar el tipo de gasto en el catálogo para obtener esPorcentaje
+      const tipoGasto = tiposGastoActivos?.find(t => t.id === gasto.tipoGastoInicialId);
+      
+      // Si el tipo de gasto no existe, solo actualizar el valorCalculo sin recalcular
+      if (!tipoGasto) {
+        actualizados[indiceReal] = {
+          ...actualizados[indiceReal],
+          valorCalculo: nuevoValor
+        };
+        return actualizados;
+      }
+      
+      // Si el tipo de gasto existe, recalcular el importe
+      if (tipoGasto) {
+        // Parsear montoInicial correctamente (puede venir con formato de miles como "250.000")
+        // parseNumberFromFormatted("250.000") -> "250000" -> parseFloat -> 250000
+        const montoInicialStr = montoInicial || '0';
+        const montoInicialParsed = parseNumberFromFormatted(montoInicialStr);
+        const montoInicialNum = montoInicialParsed && montoInicialParsed !== '' 
+          ? parseFloat(montoInicialParsed) 
+          : 0;
+        const duracionMesesNum = parseInt(String(duracionMeses || '0'), 10) || 0;
         const montoTotalContrato = montoInicialNum * duracionMesesNum;
         
         let nuevoImporte = 0;
-        if (gasto.tipoGastoInicialCodigo === 'sellado' || gasto.tipoGastoInicialCodigo === 'honorarios') {
-          const porcentaje = parseFloat(nuevoValor) || 0;
-          nuevoImporte = montoTotalContrato * (porcentaje / 100);
-        } else if (gasto.tipoGastoInicialCodigo === 'deposito') {
-          const meses = parseFloat(nuevoValor) || 1;
-          nuevoImporte = montoInicialNum * meses;
+        if (tipoGasto.esPorcentaje) {
+          // Si es porcentaje (Sellado, Honorarios), calcular sobre el monto total del contrato
+          // nuevoValor viene como string (ej: "5" para 5%), parsearlo a número y dividir por 100
+          const porcentaje = nuevoValor !== '' && nuevoValor !== null && nuevoValor !== undefined 
+            ? parseFloat(String(nuevoValor)) 
+            : 0;
+          
+          if (!isNaN(porcentaje) && porcentaje >= 0 && isFinite(porcentaje)) {
+            // Dividir por 100 para convertir el porcentaje a decimal (7% = 0.07)
+            // Ejemplo: montoTotalContrato = 6000000, porcentaje = 7
+            // nuevoImporte = 6000000 * (7 / 100) = 6000000 * 0.07 = 420000
+            const porcentajeDecimal = porcentaje / 100;
+            const importeCalculado = montoTotalContrato * porcentajeDecimal;
+            // Redondear a 2 decimales para evitar problemas de precisión de punto flotante
+            nuevoImporte = Math.round(importeCalculado * 100) / 100;
+          }
+        } else {
+          // Si NO es porcentaje (Depósito), multiplicar el valor ingresado por el monto inicial
+          // Ejemplo: valor ingresado = 1, montoInicial = 250000
+          // nuevoImporte = 250000 * 1 = 250000
+          const cantidad = nuevoValor !== '' && nuevoValor !== null && nuevoValor !== undefined 
+            ? parseFloat(String(nuevoValor)) 
+            : 0;
+          
+          if (!isNaN(cantidad) && cantidad >= 0 && isFinite(cantidad)) {
+            nuevoImporte = montoInicialNum * cantidad;
+          }
         }
         
         // Actualizar solo el gasto específico que se está editando
-        actualizados[index] = {
-          ...actualizados[index],
+        // Asegurarse de que el importe no sea NaN o Infinity
+        // Guardar como número sin decimales si es entero, o con 2 decimales si tiene decimales
+        let importeFinal = '0';
+        if (!isNaN(nuevoImporte) && isFinite(nuevoImporte) && nuevoImporte >= 0) {
+          // Si es un número entero, guardarlo sin decimales
+          if (Number.isInteger(nuevoImporte)) {
+            importeFinal = nuevoImporte.toString();
+          } else {
+            // Si tiene decimales, guardarlo con 2 decimales
+            importeFinal = nuevoImporte.toFixed(2);
+          }
+        }
+        
+        actualizados[indiceReal] = {
+          ...actualizados[indiceReal],
           valorCalculo: nuevoValor,
-          importe: nuevoImporte.toString(), // Siempre guardar como string, incluso si es '0'
+          importe: importeFinal,
           importeEditado: true // Marcar como editado para evitar que el useEffect lo sobrescriba
         };
       } else {
-        // Para otros gastos (como averiguacion_garantias), solo actualizar el valorCalculo
-        actualizados[index] = {
-          ...actualizados[index],
+        // Para otros gastos, solo actualizar el valorCalculo
+        actualizados[indiceReal] = {
+          ...actualizados[indiceReal],
           valorCalculo: nuevoValor
         };
       }
@@ -2934,112 +3006,65 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
     });
   };
 
-  const handleValorCalculoBlur = async (gasto, index) => {
-    // Si no hay contratoId, solo actualizar el estado local
-    if (!contratoId) return;
-
-    const valorCalculoNum = parseFloat(gasto.valorCalculo || '0');
-    if (isNaN(valorCalculoNum) || valorCalculoNum < 0) {
-      setSuccessMessage('El valor debe ser un número válido mayor o igual a 0');
-      setSnackbarOpen(true);
-      return;
-    }
-
-    const payload = {
-      tipoGastoInicial: gasto.tipoGastoInicial,
-      valorCalculo: valorCalculoNum > 0 ? valorCalculoNum : null,
-      importe: parseFloat(parseNumberFromFormatted(gasto.importe || '0')),
-      estado: gasto.estado || null,
-      observaciones: gasto.observaciones || null
-    };
-
-    try {
-      if (gasto.id) {
-        // Actualizar existente
-        await updateMutation.mutateAsync({ id: gasto.id, data: payload });
-      } else {
-        // Crear nuevo
-        const nuevoGasto = await createMutation.mutateAsync(payload);
-        // Actualizar el estado local con el ID asignado
-        setGastosEditables(prev => {
-          const actualizados = [...prev];
-          actualizados[index] = {
-            ...actualizados[index],
-            id: nuevoGasto.id,
-            esNuevo: false,
-            importeEditado: true
-          };
-          return actualizados;
-        });
+  const handleValorCalculoBlur = (gasto, index) => {
+    // Solo actualizar el estado local, no guardar en BD
+    // Los gastos se guardarán cuando se haga click en "Guardar" del contrato
+    // Marcar como editado para que no se recalcule automáticamente
+    setGastosEditables(prev => {
+      const actualizados = [...prev];
+      
+      // Buscar el gasto en el array original por tipoGastoInicialId
+      const indiceReal = actualizados.findIndex(g => 
+        g && g.tipoGastoInicialId === gasto.tipoGastoInicialId
+      );
+      
+      if (indiceReal !== -1 && actualizados[indiceReal]) {
+        actualizados[indiceReal] = {
+          ...actualizados[indiceReal],
+          importeEditado: true
+        };
       }
-    } catch (error) {
-      console.error('Error al guardar gasto:', error);
-      setSuccessMessage('Error al guardar el gasto. Por favor, intente nuevamente.');
-      setSnackbarOpen(true);
-    }
-  };
-
-  const handleEstadoChange = async (index, nuevoEstado) => {
-    if (!contratoId) return;
-
-    setGastosEditables(prev => {
-      const actualizados = [...prev];
-      actualizados[index] = {
-        ...actualizados[index],
-        estado: nuevoEstado
-      };
       return actualizados;
     });
-
-    const gasto = gastosEditables[index];
-    if (!gasto.id) return; // Si no tiene ID, se guardará cuando se edite el importe
-
-    const payload = {
-      tipoGastoInicial: gasto.tipoGastoInicial,
-      valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
-      importe: parseFloat(parseNumberFromFormatted(gasto.importe || '0')),
-      estado: nuevoEstado || null,
-      observaciones: gasto.observaciones || null
-    };
-
-    await updateMutation.mutateAsync({ id: gasto.id, data: payload });
   };
 
-  const handleObservacionesChange = async (index, nuevasObservaciones) => {
-    // Actualizar el estado local siempre
-    setGastosEditables(prev => {
-      const actualizados = [...prev];
-      actualizados[index] = {
-        ...actualizados[index],
-        observaciones: nuevasObservaciones
-      };
-      return actualizados;
-    });
 
-    // Si no hay contratoId, solo actualizar el estado local
-    if (!contratoId) return;
-
-    const gasto = gastosEditables[index];
-    if (!gasto.id) return; // Si no tiene ID, se guardará cuando se edite el importe
-
-    const payload = {
-      tipoGastoInicial: gasto.tipoGastoInicial,
-      valorCalculo: gasto.valorCalculo ? parseFloat(gasto.valorCalculo) : null,
-      importe: parseFloat(parseNumberFromFormatted(gasto.importe || '0')),
-      estado: gasto.estado || null,
-      observaciones: nuevasObservaciones || null
-    };
-
-    await updateMutation.mutateAsync({ id: gasto.id, data: payload });
-  };
-
-  // Obtener descripción del gasto
+  // Obtener descripción del gasto desde el catálogo
   const getDescripcionGasto = (gasto) => {
-    if (gasto.tipoGastoInicialCodigo === 'sellado') return 'Sellado Contrato';
-    if (gasto.tipoGastoInicialCodigo === 'honorarios') return 'Honorarios Inmobiliarios';
-    if (gasto.tipoGastoInicialCodigo === 'deposito') return 'Deposito en garantia Inicial';
-    if (gasto.tipoGastoInicialCodigo === 'averiguacion_garantias') return 'Averiguacion de garantias';
-    return getDescripcion(tipoGastoInicialData, gasto.tipoGastoInicial);
+    if (!tiposGastoActivos) return gasto.tipoGastoInicialCodigo || 'Sin nombre';
+    const tipoGasto = tiposGastoActivos.find(t => t.id === gasto.tipoGastoInicialId || t.codigo === gasto.tipoGastoInicialCodigo);
+    const nombre = tipoGasto?.nombre || gasto.tipoGastoInicialCodigo || 'Sin nombre';
+    
+    // Determinar el valor a mostrar entre paréntesis
+    let valorParentesis = '';
+    if (tipoGasto) {
+      // Obtener el valor (valorCalculo del gasto o valorDefault del tipo)
+      const valor = gasto.valorCalculo !== null && gasto.valorCalculo !== undefined && gasto.valorCalculo !== ''
+        ? parseFloat(gasto.valorCalculo)
+        : (tipoGasto.valorDefault ? parseFloat(tipoGasto.valorDefault) : null);
+      
+      if (valor !== null && !isNaN(valor)) {
+        // Verificar si es depósito en garantía inicial
+        const codigo = tipoGasto.codigo?.toLowerCase() || '';
+        const nombreLower = tipoGasto.nombre?.toLowerCase() || '';
+        const esDeposito = codigo.includes('deposito') || codigo.includes('depósito') || 
+                          nombreLower.includes('depósito') || nombreLower.includes('deposito');
+        
+        if (esDeposito) {
+          // Para depósito, mostrar "(1 mes)" o "(X meses)"
+          if (valor === 1) {
+            valorParentesis = '(1 mes)';
+          } else {
+            valorParentesis = `(${valor} meses)`;
+          }
+        } else if (tipoGasto.esPorcentaje) {
+          // Para porcentajes, mostrar "(%5)"
+          valorParentesis = `(%${valor})`;
+        }
+      }
+    }
+    
+    return valorParentesis ? `${nombre} ${valorParentesis}` : nombre;
   };
 
   return (
@@ -3052,82 +3077,52 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
           <TableHead>
             <TableRow>
               <TableCell sx={{ py: 1, fontWeight: 'bold' }}>Concepto</TableCell>
-              <TableCell sx={{ py: 1, fontWeight: 'bold' }}>% / Cant.</TableCell>
               <TableCell sx={{ py: 1, fontWeight: 'bold' }}>Importe</TableCell>
-              <TableCell sx={{ py: 1, fontWeight: 'bold' }}>Estado</TableCell>
-              <TableCell sx={{ py: 1, fontWeight: 'bold' }}>Observaciones</TableCell>
+              <TableCell sx={{ py: 1, fontWeight: 'bold' }}>Quién paga</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {gastosEditables.length === 0 && tipoGastoInicialData?.lista ? (
-              <TableRow>
-                <TableCell colSpan={5} align="center" sx={{ py: 1 }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Cargando...
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            ) : (
-              gastosEditables.map((gasto, index) => {
-                // Determinar el label y tipo de campo según el tipo de gasto
-                let campoLabel = '';
-                let mostrarCampo = true;
-                if (gasto.tipoGastoInicialCodigo === 'sellado' || gasto.tipoGastoInicialCodigo === 'honorarios') {
-                  campoLabel = '%';
-                } else if (gasto.tipoGastoInicialCodigo === 'deposito') {
-                  campoLabel = 'Meses';
-                  mostrarCampo = false;
-                } else if (gasto.tipoGastoInicialCodigo === 'averiguacion_garantias') {
-                  campoLabel = 'Cant.';
-                } else {
-                  mostrarCampo = false;
-                }
+            {gastosEditables.length === 0 && tiposGastoActivos?.length > 0 ? null : (
+              [...gastosEditables]
+                .filter(gasto => {
+                  // Filtrar solo gastos que tienen un tipo de gasto válido en el catálogo
+                  const tipoGasto = tiposGastoActivos?.find(t => t.id === gasto.tipoGastoInicialId);
+                  return tipoGasto !== undefined;
+                })
+                .sort((a, b) => (a.tipoGastoInicialId || 0) - (b.tipoGastoInicialId || 0))
+                .map((gasto, index) => {
+                  // Buscar el tipo de gasto en el catálogo para obtener esPorcentaje
+                  const tipoGasto = tiposGastoActivos?.find(t => t.id === gasto.tipoGastoInicialId);
+                  
+                  // Si no se encuentra el tipo de gasto, no renderizar esta fila
+                  if (!tipoGasto) {
+                    return null;
+                  }
+                  
+                  // Determinar el label y tipo de campo según el tipo de gasto
+                  let campoLabel = '';
+                  let mostrarCampo = true;
+                  if (tipoGasto.esPorcentaje) {
+                    campoLabel = '%';
+                  } else if (tipoGasto.valorDefault) {
+                    campoLabel = 'Cant.';
+                  } else {
+                    // Si no tiene valorDefault ni esPorcentaje, no mostrar el campo
+                    mostrarCampo = false;
+                  }
 
                 return (
                   <TableRow key={`${gasto.tipoGastoInicialCodigo}-${gasto.id || index}`} sx={{ '& .MuiTableCell-root': { py: 0.5 } }}>
                     <TableCell sx={{ py: 0.5 }}>{getDescripcionGasto(gasto)}</TableCell>
-                    {mostrarCampo && (
-                      <TableCell sx={{ py: 0.5 }}>
-                        <TextField
-                          type="number"
-                          size="small"
-                          value={gasto.valorCalculo || ''}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            handleValorCalculoChange(index, value, gasto);
-                          }}
-                          onBlur={() => handleValorCalculoBlur(gasto, index)}
-                          placeholder={campoLabel}
-                          sx={{ 
-                            width: 100,
-                            '& .MuiInputBase-root': { 
-                              height: '32px',
-                              fontSize: '0.875rem'
-                            },
-                            '& .MuiInputBase-input': {
-                              py: 0.5,
-                              px: 1
-                            }
-                          }}
-                          inputProps={{ 
-                            style: { MozAppearance: 'textfield' },
-                            onWheel: (e) => e.target.blur(),
-                            min: 0,
-                            step: gasto.tipoGastoInicialCodigo === 'deposito' || gasto.tipoGastoInicialCodigo === 'averiguacion_garantias' ? 1 : 0.01
-                          }}
-                        />
-                      </TableCell>
-                    )}
-                    {!mostrarCampo && <TableCell sx={{ py: 0.5 }}></TableCell>}
                     <TableCell sx={{ py: 0.5 }}>
                       <TextField
                         type="text"
                         size="small"
-                        value={formatNumberWithThousands(parseNumberFromFormatted(gasto.importe || ''))}
+                        value={parseImporte(gasto.importe)}
                         onChange={(e) => {
                           const value = e.target.value;
                           if (value === '' || /^[\d.,]*$/.test(value)) {
-                            handleImporteChange(index, value);
+                            handleImporteChange(index, value, gasto);
                           }
                         }}
                         onBlur={() => handleImporteBlur(gasto, index)}
@@ -3148,45 +3143,38 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
                         }}
                       />
                     </TableCell>
-                  <TableCell sx={{ py: 0.5 }}>
-                    <ParametroSelect
-                      categoriaCodigo="estado_gasto"
-                      value={gasto.estado || estadoPendienteId || ''}
-                      onChange={(e) => handleEstadoChange(index, e.target.value)}
-                      disabled={false}
-                      size="small"
-                      sx={{ 
-                        minWidth: 130,
-                        '& .MuiInputBase-root': { 
-                          height: '32px',
-                          fontSize: '0.875rem'
-                        }
-                      }}
-                    />
-                  </TableCell>
-                  <TableCell sx={{ py: 0.5 }}>
-                    <TextField
-                      size="small"
-                      value={gasto.observaciones || ''}
-                      onChange={(e) => handleObservacionesChange(index, e.target.value)}
-                      onBlur={() => {
-                        if (gasto.id && contratoId) {
-                          handleObservacionesChange(index, gasto.observaciones);
-                        }
-                      }}
-                      sx={{ 
-                        width: 180,
-                        '& .MuiInputBase-root': { 
-                          height: '32px',
-                          fontSize: '0.875rem'
-                        },
-                        '& .MuiInputBase-input': {
-                          py: 0.5,
-                          px: 1
-                        }
-                      }}
-                    />
-                  </TableCell>
+                    <TableCell sx={{ py: 0.5 }}>
+                      <FormControl size="small" fullWidth>
+                        <Select
+                          value={gasto.quienPagaId || ''}
+                          onChange={(e) => handleQuienPagaChange(gasto, e.target.value)}
+                          displayEmpty
+                          sx={{ 
+                            height: '32px',
+                            fontSize: '0.875rem',
+                            '& .MuiSelect-select': {
+                              py: 0.5,
+                              px: 1
+                            }
+                          }}
+                        >
+                          <MenuItem value="">
+                            <em>Seleccionar</em>
+                          </MenuItem>
+                          {actoresResponsablesContrato && actoresResponsablesContrato.length > 0 ? (
+                            actoresResponsablesContrato.map((actor) => (
+                              <MenuItem key={actor.id} value={actor.id}>
+                                {actor.nombre || actor.codigo}
+                              </MenuItem>
+                            ))
+                          ) : (
+                            <MenuItem value="" disabled>
+                              No hay actores disponibles
+                            </MenuItem>
+                          )}
+                        </Select>
+                      </FormControl>
+                    </TableCell>
                 </TableRow>
                 );
               })
@@ -3211,21 +3199,108 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
 
 // Componente de vista detallada
 function ContratoDetalle({ contrato }) {
-  // Mapas de parámetros para mostrar descripciones
-  const tipoImpuestoMap = useParametrosMap('tipo_cargo');
-  const quienPagaMap = useParametrosMap('quien_paga');
-  const monedaMap = useParametrosMap('moneda');
-  const metodoAjusteMap = useParametrosMap('metodo_ajuste');
-  const tipoUnidadMap = useParametrosMap('tipo_unidad');
-  const estadoUnidadMap = useParametrosMap('estado_unidad');
-  const tipoGarantiaMap = useParametrosMap('tipo_garantia');
-  const estadoGarantiaMap = useParametrosMap('estado_garantia');
-  const tipoGastoInicialMap = useParametrosMap('tipo_gasto_inicial');
-  const estadoGastoMap = useParametrosMap('estado_gasto');
-  const estadoContratoMap = useParametrosMap('estado_contrato');
+  // Obtener catálogos necesarios
+  const { data: monedas } = useQuery({
+    queryKey: ['monedas'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/monedas');
+      return response.data;
+    }
+  });
+
+  const { data: metodosAjusteContrato } = useQuery({
+    queryKey: ['metodos-ajuste-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/metodos-ajuste-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: estadosContrato } = useQuery({
+    queryKey: ['estados-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/estados-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: tiposGarantiaContrato } = useQuery({
+    queryKey: ['tipos-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: estadosGarantiaContrato } = useQuery({
+    queryKey: ['estados-garantia-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/estados-garantia-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: tiposGastoInicialContrato } = useQuery({
+    queryKey: ['tipos-gasto-inicial-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-gasto-inicial-contrato');
+      return response.data;
+    }
+  });
+
+  const { data: actoresResponsablesContrato } = useQuery({
+    queryKey: ['actores-responsable-contrato'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/actores-responsable-contrato');
+      return response.data;
+    }
+  });
+
+  // Funciones auxiliares para obtener nombres
+  const getMonedaNombre = (monedaId) => {
+    if (!monedaId || !monedas) return 'Sin moneda';
+    const moneda = monedas.find(m => m.id === monedaId);
+    return moneda?.nombre || moneda?.codigo || 'Sin moneda';
+  };
+
+  const getMetodoAjusteNombre = (metodoAjusteId) => {
+    if (!metodoAjusteId || !metodosAjusteContrato) return 'Sin método';
+    const metodo = metodosAjusteContrato.find(m => m.id === metodoAjusteId);
+    return metodo?.nombre || metodo?.codigo || 'Sin método';
+  };
+
+  const getEstadoNombre = (estadoId) => {
+    if (!estadoId || !estadosContrato) return 'Sin estado';
+    const estado = estadosContrato.find(e => e.id === estadoId);
+    return estado?.nombre || estado?.codigo || 'Sin estado';
+  };
+
+  const getTipoGarantiaNombre = (tipoGarantiaId) => {
+    if (!tipoGarantiaId || !tiposGarantiaContrato) return 'Sin tipo';
+    const tipo = tiposGarantiaContrato.find(t => t.id === tipoGarantiaId);
+    return tipo?.nombre || tipo?.codigo || 'Sin tipo';
+  };
+
+  const getEstadoGarantiaNombre = (estadoGarantiaId) => {
+    if (!estadoGarantiaId || !estadosGarantiaContrato) return 'Sin estado';
+    const estado = estadosGarantiaContrato.find(e => e.id === estadoGarantiaId);
+    return estado?.nombre || estado?.codigo || 'Sin estado';
+  };
+
+  const getTipoGastoNombre = (tipoGastoId) => {
+    if (!tipoGastoId || !tiposGastoInicialContrato) return 'Sin tipo';
+    const tipo = tiposGastoInicialContrato.find(t => t.id === tipoGastoId);
+    return tipo?.nombre || tipo?.codigo || 'Sin tipo';
+  };
+
+  const getActorNombre = (actorId) => {
+    if (!actorId || !actoresResponsablesContrato) return 'Sin actor';
+    const actor = actoresResponsablesContrato.find(a => a.id === actorId);
+    return actor?.nombre || actor?.codigo || 'Sin actor';
+  };
 
   if (!contrato) {
-    return <Alert severity="info">Cargando información del contrato...</Alert>;
+    return null;
   }
 
   const formatoMoneda = (valor) => {
@@ -3255,13 +3330,15 @@ function ContratoDetalle({ contrato }) {
             <CardContent sx={{ py: '8px !important' }}>
               <Typography variant="h6" component="div">
                 Contrato {contrato.nroContrato || 'Sin número'}
-                {contrato.unidad && (
+                {contrato.propiedad && (
                   <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>
                     {' - '}
-                    {getDescripcion(tipoUnidadMap, contrato.unidad.tipo) || ''}
-                    {contrato.unidad.direccion && ` ${contrato.unidad.direccion}`}
-                    {contrato.unidad.codigoInterno && `, ${contrato.unidad.codigoInterno}`}
-                    {contrato.unidad.localidad && `, ${contrato.unidad.localidad}`}
+                    {contrato.propiedad.dirCalle && `${contrato.propiedad.dirCalle} ${contrato.propiedad.dirNro || ''}`}
+                    {contrato.propiedad.dirPiso && `, Piso ${contrato.propiedad.dirPiso}`}
+                    {contrato.propiedad.dirDepto && `, Dto. ${contrato.propiedad.dirDepto}`}
+                    {contrato.propiedad.codigoInterno && `, ${contrato.propiedad.codigoInterno}`}
+                    {contrato.propiedad.localidad?.nombre && `, ${contrato.propiedad.localidad.nombre}`}
+                    {contrato.propiedad.provincia?.nombre && !contrato.propiedad.localidad && `, ${contrato.propiedad.provincia.nombre}`}
                     .
                   </span>
                 )}
@@ -3300,7 +3377,7 @@ function ContratoDetalle({ contrato }) {
                 </Grid>
                 <Grid item xs={6}>
                   <Typography variant="caption" color="text.secondary" display="block">Moneda</Typography>
-                  <Typography variant="body2">{getDescripcion(monedaMap, contrato.moneda)}</Typography>
+                  <Typography variant="body2">{getMonedaNombre(contrato.monedaId)}</Typography>
                 </Grid>
                 {contrato.duracionMeses && (
                   <Grid item xs={6}>
@@ -3311,7 +3388,7 @@ function ContratoDetalle({ contrato }) {
                 {contrato.metodoAjuste && (
                   <Grid item xs={6}>
                     <Typography variant="caption" color="text.secondary" display="block">Ajuste</Typography>
-                    <Typography variant="body2">{getDescripcion(metodoAjusteMap, contrato.metodoAjuste)}</Typography>
+                    <Typography variant="body2">{getMetodoAjusteNombre(contrato.metodoAjusteContratoId)}</Typography>
                   </Grid>
                 )}
                 {contrato.indiceAumento && (
@@ -3341,7 +3418,7 @@ function ContratoDetalle({ contrato }) {
                 <Grid item xs={6}>
                   <Typography variant="caption" color="text.secondary" display="block">Estado</Typography>
                   <Chip 
-                    label={String(getDescripcion(estadoContratoMap, contrato.estado) || contrato.estado || 'Borrador')} 
+                    label={String(getEstadoNombre(contrato.estadoContratoId) || 'Sin estado')} 
                     size="small"
                     color={
                       contrato.estado === 'activo' || contrato.estado === 'vigente' ? 'success' :
@@ -3350,15 +3427,6 @@ function ContratoDetalle({ contrato }) {
                       contrato.estado === 'cancelado' || contrato.estado === 'anulado' ? 'warning' :
                       'default'
                     }
-                    sx={{ mt: 0.5 }}
-                  />
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="caption" color="text.secondary" display="block">Registrado AFIP</Typography>
-                  <Chip 
-                    label={contrato.registradoAfip ? 'Registrado AFIP' : 'No registrado'} 
-                    size="small"
-                    color={contrato.registradoAfip ? 'success' : 'default'}
                     sx={{ mt: 0.5 }}
                   />
                 </Grid>
@@ -3449,8 +3517,8 @@ function ContratoDetalle({ contrato }) {
                     <TableBody>
                       {contrato.responsabilidades.map((r) => (
                         <TableRow key={r.id}>
-                          <TableCell padding="none">{getAbreviatura(tipoImpuestoMap, r.tipoCargo)}</TableCell>
-                          <TableCell padding="none">{getDescripcion(quienPagaMap, r.quienPaga)}</TableCell>
+                          <TableCell padding="none">{r.tipoImpuesto?.nombre || r.tipoImpuesto?.codigo || 'Sin tipo'}</TableCell>
+                          <TableCell padding="none">{r.quienPagaProveedor?.nombre || r.quienPagaProveedor?.codigo || 'Sin actor'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -3482,10 +3550,10 @@ function ContratoDetalle({ contrato }) {
                     <TableBody>
                       {contrato.garantias.map((g) => (
                         <TableRow key={g.id}>
-                          <TableCell padding="none">{getDescripcion(tipoGarantiaMap, g.tipoGarantia)}</TableCell>
+                          <TableCell padding="none">{getTipoGarantiaNombre(g.tipoGarantiaId)}</TableCell>
                           <TableCell padding="none">
                             <Chip 
-                              label={getDescripcion(estadoGarantiaMap, g.estadoGarantia)} 
+                              label={getEstadoGarantiaNombre(g.estadoGarantiaId)} 
                               size="small"
                               sx={{ height: '20px', fontSize: '0.7rem' }}
                             />
@@ -3522,11 +3590,11 @@ function ContratoDetalle({ contrato }) {
                     <TableBody>
                       {contrato.gastosIniciales.map((g) => (
                         <TableRow key={g.id}>
-                          <TableCell padding="none">{getDescripcion(tipoGastoInicialMap, g.tipoGastoInicial)}</TableCell>
+                          <TableCell padding="none">{getTipoGastoNombre(g.tipoGastoInicialId)}</TableCell>
                           <TableCell padding="none">{formatoMoneda(g.importe)}</TableCell>
                           <TableCell padding="none">
                             <Chip 
-                              label={getDescripcion(estadoGastoMap, g.estado)} 
+                              label={'-'} 
                               size="small"
                               sx={{ height: '20px', fontSize: '0.7rem' }}
                             />

@@ -1,4 +1,4 @@
-import { AjusteOrigen, PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
@@ -39,35 +39,25 @@ const toFixedDecimal = (value, decimals) => {
 const createAjusteTransaction = async ({
   contrato,
   fechaAjuste,
-  indiceUsado,
-  valorIndice,
   montoAnterior,
   montoNuevo,
-  porcentajeAumento,
-  origen,
-  observaciones
+  porcentajeAumento
 }) => {
   return prisma.$transaction(async (tx) => {
     const ajuste = await tx.contratoAjuste.create({
       data: {
         contratoId: contrato.id,
         fechaAjuste,
-        indiceUsado,
-        valorIndice: valorIndice.toString(),
-        montoAnterior: montoAnterior.toString(),
-        montoNuevo: montoNuevo.toString(),
-        porcentajeAumento: porcentajeAumento.toString(),
-        origen,
-        observaciones: observaciones || null
+        montoAnterior,
+        montoNuevo,
+        porcentajeAumento
       }
     });
 
     await tx.contrato.update({
       where: { id: contrato.id },
       data: {
-        montoActual: montoNuevo.toString(),
-        ultimoAjusteAt: fechaAjuste,
-        indiceAumento: indiceUsado || contrato.indiceAumento || null
+        montoActual: montoNuevo
       }
     });
 
@@ -77,10 +67,10 @@ const createAjusteTransaction = async ({
 
 const getContratoWithConfig = async (id) => {
   const contrato = await prisma.contrato.findFirst({
-    where: { id, isDeleted: false },
+    where: { id, activo: true, deletedAt: null },
     include: {
-      unidad: {
-        select: { direccion: true, localidad: true }
+      propiedad: {
+        select: { dirCalle: true, dirNro: true, dirPiso: true, dirDepto: true }
       },
       inquilino: {
         select: { nombre: true, apellido: true, razonSocial: true }
@@ -92,7 +82,7 @@ const getContratoWithConfig = async (id) => {
     return null;
   }
 
-  const periodoAjuste = contrato.periodoAumento || contrato.frecuenciaAjusteMeses;
+  const periodoAjuste = contrato.frecuenciaAjusteMeses;
 
   return {
     ...contrato,
@@ -130,11 +120,17 @@ export const generarAjusteAutomatico = async (req, res) => {
       return res.status(400).json({ error: 'El contrato no tiene configurado el período de ajuste' });
     }
 
-    if (!contrato.indiceAumento) {
-      return res.status(400).json({ error: 'El contrato no tiene configurado el índice de ajuste' });
+    // Obtener el método de ajuste del contrato
+    if (!contrato.metodoAjuste) {
+      return res.status(400).json({ error: 'El contrato no tiene configurado el método de ajuste' });
     }
 
-    const referencia = contrato.ultimoAjusteAt ? new Date(contrato.ultimoAjusteAt) : new Date(contrato.fechaInicio);
+    // Obtener el último ajuste si existe
+    const ultimoAjuste = await prisma.contratoAjuste.findFirst({
+      where: { contratoId: contrato.id },
+      orderBy: { fechaAjuste: 'desc' }
+    });
+    const referencia = ultimoAjuste ? new Date(ultimoAjuste.fechaAjuste) : new Date(contrato.fechaInicio);
     const hoy = new Date();
     const mesesTranscurridos = monthsBetween(referencia, hoy);
 
@@ -148,16 +144,25 @@ export const generarAjusteAutomatico = async (req, res) => {
 
     const periodoIndice = formatPeriodo(hoy);
 
+    // Obtener el método de ajuste
+    const metodoAjuste = await prisma.metodoAjusteContrato.findUnique({
+      where: { id: contrato.metodoAjusteContratoId }
+    });
+
+    if (!metodoAjuste) {
+      return res.status(404).json({ error: 'No se encontró el método de ajuste configurado' });
+    }
+
     const indice = await prisma.indiceAjuste.findFirst({
       where: {
-        codigo: contrato.indiceAumento,
+        metodoAjusteContratoId: contrato.metodoAjusteContratoId,
         periodo: periodoIndice,
         activo: true
       }
     });
 
     if (!indice) {
-      return res.status(404).json({ error: `No se encontró el índice ${contrato.indiceAumento} para el período ${periodoIndice}` });
+      return res.status(404).json({ error: `No se encontró el índice para el método ${metodoAjuste.codigo} en el período ${periodoIndice}` });
     }
 
     const valorIndice = parseDecimalInput(indice.valor);
@@ -173,13 +178,9 @@ export const generarAjusteAutomatico = async (req, res) => {
     const ajuste = await createAjusteTransaction({
       contrato,
       fechaAjuste,
-      indiceUsado: contrato.indiceAumento,
-      valorIndice,
       montoAnterior,
       montoNuevo,
-      porcentajeAumento,
-      origen: AjusteOrigen.automatico,
-      observaciones: `Ajuste automático aplicado utilizando índice ${contrato.indiceAumento} del período ${periodoIndice}`
+      porcentajeAumento
     });
 
     res.status(201).json(ajuste);
@@ -239,13 +240,9 @@ export const registrarAjusteManual = async (req, res) => {
     const ajuste = await createAjusteTransaction({
       contrato,
       fechaAjuste: new Date(fechaAjuste),
-      indiceUsado,
-      valorIndice: valorIndiceParsed,
       montoAnterior,
       montoNuevo: montoNuevoCalculado,
-      porcentajeAumento: porcentajeCalculado,
-      origen: AjusteOrigen.manual,
-      observaciones: observaciones || null
+      porcentajeAumento: porcentajeCalculado
     });
 
     res.status(201).json(ajuste);

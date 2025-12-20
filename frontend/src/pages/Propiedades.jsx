@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -30,7 +31,6 @@ import {
   Snackbar,
   Tabs,
   Tab,
-  InputAdornment
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
@@ -38,103 +38,340 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import HomeIcon from '@mui/icons-material/Home';
 import LocationCityIcon from '@mui/icons-material/LocationCity';
 import PersonIcon from '@mui/icons-material/Person';
-import Visibility from '@mui/icons-material/Visibility';
-import VisibilityOff from '@mui/icons-material/VisibilityOff';
 import Checkbox from '@mui/material/Checkbox';
 import api from '../api';
-import ParametroSelect from '../components/ParametroSelect';
-import { useParametrosMap, getDescripcion, getAbreviatura } from '../utils/parametros';
 
 export default function Propiedades() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  
+  // Abrir diálogo automáticamente si viene el parámetro openDialog
+  useEffect(() => {
+    if (searchParams.get('openDialog') === 'true') {
+      setOpen(true);
+      // Si hay una propiedad en edición guardada, restaurarla PRIMERO
+      const propiedadEnEdicionStr = sessionStorage.getItem('propiedadEnEdicion');
+      if (propiedadEnEdicionStr) {
+        try {
+          const propiedadEnEdicion = JSON.parse(propiedadEnEdicionStr);
+          // Cargar la propiedad completa desde el backend para tener todos los datos actualizados
+          const cargarPropiedadCompleta = async () => {
+            try {
+              const response = await api.get(`/propiedades/${propiedadEnEdicion.id}`);
+              const propiedadCompleta = response.data;
+              // Usar handleEdit para cargar todos los datos relacionados correctamente
+              await handleEdit(propiedadCompleta);
+              
+              // Leer el estado completo ANTES de preseleccionar el propietario
+              const estadoCompletoStr = sessionStorage.getItem('propiedadEstadoCompleto');
+              let estadoCompleto = null;
+              if (estadoCompletoStr) {
+                try {
+                  estadoCompleto = JSON.parse(estadoCompletoStr);
+                } catch (error) {
+                  console.error('Error al parsear estado completo:', error);
+                }
+              }
+              
+              // Después de cargar la propiedad, preseleccionar el propietario si viene de Propietarios
+              const propietarioIdParaAsociar = sessionStorage.getItem('propietarioIdParaAsociar');
+              if (propietarioIdParaAsociar) {
+                setTabValue(0); // Cambiar al tab de Propietarios
+                const propietarioId = parseInt(propietarioIdParaAsociar);
+                setFormData(prev => ({
+                  ...prev,
+                  propietarioIds: prev.propietarioIds.includes(propietarioId) 
+                    ? prev.propietarioIds 
+                    : [...prev.propietarioIds, propietarioId]
+                }));
+                sessionStorage.removeItem('propietarioIdParaAsociar');
+                sessionStorage.removeItem('propietarioEnEdicion');
+              }
+              
+              // Restaurar el estado completo del formulario (impuestos, cargos, documentación, tab)
+              // Esto sobrescribe lo que handleEdit cargó desde el backend con lo que el usuario tenía antes
+              if (estadoCompleto) {
+                // Restaurar impuestos y cargos seleccionados
+                if (estadoCompleto.impuestosSeleccionados && Array.isArray(estadoCompleto.impuestosSeleccionados)) {
+                  setImpuestosSeleccionados(estadoCompleto.impuestosSeleccionados);
+                }
+                if (estadoCompleto.cargosSeleccionados && Array.isArray(estadoCompleto.cargosSeleccionados)) {
+                  setCargosSeleccionados(estadoCompleto.cargosSeleccionados);
+                }
+                // Restaurar documentación
+                if (estadoCompleto.documentacion && Array.isArray(estadoCompleto.documentacion)) {
+                  setDocumentacion(estadoCompleto.documentacion);
+                }
+                // Restaurar datos del formulario (puede incluir cambios que el usuario hizo antes de ir a Propietarios)
+                if (estadoCompleto.formData) {
+                  setFormData(prev => ({
+                    ...prev,
+                    ...estadoCompleto.formData
+                  }));
+                }
+                // Restaurar tab si estaba en otro tab
+                if (estadoCompleto.tabValue !== undefined && !propietarioIdParaAsociar) {
+                  setTabValue(estadoCompleto.tabValue);
+                }
+                sessionStorage.removeItem('propiedadEstadoCompleto');
+              }
+              
+              // Solo eliminar después de restaurar exitosamente
+              sessionStorage.removeItem('propiedadEnEdicion');
+              sessionStorage.removeItem('propiedadFormData');
+            } catch (error) {
+              console.error('Error al cargar propiedad completa:', error);
+              // Si falla, intentar restaurar desde sessionStorage
+              const estadoCompletoStr = sessionStorage.getItem('propiedadEstadoCompleto');
+              if (estadoCompletoStr) {
+                try {
+                  const estadoCompleto = JSON.parse(estadoCompletoStr);
+                  setFormData(estadoCompleto.formData || {});
+                  setEditing(propiedadEnEdicion);
+                  // Restaurar impuestos, cargos y documentación
+                  if (estadoCompleto.impuestosSeleccionados) {
+                    setImpuestosSeleccionados(estadoCompleto.impuestosSeleccionados);
+                  }
+                  if (estadoCompleto.cargosSeleccionados) {
+                    setCargosSeleccionados(estadoCompleto.cargosSeleccionados);
+                  }
+                  if (estadoCompleto.documentacion) {
+                    setDocumentacion(estadoCompleto.documentacion);
+                  }
+                  if (estadoCompleto.tabValue !== undefined) {
+                    setTabValue(estadoCompleto.tabValue);
+                  }
+                  sessionStorage.removeItem('propiedadEstadoCompleto');
+                } catch (parseError) {
+                  console.error('Error al parsear estado completo:', parseError);
+                  // Si falla el parseo, al menos establecer editing para que se vea algo
+                  setEditing(propiedadEnEdicion);
+                }
+              } else {
+                // Si no hay estado completo guardado, intentar usar handleEdit con los datos guardados
+                // aunque no sean completos, es mejor que nada
+                try {
+                  await handleEdit(propiedadEnEdicion);
+                } catch (handleEditError) {
+                  console.error('Error al usar handleEdit con datos guardados:', handleEditError);
+                  // Último recurso: solo establecer editing
+                  setEditing(propiedadEnEdicion);
+                }
+              }
+              sessionStorage.removeItem('propiedadEnEdicion');
+            }
+          };
+          cargarPropiedadCompleta();
+        } catch (error) {
+          console.error('Error al parsear propiedad en edición:', error);
+          sessionStorage.removeItem('propiedadEnEdicion');
+          sessionStorage.removeItem('propiedadFormData');
+          sessionStorage.removeItem('propiedadEstadoCompleto');
+        }
+      } else {
+        // Si NO hay propiedad en edición pero sí viene de Propietarios, preseleccionar el propietario
+        const propietarioIdParaAsociar = sessionStorage.getItem('propietarioIdParaAsociar');
+        if (propietarioIdParaAsociar) {
+          setTabValue(0); // Cambiar al tab de Propietarios
+          const propietarioId = parseInt(propietarioIdParaAsociar);
+          setFormData(prev => ({
+            ...prev,
+            propietarioIds: prev.propietarioIds.includes(propietarioId) 
+              ? prev.propietarioIds 
+              : [...prev.propietarioIds, propietarioId]
+          }));
+          // Limpiar sessionStorage después de preseleccionar
+          sessionStorage.removeItem('propietarioIdParaAsociar');
+          sessionStorage.removeItem('propietarioEnEdicion');
+        }
+      }
+      
+      // Limpiar el parámetro de la URL
+      searchParams.delete('openDialog');
+      setSearchParams(searchParams, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
   const [tabValue, setTabValue] = useState(0);
-  const [cuentaFormData, setCuentaFormData] = useState({
-    tipoImpuesto: '',
-    codigo1: '',
-    codigo2: '',
-    periodicidad: '',
-    observaciones: ''
-  });
-  // Array temporal de cuentas tributarias antes de guardar
-  const [cuentasTemporales, setCuentasTemporales] = useState([]);
-  // Estado para la tabla editable de impuestos
-  const [impuestosEditables, setImpuestosEditables] = useState([]);
+  // Estado para propietario seleccionado en el selector
+  const [propietarioSeleccionado, setPropietarioSeleccionado] = useState('');
+  // Estado para impuestos y cargos seleccionados
+  const [impuestosSeleccionados, setImpuestosSeleccionados] = useState([]); // Array de { tipoImpuestoId, periodicidadId, campos: { tipoCampoId: valor } }
+  const [cargosSeleccionados, setCargosSeleccionados] = useState([]); // Array de { tipoCargoId, periodicidadId, propiedadCargoId, campos: { tipoCampoId: valor } }
+  // Cache de campos por tipo de impuesto y cargo
+  const [camposPorTipoImpuesto, setCamposPorTipoImpuesto] = useState({});
+  const [camposPorTipoCargo, setCamposPorTipoCargo] = useState({});
   // Estado para la documentación
   const [documentacion, setDocumentacion] = useState([]);
   const [formData, setFormData] = useState({
-    propietarioId: '',
-    direccion: '',
-    localidad: '',
-    tipo: '',
-    estado: '',
+    propietarioIds: [],
+    dirCalle: '',
+    dirNro: '',
+    dirPiso: '',
+    dirDepto: '',
+    provinciaId: '',
+    localidadId: '',
+    tipoPropiedadId: '',
+    estadoPropiedadId: '',
+    destinoId: '',
+    ambientesId: '',
     codigoInterno: '',
-    ambientes: '',
     descripcion: ''
   });
   const [errors, setErrors] = useState({});
-  const [cuentaErrors, setCuentaErrors] = useState({});
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
-  // Estado para controlar la visibilidad de contraseñas en la tabla
-  const [showPasswords, setShowPasswords] = useState({});
   const queryClient = useQueryClient();
 
   const { data: propiedades, isLoading } = useQuery({
-    queryKey: ['unidades'],
+    queryKey: ['propiedades'],
     queryFn: async () => {
-      const response = await api.get('/unidades');
+      const response = await api.get('/propiedades');
       return response.data;
     }
   });
 
-  const { data: propietarios } = useQuery({
+  const { data: propietariosData } = useQuery({
     queryKey: ['propietarios'],
     queryFn: async () => {
-      const response = await api.get('/propietarios');
+      const response = await api.get('/propietarios?limit=1000');
+      return response.data?.data || [];
+    }
+  });
+  const propietarios = propietariosData || [];
+
+  // Catálogos para propiedades
+  const { data: provincias } = useQuery({
+    queryKey: ['provincias'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/provincias');
       return response.data;
     }
   });
 
-  // Obtener mapas de parámetros para mostrar descripciones
-  const tipoPropiedadMap = useParametrosMap('tipo_unidad');
-  const estadoPropiedadMap = useParametrosMap('estado_unidad');
-  const ambientesMap = useParametrosMap('ambientes');
-  const tipoImpuestoData = useParametrosMap('tipo_cargo');
-  const periodicidadMap = useParametrosMap('periodicidad');
-  const documentacionData = useParametrosMap('documentacion');
+  const { data: localidades } = useQuery({
+    queryKey: ['localidades', formData.provinciaId],
+    queryFn: async () => {
+      if (!formData.provinciaId) return [];
+      const response = await api.get(`/catalogos/provincias/${formData.provinciaId}/localidades`);
+      return response.data;
+    },
+    enabled: !!formData.provinciaId
+  });
 
-  // Obtener todos los impuestos activos con periodicidad por defecto
-  const impuestosConPeriodicidad = tipoImpuestoData.lista?.filter(
-    impuesto => impuesto.activo && impuesto.periodicidadPorDefecto
-  ) || [];
-
-  // Efecto para inicializar impuestos editables cuando se abre el diálogo o cambian los datos
-  useEffect(() => {
-    if (open && impuestosConPeriodicidad.length > 0) {
-      if (!editing?.id && impuestosEditables.length === 0) {
-        // Si es nuevo y no hay impuestos editables inicializados, inicializar con impuestos vacíos
-        inicializarImpuestosEditables([]);
-      }
+  const { data: tiposPropiedad } = useQuery({
+    queryKey: ['tipos-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/tipos-propiedad');
+      return response.data;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, impuestosConPeriodicidad.length, tipoImpuestoData.lista]);
+  });
+
+  const { data: estadosPropiedad } = useQuery({
+    queryKey: ['estados-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/estados-propiedad');
+      return response.data;
+    }
+  });
+
+  const { data: destinosPropiedad } = useQuery({
+    queryKey: ['destinos-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/destinos-propiedad');
+      return response.data;
+    }
+  });
+
+  const { data: ambientesPropiedad } = useQuery({
+    queryKey: ['ambientes-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/ambientes-propiedad');
+      return response.data;
+    }
+  });
+
+  // Catálogos para impuestos y cargos
+  const { data: tiposImpuestoPropiedad } = useQuery({
+    queryKey: ['tipos-impuesto-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-impuesto-propiedad?mostrarInactivos=false');
+      return response.data;
+    }
+  });
+
+  const { data: tiposCargo } = useQuery({
+    queryKey: ['tipos-cargo'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-cargo?mostrarInactivos=false');
+      return response.data;
+    }
+  });
+
+  const { data: periodicidadesImpuesto } = useQuery({
+    queryKey: ['periodicidades-impuesto'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/periodicidades-impuesto?mostrarInactivos=false');
+      return response.data;
+    }
+  });
+
+  // Función para cargar campos de un tipo de impuesto
+  const cargarCamposTipoImpuesto = async (tipoImpuestoId) => {
+    if (camposPorTipoImpuesto[tipoImpuestoId]) {
+      return camposPorTipoImpuesto[tipoImpuestoId];
+    }
+    try {
+      const response = await api.get(`/tipos-impuesto-propiedad-campos/tipo-impuesto/${tipoImpuestoId}`);
+      const campos = response.data || [];
+      setCamposPorTipoImpuesto(prev => ({ ...prev, [tipoImpuestoId]: campos }));
+      return campos;
+    } catch (error) {
+      console.error('Error al cargar campos:', error);
+      return [];
+    }
+  };
+
+  const cargarCamposTipoCargo = async (tipoCargoId) => {
+    if (camposPorTipoCargo[tipoCargoId]) {
+      return camposPorTipoCargo[tipoCargoId];
+    }
+    try {
+      const response = await api.get(`/tipos-cargo-campos/tipo-cargo/${tipoCargoId}`);
+      const campos = response.data || [];
+      setCamposPorTipoCargo(prev => ({ ...prev, [tipoCargoId]: campos }));
+      return campos;
+    } catch (error) {
+      console.error('Error al cargar campos del tipo de cargo:', error);
+      return [];
+    }
+  };
+
+  // Obtener tipos de documento de propiedad
+  const { data: tiposDocumentoPropiedad } = useQuery({
+    queryKey: ['tipos-documento-propiedad'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-documento-propiedad?mostrarInactivos=false');
+      return response.data;
+    }
+  });
 
 
   const createMutation = useMutation({
-    mutationFn: (data) => api.post('/unidades', data)
+    mutationFn: (data) => api.post('/propiedades', data)
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }) => api.put(`/unidades/${id}`, data)
+    mutationFn: ({ id, data }) => api.put(`/propiedades/${id}`, data)
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id) => api.delete(`/unidades/${id}`),
+    mutationFn: (id) => api.delete(`/propiedades/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries(['unidades']);
+      queryClient.invalidateQueries(['propiedades']);
       setSuccessMessage('Propiedad eliminada exitosamente');
       setSnackbarSeverity('success');
       setSnackbarOpen(true);
@@ -150,17 +387,19 @@ export default function Propiedades() {
   const validateForm = () => {
     const newErrors = {};
 
-    // Validar dirección obligatoria
-    if (!formData.direccion || formData.direccion.trim() === '') {
-      newErrors.direccion = 'La dirección es obligatoria';
+    // Validar calle y número obligatorios
+    if (!formData.dirCalle || formData.dirCalle.trim() === '') {
+      newErrors.dirCalle = 'La calle es obligatoria';
     }
 
-    // Validar localidad obligatoria
-    if (!formData.localidad || formData.localidad.trim() === '') {
-      newErrors.localidad = 'La localidad es obligatoria';
+    if (!formData.dirNro || formData.dirNro.trim() === '') {
+      newErrors.dirNro = 'El número es obligatorio';
     }
 
-    // Propietario es opcional
+    // Validar que al menos haya provincia o localidad
+    if (!formData.provinciaId && !formData.localidadId) {
+      newErrors.provinciaId = 'Debe seleccionar al menos provincia o localidad';
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -168,41 +407,46 @@ export default function Propiedades() {
 
   const resetForm = () => {
     setFormData({
-      propietarioId: '',
-      direccion: '',
-      localidad: '',
-      tipo: '',
-      estado: '',
+      propietarioIds: [],
+      dirCalle: '',
+      dirNro: '',
+      dirPiso: '',
+      dirDepto: '',
+      provinciaId: '',
+      localidadId: '',
+      tipoPropiedadId: '',
+      estadoPropiedadId: '',
+      destinoId: '',
+      ambientesId: '',
       codigoInterno: '',
-      ambientes: '',
       descripcion: ''
     });
     setErrors({});
     setEditing(null);
-    setCuentasTemporales([]);
-    setImpuestosEditables([]);
+    setImpuestosSeleccionados([]);
+    setCargosSeleccionados([]);
     setTabValue(0);
+    setCamposPorTipoCargo({});
     // Inicializar documentación desde parámetros
     inicializarDocumentacion([]);
-    resetCuentaForm();
   };
 
-  // Función para inicializar la documentación desde parámetros
+  // Función para inicializar la documentación desde tipos de documento
   const inicializarDocumentacion = (documentosExistentes = []) => {
-    if (!documentacionData.lista || documentacionData.lista.length === 0) {
+    if (!tiposDocumentoPropiedad || tiposDocumentoPropiedad.length === 0) {
       setDocumentacion([]);
       return;
     }
 
-    const documentosIniciales = documentacionData.lista.map(param => {
-      // Buscar si existe un documento para este parámetro
+    const documentosIniciales = tiposDocumentoPropiedad.map(tipoDoc => {
+      // Buscar si existe un documento para este tipo
       const docExistente = documentosExistentes.find(
-        doc => doc.tipoDocumentoId === param.id
+        doc => doc.tipoDocumentoPropiedadId === tipoDoc.id
       );
       
       const documento = {
-        tipoDocumentoId: param.id,
-        nombre: param.descripcion,
+        tipoDocumentoPropiedadId: tipoDoc.id,
+        nombre: tipoDoc.nombre,
         necesario: docExistente ? Boolean(docExistente.necesario) : false,
         recibido: docExistente ? Boolean(docExistente.recibido) : false,
         id: docExistente?.id || null // ID si existe en BD
@@ -214,154 +458,144 @@ export default function Propiedades() {
     setDocumentacion(documentosIniciales);
   };
 
-  // Función para inicializar la tabla de impuestos editables
-  const inicializarImpuestosEditables = (cuentasExistentes = []) => {
-    if (!impuestosConPeriodicidad || impuestosConPeriodicidad.length === 0) {
-      setImpuestosEditables([]);
-      return;
-    }
-
-    const impuestosIniciales = impuestosConPeriodicidad.map(impuesto => {
-      // Buscar si existe una cuenta tributaria para este impuesto
-      const cuentaExistente = cuentasExistentes.find(
-        cuenta => cuenta.tipoImpuesto === impuesto.id
-      );
-      
-      return {
-        tipoImpuestoId: impuesto.id,
-        tipoImpuesto: impuesto.id,
-        codigo1: cuentaExistente?.codigo1 || '',
-        codigo2: cuentaExistente?.codigo2 || '',
-        periodicidad: cuentaExistente?.periodicidad || impuesto.periodicidadPorDefecto,
-        usuarioEmail: cuentaExistente?.usuarioEmail || '',
-        password: cuentaExistente?.password || '',
-        observaciones: cuentaExistente?.observaciones || '',
-        activo: !!cuentaExistente, // Activo si ya existe una cuenta
-        cuentaId: cuentaExistente?.id || null // ID de la cuenta existente para actualización
-      };
-    });
-    
-    setImpuestosEditables(impuestosIniciales);
-  };
-
   const handleOpen = () => {
     resetForm();
     setOpen(true);
   };
 
-
-  const resetCuentaForm = () => {
-    setCuentaFormData({
-      tipoImpuesto: '',
-      codigo1: '',
-      codigo2: '',
-      periodicidad: '',
-      observaciones: ''
-    });
-    setCuentaErrors({});
-  };
-
-  const handleEditCuenta = (index) => {
-    const cuenta = cuentasTemporales[index];
-    setCuentaFormData({
-      tipoImpuesto: cuenta.tipoImpuesto || '',
-      codigo1: cuenta.codigo1 || '',
-      codigo2: cuenta.codigo2 || '',
-      periodicidad: cuenta.periodicidad || '',
-      observaciones: cuenta.observaciones || ''
-    });
-    // Eliminar de la lista temporal y se agregará de nuevo al guardar
-    const nuevasCuentas = [...cuentasTemporales];
-    nuevasCuentas.splice(index, 1);
-    setCuentasTemporales(nuevasCuentas);
-  };
-
-  const handleAgregarCuenta = (e) => {
-    e.preventDefault();
-    e.stopPropagation(); // Evitar que el evento se propague al formulario principal
-    
-    const newErrors = {};
-    if (!cuentaFormData.tipoImpuesto) {
-      newErrors.tipoImpuesto = 'Debe seleccionar un impuesto';
+  // Limpiar localidad cuando cambia la provincia
+  useEffect(() => {
+    if (formData.provinciaId && formData.localidadId) {
+      // Si cambió la provincia, limpiar localidad si no pertenece a la nueva provincia
+      if (localidades) {
+        const localidadActual = localidades.find(l => l.id === parseInt(formData.localidadId));
+        if (!localidadActual || localidadActual.provinciaId !== parseInt(formData.provinciaId)) {
+          setFormData(prev => ({ ...prev, localidadId: '' }));
+        }
+      } else {
+        // Si aún no hay localidades cargadas, limpiar localidad
+        setFormData(prev => ({ ...prev, localidadId: '' }));
+      }
+    } else if (!formData.provinciaId && formData.localidadId) {
+      // Si se quita la provincia, limpiar localidad
+      setFormData(prev => ({ ...prev, localidadId: '' }));
     }
-    
-    if (Object.keys(newErrors).length > 0) {
-      setCuentaErrors(newErrors);
-      return;
-    }
-    
-    setCuentaErrors({});
-
-    // Agregar a la lista temporal
-    const nuevaCuenta = {
-      tempId: `temp-${Date.now()}`,
-      tipoImpuesto: cuentaFormData.tipoImpuesto,
-      codigo1: cuentaFormData.codigo1?.trim() || null,
-      codigo2: cuentaFormData.codigo2?.trim() || null,
-      periodicidad: cuentaFormData.periodicidad || null,
-      observaciones: cuentaFormData.observaciones?.trim() || null
-    };
-
-    setCuentasTemporales([...cuentasTemporales, nuevaCuenta]);
-    resetCuentaForm();
-    
-    return false; // Prevenir cualquier comportamiento por defecto
-  };
-
-  const handleEliminarCuenta = (index) => {
-    const nuevasCuentas = [...cuentasTemporales];
-    nuevasCuentas.splice(index, 1);
-    setCuentasTemporales(nuevasCuentas);
-  };
+  }, [formData.provinciaId, localidades]);
 
   const handleEdit = async (propiedad) => {
     setEditing(propiedad);
-    resetCuentaForm();
     // Limpiar datos para el formulario, excluyendo relaciones y campos read-only
+    const propietarioIds = propiedad.propietarios?.map(p => p.propietario.id) || [];
     setFormData({
-      propietarioId: propiedad.propietarioId || '',
-      direccion: propiedad.direccion || '',
-      localidad: propiedad.localidad || '',
-      tipo: propiedad.tipo || '',
-      estado: propiedad.estado || '',
+      propietarioIds: propietarioIds,
+      dirCalle: propiedad.dirCalle || '',
+      dirNro: propiedad.dirNro || '',
+      dirPiso: propiedad.dirPiso || '',
+      dirDepto: propiedad.dirDepto || '',
+      provinciaId: propiedad.provinciaId?.toString() || propiedad.localidad?.provinciaId?.toString() || '',
+      localidadId: propiedad.localidadId?.toString() || '',
+      tipoPropiedadId: propiedad.tipoPropiedadId?.toString() || '',
+      estadoPropiedadId: propiedad.estadoPropiedadId?.toString() || '',
+      destinoId: propiedad.destinoId?.toString() || '',
+      ambientesId: propiedad.ambientesId?.toString() || '',
       codigoInterno: propiedad.codigoInterno || '',
-      ambientes: propiedad.ambientes || '',
       descripcion: propiedad.descripcion || ''
     });
     setOpen(true);
     
-    // Cargar las cuentas tributarias existentes
+    // Cargar impuestos y cargos existentes
     try {
-      const response = await api.get(`/cuentas/unidad/${propiedad.id}`);
-      const cuentasExistentes = response.data || [];
-      // Inicializar la tabla de impuestos editables con las cuentas existentes
-      // Usar setTimeout para asegurar que impuestosConPeriodicidad esté disponible
-      setTimeout(() => {
-        inicializarImpuestosEditables(cuentasExistentes);
-      }, 100);
-      // Ya no necesitamos cuentasTemporales, todo se maneja con impuestosEditables
+      const [impuestosResponse, cargosResponse] = await Promise.all([
+        api.get(`/propiedad-impuestos/propiedad/${propiedad.id}`),
+        api.get(`/propiedad-cargos/propiedad/${propiedad.id}`)
+      ]);
+      
+      const impuestosExistentes = impuestosResponse.data || [];
+      const cargosExistentes = cargosResponse.data || [];
+      
+      // Cargar campos para cada impuesto y mapear impuestos seleccionados
+      const impuestosConCampos = await Promise.all(
+        impuestosExistentes.map(async (imp) => {
+          const campos = await cargarCamposTipoImpuesto(imp.tipoImpuestoId);
+          // Cargar valores de campos existentes
+          let valoresCampos = {};
+          try {
+            const camposResponse = await api.get(`/propiedad-impuesto-campos/propiedad-impuesto/${imp.id}`);
+            const camposExistentes = camposResponse.data || [];
+            camposExistentes.forEach(campo => {
+              valoresCampos[campo.tipoCampoId] = campo.valor || '';
+            });
+          } catch (error) {
+            console.error('Error al cargar valores de campos:', error);
+          }
+          // Inicializar campos vacíos para los que no tienen valor
+          campos.forEach(campo => {
+            if (!valoresCampos.hasOwnProperty(campo.id)) {
+              valoresCampos[campo.id] = '';
+            }
+          });
+          return {
+            tipoImpuestoId: imp.tipoImpuestoId,
+            periodicidadId: imp.periodicidadId || null,
+            propiedadImpuestoId: imp.id, // Guardar el ID para actualizar campos después
+            campos: valoresCampos
+          };
+        })
+      );
+      
+      setImpuestosSeleccionados(impuestosConCampos);
+      
+      // Mapear cargos seleccionados
+      // Mapear cargos seleccionados con sus campos
+      const cargosConCampos = await Promise.all(
+        cargosExistentes.map(async (cargo) => {
+          const campos = await cargarCamposTipoCargo(cargo.tipoCargoId);
+          // Cargar valores de campos existentes
+          let valoresCampos = {};
+          try {
+            const camposResponse = await api.get(`/propiedad-cargo-campos/propiedad-cargo/${cargo.id}`);
+            const camposExistentes = camposResponse.data || [];
+            camposExistentes.forEach(campo => {
+              valoresCampos[campo.tipoCampoId] = campo.valor || '';
+            });
+          } catch (error) {
+            console.error('Error al cargar campos del cargo:', error);
+          }
+          
+          const camposIniciales = {};
+          campos.forEach(campo => {
+            camposIniciales[campo.id] = valoresCampos[campo.id] || '';
+          });
+          
+          // Obtener el tipo de cargo para usar su periodicidad por defecto
+          const tipoCargo = tiposCargo?.find(tc => tc.id === cargo.tipoCargoId);
+          const periodicidadPorDefecto = tipoCargo?.periodicidadId || tipoCargo?.periodicidad?.id || null;
+          
+          return {
+            tipoCargoId: cargo.tipoCargoId,
+            periodicidadId: periodicidadPorDefecto,
+            propiedadCargoId: cargo.id,
+            campos: camposIniciales
+          };
+        })
+      );
+      setCargosSeleccionados(cargosConCampos);
     } catch (error) {
-      console.error('Error al cargar cuentas tributarias:', error);
-      setCuentasTemporales([]);
-      if (impuestosConPeriodicidad.length > 0) {
-        inicializarImpuestosEditables([]);
-      } else {
-        setTimeout(() => {
-          inicializarImpuestosEditables([]);
-        }, 200);
-      }
+      console.error('Error al cargar impuestos y cargos:', error);
+      setImpuestosSeleccionados([]);
+      setCargosSeleccionados([]);
     }
 
     // Cargar los documentos existentes
     try {
-      const documentosResponse = await api.get(`/documentos-propiedad/unidad/${propiedad.id}`);
+      const documentosResponse = await api.get(`/documentos-propiedad/propiedad/${propiedad.id}`);
       const documentosExistentes = documentosResponse.data || [];
       // Inicializar documentación con los documentos existentes
       // Esperar a que los parámetros estén cargados
-      if (documentacionData.lista && documentacionData.lista.length > 0) {
+      if (tiposDocumentoPropiedad && tiposDocumentoPropiedad.length > 0) {
         inicializarDocumentacion(documentosExistentes);
       } else {
-        // Si los parámetros aún no están cargados, esperar un poco más
+        // Si los tipos aún no están cargados, esperar un poco más
         setTimeout(() => {
           inicializarDocumentacion(documentosExistentes);
         }, 300);
@@ -369,7 +603,7 @@ export default function Propiedades() {
     } catch (error) {
       console.error('Error al cargar documentos:', error);
       // Si hay error, inicializar sin documentos existentes (todos en false)
-      if (documentacionData.lista && documentacionData.lista.length > 0) {
+      if (tiposDocumentoPropiedad && tiposDocumentoPropiedad.length > 0) {
         inicializarDocumentacion([]);
       } else {
         setTimeout(() => {
@@ -381,10 +615,39 @@ export default function Propiedades() {
 
   // Efecto para inicializar documentación cuando se abre el diálogo para nueva propiedad
   useEffect(() => {
-    if (open && !editing && documentacionData.lista && documentacionData.lista.length > 0 && documentacion.length === 0) {
+    if (open && !editing && tiposDocumentoPropiedad && tiposDocumentoPropiedad.length > 0 && documentacion.length === 0) {
       inicializarDocumentacion([]);
     }
-  }, [open, editing, documentacionData.lista]);
+  }, [open, editing, tiposDocumentoPropiedad]);
+
+  // Efecto para cargar campos de cargos seleccionados
+  useEffect(() => {
+    const cargarCampos = async () => {
+      for (const cargo of cargosSeleccionados) {
+        if (!camposPorTipoCargo[cargo.tipoCargoId]) {
+          await cargarCamposTipoCargo(cargo.tipoCargoId);
+        }
+      }
+    };
+    if (cargosSeleccionados.length > 0) {
+      cargarCampos();
+    }
+  }, [cargosSeleccionados]);
+
+  // Efecto para cargar campos de impuestos seleccionados
+  useEffect(() => {
+    const cargarCampos = async () => {
+      for (const impuesto of impuestosSeleccionados) {
+        if (!camposPorTipoImpuesto[impuesto.tipoImpuestoId]) {
+          await cargarCamposTipoImpuesto(impuesto.tipoImpuestoId);
+        }
+      }
+    };
+    if (impuestosSeleccionados.length > 0) {
+      cargarCampos();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [impuestosSeleccionados.map(imp => imp.tipoImpuestoId).join(',')]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -396,13 +659,18 @@ export default function Propiedades() {
     
     // Preparar datos para enviar, excluyendo campos vacíos opcionales
     const dataToSend = {
-      propietarioId: formData.propietarioId?.trim() || null,
-      direccion: formData.direccion.trim(),
-      localidad: formData.localidad.trim(),
-      tipo: formData.tipo?.trim() || null,
-      estado: formData.estado?.trim() || null,
+      propietarioIds: formData.propietarioIds.map(id => parseInt(id)),
+      dirCalle: formData.dirCalle.trim(),
+      dirNro: formData.dirNro.trim(),
+      dirPiso: formData.dirPiso?.trim() || null,
+      dirDepto: formData.dirDepto?.trim() || null,
+      provinciaId: formData.provinciaId ? parseInt(formData.provinciaId) : null,
+      localidadId: formData.localidadId ? parseInt(formData.localidadId) : null,
+      tipoPropiedadId: formData.tipoPropiedadId ? parseInt(formData.tipoPropiedadId) : null,
+      estadoPropiedadId: formData.estadoPropiedadId ? parseInt(formData.estadoPropiedadId) : null,
+      destinoId: formData.destinoId ? parseInt(formData.destinoId) : null,
+      ambientesId: formData.ambientesId ? parseInt(formData.ambientesId) : null,
       codigoInterno: formData.codigoInterno?.trim() || null,
-      ambientes: formData.ambientes?.trim() || null,
       descripcion: formData.descripcion?.trim() || null
     };
 
@@ -419,91 +687,79 @@ export default function Propiedades() {
         propiedadId = response.data.id;
       }
 
-      // Guardar todas las cuentas tributarias desde la tabla editable
-      // Obtener cuentas existentes si estamos editando
-      let cuentasExistentes = [];
-      if (editing?.id) {
-        try {
-          const cuentasExistentesResponse = await api.get(`/cuentas/unidad/${propiedadId}`);
-          cuentasExistentes = cuentasExistentesResponse.data || [];
-        } catch (error) {
-          console.error('Error al obtener cuentas existentes:', error);
-        }
-      }
-
-      // Procesar impuestos editables
-      const impuestosActivos = impuestosEditables.filter(imp => imp.activo);
-      
-      // Mapear IDs existentes válidos (solo los que realmente existen en la respuesta del servidor)
-      const idsExistentesValidos = new Set(cuentasExistentes.map(c => c.id));
-      
-      // Verificar que los cuentaId en impuestosEditables realmente existen
-      const impuestosConCuentaIdValido = impuestosActivos.map(imp => ({
-        ...imp,
-        cuentaId: imp.cuentaId && idsExistentesValidos.has(imp.cuentaId) ? imp.cuentaId : null
-      }));
-
-      const idsAGuardar = new Set(
-        impuestosConCuentaIdValido
-          .filter(imp => imp.cuentaId)
-          .map(imp => imp.cuentaId)
-      );
-
-      // Eliminar cuentas que ya no están activas (solo las que realmente existen)
-      const idsAEliminar = cuentasExistentes
-        .filter(c => !idsAGuardar.has(c.id))
-        .map(c => c.id);
-      
-      if (idsAEliminar.length > 0) {
-        await Promise.all(
-          idsAEliminar.map(id => 
-            api.delete(`/cuentas/${id}`).catch(err => {
-              console.warn(`No se pudo eliminar cuenta ${id}:`, err);
-            })
-          )
-        );
-      }
-
-      // Crear/actualizar cuentas activas
-      if (impuestosConCuentaIdValido.length > 0) {
-        const promises = impuestosConCuentaIdValido.map(async (impuesto) => {
-          const cuentaData = {
-            unidadId: propiedadId,
-            tipoImpuesto: impuesto.tipoImpuesto,
-            codigo1: impuesto.codigo1?.trim() || null,
-            codigo2: impuesto.codigo2?.trim() || null,
-            periodicidad: impuesto.periodicidad || null,
-            usuarioEmail: impuesto.usuarioEmail?.trim() || null,
-            password: impuesto.password?.trim() || null,
-            observaciones: impuesto.observaciones?.trim() || null
-          };
-
-          try {
-            // Si tiene cuentaId válido, intentar actualizar
-            if (impuesto.cuentaId) {
-              try {
-                return await api.put(`/cuentas/${impuesto.cuentaId}`, cuentaData);
-              } catch (updateError) {
-                // Si la cuenta no existe (404), crear una nueva
-                if (updateError.response?.status === 404) {
-                  console.warn(`Cuenta tributaria ${impuesto.cuentaId} no encontrada, creando nueva`);
-                  return await api.post('/cuentas', cuentaData);
-                }
-                // Si es otro error, relanzarlo
-                throw updateError;
-              }
-            } else {
-              // Crear nueva
-              return await api.post('/cuentas', cuentaData);
-            }
-          } catch (error) {
-            console.error('Error al guardar cuenta tributaria:', error);
-            const impuestoNombre = tipoImpuestoData.parametros?.[impuesto.tipoImpuesto]?.descripcion || 'impuesto';
-            throw new Error(error.response?.data?.error || `Error al guardar la cuenta tributaria: ${impuestoNombre}`);
-          }
+      // Guardar impuestos y cargos
+      let impuestosGuardados = [];
+      try {
+        const impuestosResponse = await api.post(`/propiedad-impuestos/propiedad/${propiedadId}`, {
+          impuestos: impuestosSeleccionados.map(imp => ({
+            tipoImpuestoId: imp.tipoImpuestoId,
+            periodicidadId: imp.periodicidadId
+          }))
         });
+        impuestosGuardados = impuestosResponse.data || [];
+      } catch (error) {
+        console.error('Error al guardar impuestos:', error);
+        throw new Error(error.response?.data?.error || 'Error al guardar impuestos');
+      }
 
-        await Promise.all(promises);
+      // Guardar valores de campos de los impuestos
+      try {
+        for (const impuestoSeleccionado of impuestosSeleccionados) {
+          // Si es edición, usar el ID existente, sino buscar en los impuestos guardados
+          const propiedadImpuestoId = impuestoSeleccionado.propiedadImpuestoId || 
+            impuestosGuardados.find(imp => imp.tipoImpuestoId === impuestoSeleccionado.tipoImpuestoId)?.id;
+          
+          if (propiedadImpuestoId && impuestoSeleccionado.campos) {
+            const camposAGuardar = Object.entries(impuestoSeleccionado.campos)
+              .filter(([_, valor]) => valor && valor.trim() !== '')
+              .map(([tipoCampoId, valor]) => ({
+                tipoCampoId: parseInt(tipoCampoId),
+                valor: valor.trim()
+              }));
+            
+            // Guardar todos los campos (incluso vacíos para poder limpiarlos)
+            await api.post(`/propiedad-impuesto-campos/propiedad-impuesto/${propiedadImpuestoId}`, {
+              campos: camposAGuardar
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error al guardar valores de campos:', error);
+        // No lanzar error, solo loguear, para no bloquear el guardado de la propiedad
+      }
+
+      try {
+        // Guardar cargos
+        const cargosResponse = await api.post(`/propiedad-cargos/propiedad/${propiedadId}`, {
+          cargos: cargosSeleccionados.map(cargo => ({ tipoCargoId: cargo.tipoCargoId }))
+        });
+        
+        // Guardar campos de cada cargo
+        for (const cargoSeleccionado of cargosSeleccionados) {
+          // Buscar el ID del PropiedadCargo recién creado/actualizado
+          const propiedadCargo = cargosResponse.data.find(
+            c => c.tipoCargoId === cargoSeleccionado.tipoCargoId
+          );
+          
+          if (propiedadCargo && cargoSeleccionado.campos) {
+            const propiedadCargoId = cargoSeleccionado.propiedadCargoId || propiedadCargo.id;
+            
+            const camposAGuardar = Object.entries(cargoSeleccionado.campos)
+              .filter(([_, valor]) => valor && valor.trim() !== '')
+              .map(([tipoCampoId, valor]) => ({
+                tipoCampoId: parseInt(tipoCampoId),
+                valor: valor.trim()
+              }));
+            
+            // Guardar todos los campos (incluso vacíos para poder limpiarlos)
+            await api.post(`/propiedad-cargo-campos/propiedad-cargo/${propiedadCargoId}`, {
+              campos: camposAGuardar
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error al guardar cargos:', error);
+        throw new Error(error.response?.data?.error || 'Error al guardar cargos');
       }
 
       // Guardar documentos de la propiedad (guardar todos, incluso los que están en false)
@@ -512,15 +768,15 @@ export default function Propiedades() {
       if (documentacion && Array.isArray(documentacion) && documentacion.length > 0) {
         try {
           const documentosAGuardar = documentacion
-            .filter(doc => doc && doc.tipoDocumentoId)
+            .filter(doc => doc && doc.tipoDocumentoPropiedadId)
             .map(doc => ({
-              tipoDocumentoId: doc.tipoDocumentoId,
+              tipoDocumentoPropiedadId: doc.tipoDocumentoPropiedadId,
               necesario: Boolean(doc.necesario),
               recibido: Boolean(doc.recibido)
             }));
           
           if (documentosAGuardar.length > 0) {
-            await api.post(`/documentos-propiedad/unidad/${propiedadId}`, {
+            await api.post(`/documentos-propiedad/propiedad/${propiedadId}`, {
               documentos: documentosAGuardar
             });
           }
@@ -530,10 +786,23 @@ export default function Propiedades() {
         }
       }
 
-      queryClient.invalidateQueries(['unidades']);
-      queryClient.invalidateQueries(['cuentasTributarias']);
+      queryClient.invalidateQueries(['propiedades']);
       // Invalidar también los documentos de la propiedad para que se recarguen si se consultan
       queryClient.invalidateQueries(['documentos-propiedad']);
+      
+      // Si viene de Propietarios, asociar automáticamente
+      const propietarioIdParaAsociar = sessionStorage.getItem('propietarioIdParaAsociar');
+      if (propietarioIdParaAsociar && !editing) {
+        try {
+          await api.post(`/propietarios/${propietarioIdParaAsociar}/propiedades`, {
+            propiedadIds: [propiedadId]
+          });
+          // NO eliminar propietarioIdParaAsociar todavía, se eliminará cuando se cierre el diálogo de Propietarios
+          queryClient.invalidateQueries(['propietarios']);
+        } catch (error) {
+          console.error('Error al asociar propiedad al propietario:', error);
+        }
+      }
       
       // Si hubo error solo en documentos, mostrar advertencia pero cerrar el diálogo
       if (errorDocumentos) {
@@ -541,11 +810,24 @@ export default function Propiedades() {
         setSnackbarSeverity('warning');
         setSnackbarOpen(true);
       } else {
-        setOpen(false);
-        resetForm();
-        setSuccessMessage(editing?.id ? 'Propiedad actualizada exitosamente' : 'Propiedad creada exitosamente');
-        setSnackbarSeverity('success');
-        setSnackbarOpen(true);
+        const vieneDePropietarios = sessionStorage.getItem('propietarioIdParaAsociar');
+        
+        // Si viene de Propietarios, navegar ANTES de cerrar el diálogo
+        if (vieneDePropietarios && !editing) {
+          // Guardar un flag para indicar que se creó exitosamente
+          sessionStorage.setItem('propiedadCreadaExitosamente', 'true');
+          // No eliminar propietarioIdParaAsociar todavía, se eliminará cuando se cierre el diálogo de Propietarios
+          setOpen(false);
+          resetForm();
+          navigate('/clientes?tab=0');
+          // El mensaje de éxito se mostrará cuando se reabra el diálogo de Propietarios
+        } else {
+          setOpen(false);
+          resetForm();
+          setSuccessMessage(editing?.id ? 'Propiedad actualizada exitosamente' : 'Propiedad creada exitosamente');
+          setSnackbarSeverity('success');
+          setSnackbarOpen(true);
+        }
       }
     } catch (error) {
       console.error('❌ ERROR GENERAL al guardar:', error);
@@ -555,8 +837,6 @@ export default function Propiedades() {
       setSnackbarOpen(true);
     }
   };
-
-  if (isLoading) return <div>Cargando...</div>;
 
   return (
     <Box>
@@ -581,18 +861,23 @@ export default function Propiedades() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {propiedades?.data?.map((propiedad) => (
+            {propiedades?.data?.map((propiedad) => {
+              const direccionCompleta = `${propiedad.dirCalle} ${propiedad.dirNro}${propiedad.dirPiso ? `, Piso ${propiedad.dirPiso}` : ''}${propiedad.dirDepto ? `, Depto ${propiedad.dirDepto}` : ''}`;
+              const localidadNombre = propiedad.localidad?.nombre || propiedad.provincia?.nombre || '';
+              const propietariosNombres = propiedad.propietarios?.map(p => 
+                p.propietario.razonSocial || 
+                `${p.propietario.nombre || ''} ${p.propietario.apellido || ''}`.trim()
+              ).filter(Boolean).join(', ') || '';
+              
+              return (
               <TableRow key={propiedad.id}>
-                <TableCell>{propiedad.direccion}</TableCell>
-                <TableCell>{propiedad.localidad}</TableCell>
+                <TableCell>{direccionCompleta}</TableCell>
+                <TableCell>{localidadNombre}</TableCell>
                 <TableCell>
-                  {propiedad.propietario 
-                    ? (propiedad.propietario.razonSocial ||
-                       `${propiedad.propietario.nombre || ''} ${propiedad.propietario.apellido || ''}`.trim())
-                    : <em style={{ color: '#999' }}>Sin propietario</em>}
+                  {propietariosNombres || <em style={{ color: '#999' }}>Sin propietarios</em>}
                 </TableCell>
-                <TableCell>{getDescripcion(tipoPropiedadMap, propiedad.tipo)}</TableCell>
-                <TableCell>{getDescripcion(estadoPropiedadMap, propiedad.estado)}</TableCell>
+                <TableCell>{propiedad.tipoPropiedad?.nombre || '-'}</TableCell>
+                <TableCell>{propiedad.estadoPropiedad?.nombre || '-'}</TableCell>
                 <TableCell>
                   <IconButton size="small" onClick={() => handleEdit(propiedad)} title="Editar">
                     <EditIcon />
@@ -610,7 +895,8 @@ export default function Propiedades() {
                   </IconButton>
                 </TableCell>
               </TableRow>
-            ))}
+            );
+            })}
           </TableBody>
         </Table>
       </TableContainer>
@@ -625,7 +911,7 @@ export default function Propiedades() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                     <Box>
                       <Typography variant="h6" fontWeight={600}>
-                        {propiedad.direccion}
+                        {`${propiedad.dirCalle} ${propiedad.dirNro}${propiedad.dirPiso ? `, Piso ${propiedad.dirPiso}` : ''}${propiedad.dirDepto ? `, Depto ${propiedad.dirDepto}` : ''}`}
                       </Typography>
                     </Box>
                     <Box>
@@ -647,41 +933,50 @@ export default function Propiedades() {
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    {propiedad.localidad && (
+                    {(propiedad.localidad || propiedad.provincia) && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <LocationCityIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                         <Typography variant="body2">
-                          <strong>Localidad:</strong> {propiedad.localidad}
+                          <strong>Localidad:</strong> {propiedad.localidad?.nombre || propiedad.provincia?.nombre || ''}
                         </Typography>
                       </Box>
                     )}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <PersonIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                      <Typography variant="body2">
-                        <strong>Propietario:</strong>{' '}
-                        {propiedad.propietario 
-                          ? (propiedad.propietario.razonSocial ||
-                             `${propiedad.propietario.nombre || ''} ${propiedad.propietario.apellido || ''}`.trim())
-                          : <em style={{ color: '#999' }}>Sin propietario</em>}
-                      </Typography>
-                    </Box>
-                    {propiedad.tipo && (
+                    {propiedad.propietarios && propiedad.propietarios.length > 0 ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <PersonIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+                        <Typography variant="body2">
+                          <strong>Propietarios:</strong>{' '}
+                          {propiedad.propietarios.map(p => 
+                            p.propietario.razonSocial || 
+                            `${p.propietario.nombre || ''} ${p.propietario.apellido || ''}`.trim()
+                          ).filter(Boolean).join(', ')}
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <PersonIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+                        <Typography variant="body2">
+                          <strong>Propietarios:</strong> <em style={{ color: '#999' }}>Sin propietarios</em>
+                        </Typography>
+                      </Box>
+                    )}
+                    {propiedad.tipoPropiedad && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <HomeIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                         <Typography variant="body2">
-                          <strong>Tipo:</strong> {getDescripcion(tipoPropiedadMap, propiedad.tipo)}
+                          <strong>Tipo:</strong> {propiedad.tipoPropiedad.nombre}
                         </Typography>
                       </Box>
                     )}
-                    {propiedad.estado && (
+                    {propiedad.estadoPropiedad && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Chip label={getDescripcion(estadoPropiedadMap, propiedad.estado)} size="small" color="primary" />
+                        <Chip label={propiedad.estadoPropiedad.nombre} size="small" color="primary" />
                       </Box>
                     )}
                     {propiedad.ambientes && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Typography variant="body2">
-                          <strong>Ambientes:</strong> {getDescripcion(ambientesMap, propiedad.ambientes)}
+                          <strong>Ambientes:</strong> {propiedad.ambientes.nombre}
                         </Typography>
                       </Box>
                     )}
@@ -693,7 +988,28 @@ export default function Propiedades() {
         </Grid>
       </Box>
 
-      <Dialog open={open} onClose={() => setOpen(false)} maxWidth="lg" fullWidth>
+      <Dialog 
+        open={open} 
+        onClose={() => {
+          const vieneDePropietarios = sessionStorage.getItem('propietarioIdParaAsociar');
+          setOpen(false);
+          resetForm();
+          // Limpiar sessionStorage de propiedades cuando se cierra normalmente
+          sessionStorage.removeItem('propiedadEnEdicion');
+          sessionStorage.removeItem('propiedadFormData');
+          sessionStorage.removeItem('propiedadEstadoCompleto');
+          sessionStorage.removeItem('propiedadIdParaAsociar');
+          sessionStorage.removeItem('propiedadNuevaParaAsociar');
+          // Si viene de Propietarios, volver allí
+          if (vieneDePropietarios && !editing) {
+            // NO eliminar propietarioIdParaAsociar ni propietarioEnEdicion cuando se cancela
+            // Se eliminarán cuando se cierre el diálogo de Propietarios normalmente
+            navigate('/clientes?tab=0');
+          }
+        }} 
+        maxWidth="lg" 
+        fullWidth
+      >
         <form onSubmit={handleSubmit} noValidate>
           <DialogTitle>
             {editing ? 'Editar Propiedad' : 'Nueva Propiedad'}
@@ -701,94 +1017,204 @@ export default function Propiedades() {
           <DialogContent>
             <Box sx={{ mt: 1 }}>
               <Grid container spacing={2}>
-                <Grid item xs={12} sm={6} md={4}>
+                {/* Dirección - Todos en la misma línea */}
+                <Grid item xs={12} sm={6} md={3}>
                   <TextField
-                    label="Dirección"
+                    label="Calle"
                     required
                     fullWidth
                     size="small"
-                    value={formData.direccion}
+                    value={formData.dirCalle}
                     onChange={(e) => {
-                      setFormData({ ...formData, direccion: e.target.value });
-                      if (errors.direccion) {
-                        setErrors({ ...errors, direccion: '' });
+                      setFormData({ ...formData, dirCalle: e.target.value });
+                      if (errors.dirCalle) {
+                        setErrors({ ...errors, dirCalle: '' });
                       }
                     }}
-                    error={!!errors.direccion}
-                    helperText={errors.direccion}
+                    error={!!errors.dirCalle}
+                    helperText={errors.dirCalle}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={4}>
+                <Grid item xs={12} sm={6} md={1}>
                   <TextField
-                    label="Localidad"
+                    label="Nro"
                     required
                     fullWidth
                     size="small"
-                    value={formData.localidad}
+                    value={formData.dirNro}
                     onChange={(e) => {
-                      setFormData({ ...formData, localidad: e.target.value });
-                      if (errors.localidad) {
-                        setErrors({ ...errors, localidad: '' });
+                      setFormData({ ...formData, dirNro: e.target.value });
+                      if (errors.dirNro) {
+                        setErrors({ ...errors, dirNro: '' });
                       }
                     }}
-                    error={!!errors.localidad}
-                    helperText={errors.localidad}
+                    error={!!errors.dirNro}
+                    helperText={errors.dirNro}
                   />
                 </Grid>
-                <Grid item xs={12} sm={6} md={4}>
-                  <FormControl fullWidth size="small" error={!!errors.propietarioId}>
-                    <InputLabel>Propietario</InputLabel>
+                <Grid item xs={12} sm={6} md={1}>
+                  <TextField
+                    label="Piso"
+                    fullWidth
+                    size="small"
+                    value={formData.dirPiso}
+                    onChange={(e) => setFormData({ ...formData, dirPiso: e.target.value })}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={1}>
+                  <TextField
+                    label="Depto"
+                    fullWidth
+                    size="small"
+                    value={formData.dirDepto}
+                    onChange={(e) => setFormData({ ...formData, dirDepto: e.target.value })}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={6} md={3}>
+                  <FormControl fullWidth size="small" error={!!errors.provinciaId}>
+                    <InputLabel>Provincia</InputLabel>
                     <Select
-                      value={formData.propietarioId || ''}
+                      value={formData.provinciaId || ''}
                       onChange={(e) => {
-                        setFormData({ ...formData, propietarioId: e.target.value || '' });
-                        if (errors.propietarioId) {
-                          setErrors({ ...errors, propietarioId: '' });
+                        setFormData({ ...formData, provinciaId: e.target.value || '', localidadId: '' });
+                        if (errors.provinciaId) {
+                          setErrors({ ...errors, provinciaId: '' });
                         }
                       }}
-                      label="Propietario"
+                      label="Provincia"
                     >
                       <MenuItem value="">
-                        <em>Sin propietario</em>
+                        <em>Seleccionar provincia</em>
                       </MenuItem>
-                      {propietarios?.data?.map((prop) => (
-                        <MenuItem key={prop.id} value={prop.id}>
-                          {prop.razonSocial || `${prop.nombre || ''} ${prop.apellido || ''}`.trim() || 'Sin nombre'}
+                      {provincias?.map((prov) => (
+                        <MenuItem key={prov.id} value={prov.id}>
+                          {prov.nombre}
                         </MenuItem>
                       ))}
                     </Select>
-                    {errors.propietarioId && (
+                    {errors.provinciaId && (
                       <Typography variant="caption" color="error" sx={{ mt: 0.5, ml: 1.75 }}>
-                        {errors.propietarioId}
+                        {errors.provinciaId}
                       </Typography>
                     )}
                   </FormControl>
                 </Grid>
                 <Grid item xs={12} sm={6} md={3}>
-                  <ParametroSelect
-                    categoriaCodigo="tipo_unidad"
-                    label="Tipo de Propiedad"
-                    value={formData.tipo}
-                    onChange={(e) => setFormData({ ...formData, tipo: e.target.value })}
-                  />
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Localidad</InputLabel>
+                    <Select
+                      value={formData.localidadId || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, localidadId: e.target.value || '' });
+                      }}
+                      label="Localidad"
+                      disabled={!formData.provinciaId}
+                    >
+                      <MenuItem value="">
+                        <em>Seleccionar localidad</em>
+                      </MenuItem>
+                      {localidades?.map((loc) => (
+                        <MenuItem key={loc.id} value={loc.id}>
+                          {loc.nombre}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>        
+                {/* Tipo, Estado, Destino, Ambientes, Código Interno */}
+                <Grid item xs={12} sm={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Tipo de Propiedad</InputLabel>
+                    <Select
+                      value={formData.tipoPropiedadId || ''}
+                      onChange={(e) => setFormData({ ...formData, tipoPropiedadId: e.target.value || '' })}
+                      label="Tipo de Propiedad"
+                    >
+                      <MenuItem value="">
+                        <em>Seleccionar tipo</em>
+                      </MenuItem>
+                      {tiposPropiedad && tiposPropiedad.length > 0 ? (
+                        tiposPropiedad.map((tipo) => (
+                          <MenuItem key={tipo.id} value={tipo.id}>
+                            {tipo.nombre}
+                          </MenuItem>
+                        ))
+                      ) : (
+                        <MenuItem disabled>No hay tipos disponibles</MenuItem>
+                      )}
+                    </Select>
+                  </FormControl>
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <ParametroSelect
-                    categoriaCodigo="ambientes"
-                    label="Ambientes"
-                    value={formData.ambientes}
-                    onChange={(e) => setFormData({ ...formData, ambientes: e.target.value })}
-                  />
+                <Grid item xs={12} sm={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Estado</InputLabel>
+                    <Select
+                      value={formData.estadoPropiedadId || ''}
+                      onChange={(e) => setFormData({ ...formData, estadoPropiedadId: e.target.value || '' })}
+                      label="Estado"
+                    >
+                      <MenuItem value="">
+                        <em>Seleccionar estado</em>
+                      </MenuItem>
+                      {estadosPropiedad && estadosPropiedad.length > 0 ? (
+                        estadosPropiedad.map((estado) => (
+                          <MenuItem key={estado.id} value={estado.id}>
+                            {estado.nombre}
+                          </MenuItem>
+                        ))
+                      ) : (
+                        <MenuItem disabled>No hay estados disponibles</MenuItem>
+                      )}
+                    </Select>
+                  </FormControl>
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
-                  <ParametroSelect
-                    categoriaCodigo="estado_unidad"
-                    label="Estado"
-                    value={formData.estado}
-                    onChange={(e) => setFormData({ ...formData, estado: e.target.value })}
-                  />
+                <Grid item xs={12} sm={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Destino</InputLabel>
+                    <Select
+                      value={formData.destinoId || ''}
+                      onChange={(e) => setFormData({ ...formData, destinoId: e.target.value || '' })}
+                      label="Destino"
+                    >
+                      <MenuItem value="">
+                        <em>Seleccionar destino</em>
+                      </MenuItem>
+                      {destinosPropiedad && destinosPropiedad.length > 0 ? (
+                        destinosPropiedad.map((destino) => (
+                          <MenuItem key={destino.id} value={destino.id}>
+                            {destino.nombre}
+                          </MenuItem>
+                        ))
+                      ) : (
+                        <MenuItem disabled>No hay destinos disponibles</MenuItem>
+                      )}
+                    </Select>
+                  </FormControl>
                 </Grid>
-                <Grid item xs={12} sm={6} md={3}>
+                <Grid item xs={12} sm={6} md={2}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Ambientes</InputLabel>
+                    <Select
+                      value={formData.ambientesId || ''}
+                      onChange={(e) => setFormData({ ...formData, ambientesId: e.target.value || '' })}
+                      label="Ambientes"
+                    >
+                      <MenuItem value="">
+                        <em>Seleccionar ambientes</em>
+                      </MenuItem>
+                      {ambientesPropiedad && ambientesPropiedad.length > 0 ? (
+                        ambientesPropiedad.map((ambiente) => (
+                          <MenuItem key={ambiente.id} value={ambiente.id}>
+                            {ambiente.nombre}
+                          </MenuItem>
+                        ))
+                      ) : (
+                        <MenuItem disabled>No hay ambientes disponibles</MenuItem>
+                      )}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} sm={6} md={4}>
                   <TextField
                     label="Código Interno"
                     fullWidth
@@ -837,431 +1263,458 @@ export default function Propiedades() {
                 />
               </Box>
 
-              {/* Sección de Tabs: Asociar Impuestos y Documentación */}
+              {/* Sección de Tabs: Propietarios, Impuestos y Cargos, Documentación */}
               <Box sx={{ mt: 3 }}>
                 <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)} sx={{ mb: 2, borderBottom: 1, borderColor: 'divider' }}>
-                  <Tab label="Asociar Impuestos" />
+                  <Tab label="Propietarios" />
+                  <Tab label="Impuestos y Cargos" />
                   <Tab label="Documentación" />
                 </Tabs>
 
-                {/* Tab Panel: Asociar Impuestos */}
+                {/* Tab Panel: Propietarios */}
                 {tabValue === 0 && (
                   <Box>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                      Seleccioná los impuestos que aplican a esta propiedad y completá los códigos correspondientes.
-                    </Typography>
-
-                {/* Tabla editable de impuestos */}
-                {impuestosConPeriodicidad.length > 0 ? (() => {
-                  const tieneCodigo1 = impuestosEditables.some(imp => {
-                    const param = tipoImpuestoData.parametros?.[imp.tipoImpuesto];
-                    return param?.labelCodigo1;
-                  });
-                  const tieneCodigo2 = impuestosEditables.some(imp => {
-                    const param = tipoImpuestoData.parametros?.[imp.tipoImpuesto];
-                    return param?.labelCodigo2;
-                  });
-                  const anchoCodigo = 200; // Ancho de cada columna de código
-                  const anchoMinimo = 800 + (tieneCodigo1 ? anchoCodigo : 0) + (tieneCodigo2 ? anchoCodigo : 0);
-                  
-                  return (
-                    <TableContainer 
-                      sx={{ 
-                        mb: 2, 
-                        border: '1px solid', 
-                        borderColor: 'divider', 
-                        borderRadius: 1,
-                        maxWidth: '100%',
-                        overflowX: 'auto'
-                      }}
-                    >
-                      <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.25 }, minWidth: anchoMinimo }}>
-                      <TableHead>
-                        <TableRow sx={{ bgcolor: 'grey.100' }}>
-                          <TableCell padding="checkbox" sx={{ width: '60px', minWidth: '60px', py: 0.75 }}>Activo</TableCell>
-                          <TableCell sx={{ width: '140px', minWidth: '140px', py: 0.75, whiteSpace: 'nowrap' }}>Impuesto</TableCell>
-                          <TableCell sx={{ width: '160px', minWidth: '160px', py: 0.75 }}>Periodicidad</TableCell>
-                          {tieneCodigo1 && (
-                            <TableCell sx={{ width: '200px', minWidth: '200px', py: 0.75 }}>Código 1</TableCell>
+                    {/* Selector de propietarios existentes */}
+                    <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'center' }}>
+                      <FormControl fullWidth size="small" sx={{ flex: 1 }}>
+                        <InputLabel>Seleccionar Propietario</InputLabel>
+                        <Select
+                          value={propietarioSeleccionado || ''}
+                          label="Seleccionar Propietario"
+                          onChange={(e) => setPropietarioSeleccionado(e.target.value)}
+                        >
+                          {Array.isArray(propietarios) && propietarios.length > 0 ? (
+                            propietarios
+                              .filter(p => !formData.propietarioIds.includes(p.id))
+                              .map((propietario) => {
+                                // Construir nombre completo
+                                const nombreCompleto = propietario.tipoPersona?.codigo === 'FISICA'
+                                  ? `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || propietario.razonSocial || 'Sin nombre'
+                                  : propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || 'Sin nombre';
+                                return (
+                                  <MenuItem key={propietario.id} value={propietario.id}>
+                                    {nombreCompleto}
+                                  </MenuItem>
+                                );
+                              })
+                          ) : (
+                            <MenuItem disabled>No hay propietarios disponibles</MenuItem>
                           )}
-                          {tieneCodigo2 && (
-                            <TableCell sx={{ width: '200px', minWidth: '200px', py: 0.75 }}>Código 2</TableCell>
-                          )}
-                          <TableCell sx={{ width: '200px', minWidth: '200px', py: 0.75 }}>Usuario/Email</TableCell>
-                          <TableCell sx={{ width: '180px', minWidth: '180px', py: 0.75 }}>Contraseña</TableCell>
-                          <TableCell sx={{ width: '200px', minWidth: '200px', py: 0.75 }}>Observaciones</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {impuestosEditables.map((impuesto, index) => {
-                          const parametroImpuesto = tipoImpuestoData.parametros?.[impuesto.tipoImpuesto];
-                          const labelCodigo1 = parametroImpuesto?.labelCodigo1;
-                          const labelCodigo2 = parametroImpuesto?.labelCodigo2;
-                          const mostrarCodigo1 = !!labelCodigo1;
-                          const mostrarCodigo2 = !!labelCodigo2;
+                        </Select>
+                      </FormControl>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        sx={{ minWidth: 'auto', height: '40px', px: 1.5 }}
+                        onClick={() => {
+                          if (propietarioSeleccionado) {
+                            const propietarioId = parseInt(propietarioSeleccionado);
+                            if (!formData.propietarioIds.includes(propietarioId)) {
+                              setFormData({
+                                ...formData,
+                                propietarioIds: [...formData.propietarioIds, propietarioId]
+                              });
+                              setPropietarioSeleccionado('');
+                            }
+                          }
+                        }}
+                        disabled={!propietarioSeleccionado}
+                      >
+                        Agregar
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        sx={{ minWidth: 'auto', height: '40px', px: 1.5 }}
+                        startIcon={<AddIcon sx={{ fontSize: '1rem' }} />}
+                        onClick={() => {
+                          // Guardar el ID de la propiedad en sessionStorage para asociar después
+                          if (editing?.id) {
+                            sessionStorage.setItem('propiedadIdParaAsociar', editing.id.toString());
+                            sessionStorage.setItem('propiedadEnEdicion', JSON.stringify(editing));
+                            // Guardar el estado completo del formulario (incluyendo impuestos, cargos, documentación, tab)
+                            const estadoCompleto = {
+                              formData: formData,
+                              impuestosSeleccionados: impuestosSeleccionados,
+                              cargosSeleccionados: cargosSeleccionados,
+                              documentacion: documentacion,
+                              tabValue: tabValue
+                            };
+                            sessionStorage.setItem('propiedadEstadoCompleto', JSON.stringify(estadoCompleto));
+                          } else {
+                            // Si es nueva propiedad, guardar un flag para asociar después de crear
+                            sessionStorage.setItem('propiedadNuevaParaAsociar', 'true');
+                            // Guardar el estado completo del formulario para restaurarlos después
+                            const estadoCompleto = {
+                              formData: formData,
+                              impuestosSeleccionados: impuestosSeleccionados,
+                              cargosSeleccionados: cargosSeleccionados,
+                              documentacion: documentacion,
+                              tabValue: tabValue
+                            };
+                            sessionStorage.setItem('propiedadEstadoCompleto', JSON.stringify(estadoCompleto));
+                          }
+                          // Navegar a Propietarios y abrir el diálogo
+                          navigate('/clientes?tab=0&openDialog=true');
+                        }}
+                      >
+                        Nuevo Propietario
+                      </Button>
+                    </Box>
+                    
+                    {/* Lista de propietarios seleccionados */}
+                    {formData.propietarioIds.length > 0 ? (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                        {formData.propietarioIds.map((propietarioId) => {
+                          const propietario = Array.isArray(propietarios) ? propietarios.find(p => p.id === propietarioId) : null;
+                          if (!propietario) return null;
+                          
+                          // Construir nombre completo
+                          const nombreCompleto = propietario.tipoPersona?.codigo === 'FISICA'
+                            ? `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || propietario.razonSocial || 'Sin nombre'
+                            : propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || 'Sin nombre';
                           
                           return (
-                            <TableRow 
-                              key={impuesto.tipoImpuestoId} 
-                              sx={{ 
-                                '&:hover': { bgcolor: 'action.hover' },
-                                bgcolor: impuesto.activo ? 'transparent' : 'grey.50'
+                            <Box
+                              key={propietarioId}
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                py: 0.5,
+                                px: 1,
+                                border: '1px solid',
+                                borderColor: 'divider',
+                                borderRadius: 0.5,
+                                bgcolor: 'background.paper'
                               }}
                             >
-                              <TableCell padding="checkbox" sx={{ py: 0.25, width: '60px', minWidth: '60px' }}>
+                              <Typography variant="body2" sx={{ fontSize: '0.875rem', lineHeight: 1.2 }}>
+                                {nombreCompleto}
+                              </Typography>
+                              <IconButton
+                                size="small"
+                                onClick={() => {
+                                  setFormData({
+                                    ...formData,
+                                    propietarioIds: formData.propietarioIds.filter(id => id !== propietarioId)
+                                  });
+                                }}
+                                sx={{ py: 0, px: 0.5 }}
+                              >
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </Box>
+                          );
+                        })}
+                      </Box>
+                    ) : (
+                      <Alert severity="info" sx={{ py: 0.5 }}>
+                        No hay propietarios asociados
+                      </Alert>
+                    )}
+                  </Box>
+                )}
+
+                {/* Tab Panel: Impuestos y Cargos */}
+                {tabValue === 1 && (
+                  <Box>
+                      {tiposImpuestoPropiedad && tiposImpuestoPropiedad.length > 0 ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          {tiposImpuestoPropiedad.map((tipoImpuesto) => {
+                            const impuestoSeleccionado = impuestosSeleccionados.find(
+                              imp => imp.tipoImpuestoId === tipoImpuesto.id
+                            );
+                            const estaSeleccionado = !!impuestoSeleccionado;
+
+                            return (
+                              <Box
+                                key={tipoImpuesto.id}
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1,
+                                  py: 0.5,
+                                  px: 1,
+                                  border: '1px solid',
+                                  borderColor: 'divider',
+                                  borderRadius: 0.5,
+                                  bgcolor: estaSeleccionado ? 'action.selected' : 'transparent',
+                                  '&:hover': { bgcolor: 'action.hover' }
+                                }}
+                              >
                                 <Checkbox
-                                  checked={impuesto.activo}
-                                  onChange={(e) => {
-                                    const nuevosImpuestos = [...impuestosEditables];
-                                    nuevosImpuestos[index].activo = e.target.checked;
-                                    setImpuestosEditables(nuevosImpuestos);
+                                  checked={estaSeleccionado}
+                                  onChange={async (e) => {
+                                    if (e.target.checked) {
+                                      // Cargar campos del tipo de impuesto
+                                      const campos = await cargarCamposTipoImpuesto(tipoImpuesto.id);
+                                      const camposIniciales = {};
+                                      campos.forEach(campo => {
+                                        camposIniciales[campo.id] = '';
+                                      });
+                                      // Si ya existe (edición), mantener los valores existentes
+                                      const impuestoExistente = impuestosSeleccionados.find(
+                                        imp => imp.tipoImpuestoId === tipoImpuesto.id
+                                      );
+                                      // Usar la periodicidad por defecto del tipo de impuesto si no hay una existente
+                                      const periodicidadPorDefecto = impuestoExistente?.periodicidadId || 
+                                                                     tipoImpuesto.periodicidadId || 
+                                                                     tipoImpuesto.periodicidad?.id || 
+                                                                     null;
+                                      setImpuestosSeleccionados([
+                                        ...impuestosSeleccionados.filter(imp => imp.tipoImpuestoId !== tipoImpuesto.id),
+                                        { 
+                                          tipoImpuestoId: tipoImpuesto.id, 
+                                          periodicidadId: periodicidadPorDefecto,
+                                          propiedadImpuestoId: impuestoExistente?.propiedadImpuestoId,
+                                          campos: impuestoExistente?.campos || camposIniciales
+                                        }
+                                      ]);
+                                    } else {
+                                      setImpuestosSeleccionados(
+                                        impuestosSeleccionados.filter(imp => imp.tipoImpuestoId !== tipoImpuesto.id)
+                                      );
+                                    }
                                   }}
                                   size="small"
                                   sx={{ py: 0 }}
                                 />
-                              </TableCell>
-                              <TableCell sx={{ py: 0.25, whiteSpace: 'nowrap', width: '140px', minWidth: '140px' }}>
-                                <Typography variant="body2" fontWeight={impuesto.activo ? 'medium' : 'normal'} noWrap>
-                                  {getAbreviatura(tipoImpuestoData, impuesto.tipoImpuesto)}
-                                </Typography>
-                              </TableCell>
-                              <TableCell sx={{ py: 0.25, width: '160px', minWidth: '160px' }}>
-                                <FormControl 
-                                  fullWidth 
-                                  size="small"
-                                  disabled={!impuesto.activo}
-                                  sx={{
-                                    '& .MuiInputBase-root': {
-                                      height: '28px'
-                                    },
-                                    '& .MuiSelect-select': {
-                                      py: 0.5,
-                                      fontSize: '0.875rem'
-                                    },
-                                    '& .MuiOutlinedInput-notchedOutline': {
-                                      padding: 0
-                                    }
-                                  }}
-                                >
-                                  <Select
-                                    value={impuesto.periodicidad || ''}
-                                    onChange={(e) => {
-                                      const nuevosImpuestos = [...impuestosEditables];
-                                      nuevosImpuestos[index].periodicidad = e.target.value;
-                                      setImpuestosEditables(nuevosImpuestos);
-                                    }}
-                                    disabled={!impuesto.activo}
-                                    displayEmpty
-                                    onClick={(e) => e.stopPropagation()}
-                                    renderValue={(selected) => {
-                                      if (!selected) return <em style={{ color: '#9e9e9e' }}>-</em>;
-                                      const periodicidad = periodicidadMap.lista?.find(p => p.id === selected);
-                                      return periodicidad?.descripcion || '-';
-                                    }}
-                                    sx={{
-                                      '& .MuiSelect-select': {
-                                        py: 0.5,
-                                        fontSize: '0.875rem'
-                                      }
-                                    }}
-                                  >
-                                    <MenuItem value="">
-                                      <em>-</em>
-                                    </MenuItem>
-                                    {periodicidadMap.lista?.map((param) => (
-                                      <MenuItem key={param.id} value={param.id}>
-                                        {param.descripcion}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-                              </TableCell>
-                              {(() => {
-                                // Si tiene ambos labels, mostrar dos campos separados
-                                if (mostrarCodigo1 && mostrarCodigo2) {
-                                  return (
-                                    <>
-                                      <TableCell sx={{ py: 0.25, width: '200px', minWidth: '200px' }}>
-                                        <TextField
-                                          size="small"
-                                          fullWidth
-                                          placeholder={labelCodigo1}
-                                          value={impuesto.codigo1 || ''}
+                                <Box sx={{ minWidth: 120 }}>
+                                  <Typography variant="caption" fontWeight={estaSeleccionado ? 600 : 400}>
+                                    {tipoImpuesto.nombre}
+                                  </Typography>
+                                </Box>
+                                {estaSeleccionado && (
+                                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+                                    {periodicidadesImpuesto && periodicidadesImpuesto.length > 0 && (
+                                      <FormControl size="small" sx={{ minWidth: 150 }}>
+                                        <InputLabel>Periodicidad</InputLabel>
+                                        <Select
+                                          value={impuestoSeleccionado.periodicidadId || ''}
                                           onChange={(e) => {
-                                            const nuevosImpuestos = [...impuestosEditables];
-                                            nuevosImpuestos[index].codigo1 = e.target.value;
-                                            setImpuestosEditables(nuevosImpuestos);
+                                            setImpuestosSeleccionados(
+                                              impuestosSeleccionados.map(imp =>
+                                                imp.tipoImpuestoId === tipoImpuesto.id
+                                                  ? { ...imp, periodicidadId: e.target.value || null }
+                                                  : imp
+                                              )
+                                            );
                                           }}
-                                          disabled={!impuesto.activo}
-                                          onClick={(e) => e.stopPropagation()}
-                                          sx={{ 
-                                            '& .MuiInputBase-root': {
-                                              height: '28px'
-                                            },
-                                            '& .MuiInputBase-input': { 
-                                              py: 0.25,
-                                              fontSize: '0.875rem'
-                                            },
-                                            '& .MuiOutlinedInput-notchedOutline': {
-                                              padding: 0
-                                            }
-                                          }}
-                                        />
-                                      </TableCell>
-                                      <TableCell sx={{ py: 0.25, width: '200px', minWidth: '200px' }}>
-                                        <TextField
-                                          size="small"
-                                          fullWidth
-                                          placeholder={labelCodigo2}
-                                          value={impuesto.codigo2 || ''}
-                                          onChange={(e) => {
-                                            const nuevosImpuestos = [...impuestosEditables];
-                                            nuevosImpuestos[index].codigo2 = e.target.value;
-                                            setImpuestosEditables(nuevosImpuestos);
-                                          }}
-                                          disabled={!impuesto.activo}
-                                          onClick={(e) => e.stopPropagation()}
-                                          sx={{ 
-                                            '& .MuiInputBase-root': {
-                                              height: '28px'
-                                            },
-                                            '& .MuiInputBase-input': { 
-                                              py: 0.25,
-                                              fontSize: '0.875rem'
-                                            },
-                                            '& .MuiOutlinedInput-notchedOutline': {
-                                              padding: 0
-                                            }
-                                          }}
-                                        />
-                                      </TableCell>
-                                    </>
-                                  );
-                                }
-                                // Si solo tiene código 1, ocupar el espacio de ambos si hay otra columna de código 2
-                                if (mostrarCodigo1 && !mostrarCodigo2) {
-                                  return (
-                                    <TableCell 
-                                      colSpan={tieneCodigo2 ? 2 : 1}
-                                      sx={{ 
-                                        py: 0.25, 
-                                        width: tieneCodigo2 ? '400px' : '200px', 
-                                        minWidth: tieneCodigo2 ? '400px' : '200px' 
-                                      }}
-                                    >
-                                      <TextField
-                                        size="small"
-                                        fullWidth
-                                        placeholder={labelCodigo1}
-                                        value={impuesto.codigo1 || ''}
-                                        onChange={(e) => {
-                                          const nuevosImpuestos = [...impuestosEditables];
-                                          nuevosImpuestos[index].codigo1 = e.target.value;
-                                          setImpuestosEditables(nuevosImpuestos);
-                                        }}
-                                        disabled={!impuesto.activo}
-                                        onClick={(e) => e.stopPropagation()}
-                                        sx={{ 
-                                          '& .MuiInputBase-root': {
-                                            height: '28px'
-                                          },
-                                          '& .MuiInputBase-input': { 
-                                            py: 0.25,
-                                            fontSize: '0.875rem'
-                                          },
-                                          '& .MuiOutlinedInput-notchedOutline': {
-                                            padding: 0
-                                          }
-                                        }}
-                                      />
-                                    </TableCell>
-                                  );
-                                }
-                                // Si solo tiene código 2, ocupar el espacio de ambos si hay otra columna de código 1
-                                if (!mostrarCodigo1 && mostrarCodigo2) {
-                                  return (
-                                    <TableCell 
-                                      colSpan={tieneCodigo1 ? 2 : 1}
-                                      sx={{ 
-                                        py: 0.25, 
-                                        width: tieneCodigo1 ? '400px' : '200px', 
-                                        minWidth: tieneCodigo1 ? '400px' : '200px' 
-                                      }}
-                                    >
-                                      <TextField
-                                        size="small"
-                                        fullWidth
-                                        placeholder={labelCodigo2}
-                                        value={impuesto.codigo2 || ''}
-                                        onChange={(e) => {
-                                          const nuevosImpuestos = [...impuestosEditables];
-                                          nuevosImpuestos[index].codigo2 = e.target.value;
-                                          setImpuestosEditables(nuevosImpuestos);
-                                        }}
-                                        disabled={!impuesto.activo}
-                                        onClick={(e) => e.stopPropagation()}
-                                        sx={{ 
-                                          '& .MuiInputBase-root': {
-                                            height: '28px'
-                                          },
-                                          '& .MuiInputBase-input': { 
-                                            py: 0.25,
-                                            fontSize: '0.875rem'
-                                          },
-                                          '& .MuiOutlinedInput-notchedOutline': {
-                                            padding: 0
-                                          }
-                                        }}
-                                      />
-                                    </TableCell>
-                                  );
-                                }
-                                // Si no tiene ningún código pero otros impuestos sí, mostrar celdas vacías
-                                if (!mostrarCodigo1 && !mostrarCodigo2 && (tieneCodigo1 || tieneCodigo2)) {
-                                  const totalColumnasCodigo = (tieneCodigo1 ? 1 : 0) + (tieneCodigo2 ? 1 : 0);
-                                  return (
-                                    <TableCell 
-                                      colSpan={totalColumnasCodigo}
-                                      sx={{ 
-                                        py: 0.25, 
-                                        width: totalColumnasCodigo === 2 ? '400px' : '200px', 
-                                        minWidth: totalColumnasCodigo === 2 ? '400px' : '200px' 
-                                      }}
-                                    ></TableCell>
-                                  );
-                                }
-                                return null;
-                              })()}
-                              <TableCell sx={{ py: 0.25, width: '200px', minWidth: '200px' }}>
-                                <TextField
-                                  size="small"
-                                  fullWidth
-                                  placeholder="Usuario/Email"
-                                  value={impuesto.usuarioEmail || ''}
-                                  onChange={(e) => {
-                                    const nuevosImpuestos = [...impuestosEditables];
-                                    nuevosImpuestos[index].usuarioEmail = e.target.value;
-                                    setImpuestosEditables(nuevosImpuestos);
-                                  }}
-                                  disabled={!impuesto.activo}
-                                  onClick={(e) => e.stopPropagation()}
-                                  sx={{ 
-                                    '& .MuiInputBase-root': {
-                                      height: '28px'
-                                    },
-                                    '& .MuiInputBase-input': { 
-                                      py: 0.25,
-                                      fontSize: '0.875rem'
-                                    },
-                                    '& .MuiOutlinedInput-notchedOutline': {
-                                      padding: 0
-                                    }
-                                  }}
-                                />
-                              </TableCell>
-                              <TableCell sx={{ py: 0.25, width: '180px', minWidth: '180px' }}>
-                                <TextField
-                                  size="small"
-                                  fullWidth
-                                  type={showPasswords[index] ? 'text' : 'password'}
-                                  placeholder="Contraseña"
-                                  value={impuesto.password || ''}
-                                  onChange={(e) => {
-                                    const nuevosImpuestos = [...impuestosEditables];
-                                    nuevosImpuestos[index].password = e.target.value;
-                                    setImpuestosEditables(nuevosImpuestos);
-                                  }}
-                                  disabled={!impuesto.activo}
-                                  onClick={(e) => e.stopPropagation()}
-                                  InputProps={{
-                                    endAdornment: (
-                                      <InputAdornment position="end">
-                                        <IconButton
-                                          aria-label="toggle password visibility"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            setShowPasswords(prev => ({
-                                              ...prev,
-                                              [index]: !prev[index]
-                                            }));
-                                          }}
-                                          onMouseDown={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                          }}
-                                          edge="end"
-                                          size="small"
-                                          sx={{ padding: '2px' }}
-                                          disabled={!impuesto.activo}
+                                          label="Periodicidad"
                                         >
-                                          {showPasswords[index] ? <VisibilityOff fontSize="small" /> : <Visibility fontSize="small" />}
-                                        </IconButton>
-                                      </InputAdornment>
-                                    )
-                                  }}
-                                  sx={{ 
-                                    '& .MuiInputBase-root': {
-                                      height: '28px'
-                                    },
-                                    '& .MuiInputBase-input': { 
-                                      py: 0.25,
-                                      fontSize: '0.875rem',
-                                      pr: 1
-                                    },
-                                    '& .MuiOutlinedInput-notchedOutline': {
-                                      padding: 0
+                                          <MenuItem value="">
+                                            <em>Sin periodicidad</em>
+                                          </MenuItem>
+                                          {periodicidadesImpuesto.map((periodicidad) => (
+                                            <MenuItem key={periodicidad.id} value={periodicidad.id}>
+                                              {periodicidad.nombre}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+                                    )}
+                                    {/* Campos del impuesto */}
+                                    {(() => {
+                                      const campos = camposPorTipoImpuesto[impuestoSeleccionado.tipoImpuestoId] || [];
+                                      if (campos.length === 0) return null;
+                                      
+                                      return campos.map((campo) => (
+                                        <TextField
+                                          key={campo.id}
+                                          size="small"
+                                          label={campo.nombre}
+                                          value={impuestoSeleccionado.campos?.[campo.id] || ''}
+                                          onChange={(e) => {
+                                            setImpuestosSeleccionados(
+                                              impuestosSeleccionados.map(imp =>
+                                                imp.tipoImpuestoId === tipoImpuesto.id
+                                                  ? {
+                                                      ...imp,
+                                                      campos: {
+                                                        ...imp.campos,
+                                                        [campo.id]: e.target.value
+                                                      }
+                                                    }
+                                                  : imp
+                                              )
+                                            );
+                                          }}
+                                          placeholder={campo.nombre}
+                                          sx={{ 
+                                            minWidth: 130,
+                                            maxWidth: 150,
+                                            '& .MuiInputBase-root': {
+                                              height: '32px'
+                                            },
+                                            '& .MuiInputLabel-root': {
+                                              fontSize: '0.75rem'
+                                            }
+                                          }}
+                                        />
+                                      ));
+                                    })()}
+                                  </Box>
+                                )}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      ) : (
+                        <Alert severity="info" sx={{ py: 1 }}>No hay tipos de impuesto disponibles.</Alert>
+                      )}
+                   
+                      {tiposCargo && tiposCargo.length > 0 ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
+                          {tiposCargo.map((tipoCargo) => {
+                            const cargoSeleccionado = cargosSeleccionados.find(
+                              cargo => cargo.tipoCargoId === tipoCargo.id
+                            );
+                            const estaSeleccionado = !!cargoSeleccionado;
+
+                            return (
+                              <Box
+                                key={tipoCargo.id}
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1,
+                                  py: 0.5,
+                                  px: 1,
+                                  border: '1px solid',
+                                  borderColor: 'divider',
+                                  borderRadius: 0.5,
+                                  bgcolor: estaSeleccionado ? 'action.selected' : 'transparent',
+                                  '&:hover': { bgcolor: 'action.hover' }
+                                }}
+                              >
+                                <Checkbox
+                                  checked={estaSeleccionado}
+                                  onChange={async (e) => {
+                                    if (e.target.checked) {
+                                      // Cargar campos del tipo de cargo
+                                      const campos = await cargarCamposTipoCargo(tipoCargo.id);
+                                      const camposIniciales = {};
+                                      campos.forEach(campo => {
+                                        camposIniciales[campo.id] = '';
+                                      });
+                                      // Si ya existe (edición), mantener los valores existentes
+                                      const cargoExistente = cargosSeleccionados.find(
+                                        cargo => cargo.tipoCargoId === tipoCargo.id
+                                      );
+                                      // Usar la periodicidad por defecto del tipo de cargo si no hay una existente
+                                      const periodicidadPorDefecto = cargoExistente?.periodicidadId || 
+                                                                     tipoCargo.periodicidadId || 
+                                                                     tipoCargo.periodicidad?.id || 
+                                                                     null;
+                                      setCargosSeleccionados([
+                                        ...cargosSeleccionados.filter(cargo => cargo.tipoCargoId !== tipoCargo.id),
+                                        { 
+                                          tipoCargoId: tipoCargo.id, 
+                                          periodicidadId: periodicidadPorDefecto,
+                                          propiedadCargoId: cargoExistente?.propiedadCargoId,
+                                          campos: cargoExistente?.campos || camposIniciales
+                                        }
+                                      ]);
+                                    } else {
+                                      setCargosSeleccionados(
+                                        cargosSeleccionados.filter(cargo => cargo.tipoCargoId !== tipoCargo.id)
+                                      );
                                     }
                                   }}
-                                />
-                              </TableCell>
-                              <TableCell sx={{ py: 0.25, width: '200px', minWidth: '200px' }}>
-                                <TextField
                                   size="small"
-                                  fullWidth
-                                  placeholder="Observaciones"
-                                  value={impuesto.observaciones || ''}
-                                  onChange={(e) => {
-                                    const nuevosImpuestos = [...impuestosEditables];
-                                    nuevosImpuestos[index].observaciones = e.target.value;
-                                    setImpuestosEditables(nuevosImpuestos);
-                                  }}
-                                  disabled={!impuesto.activo}
-                                  onClick={(e) => e.stopPropagation()}
-                                  sx={{ 
-                                    '& .MuiInputBase-root': {
-                                      height: '28px'
-                                    },
-                                    '& .MuiInputBase-input': { 
-                                      py: 0.25,
-                                      fontSize: '0.875rem'
-                                    },
-                                    '& .MuiOutlinedInput-notchedOutline': {
-                                      padding: 0
-                                    }
-                                  }}
+                                  sx={{ py: 0 }}
                                 />
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                  );
-                })() : (
-                  <Alert severity="info" sx={{ mb: 2 }}>
-                    No hay impuestos configurados con periodicidad por defecto. Configurá la periodicidad por defecto en la sección de Configuración.
-                  </Alert>
-                )}
+                                <Box sx={{ minWidth: 120 }}>
+                                  <Typography variant="caption" fontWeight={estaSeleccionado ? 600 : 400}>
+                                    {tipoCargo.nombre}
+                                  </Typography>
+                                </Box>
+                                {estaSeleccionado && (
+                                  <Box sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap', flex: 1 }}>
+                                    {periodicidadesImpuesto && periodicidadesImpuesto.length > 0 && (
+                                      <FormControl size="small" sx={{ minWidth: 150 }}>
+                                        <InputLabel>Periodicidad</InputLabel>
+                                        <Select
+                                          value={cargoSeleccionado.periodicidadId || ''}
+                                          onChange={(e) => {
+                                            setCargosSeleccionados(
+                                              cargosSeleccionados.map(cargo =>
+                                                cargo.tipoCargoId === tipoCargo.id
+                                                  ? { ...cargo, periodicidadId: e.target.value || null }
+                                                  : cargo
+                                              )
+                                            );
+                                          }}
+                                          label="Periodicidad"
+                                        >
+                                          <MenuItem value="">
+                                            <em>Sin periodicidad</em>
+                                          </MenuItem>
+                                          {periodicidadesImpuesto.map((periodicidad) => (
+                                            <MenuItem key={periodicidad.id} value={periodicidad.id}>
+                                              {periodicidad.nombre}
+                                            </MenuItem>
+                                          ))}
+                                        </Select>
+                                      </FormControl>
+                                    )}
+                                    {/* Campos del cargo */}
+                                    {(() => {
+                                      const campos = camposPorTipoCargo[cargoSeleccionado.tipoCargoId] || [];
+                                      if (campos.length === 0) return null;
+                                      
+                                      return campos.map((campo) => (
+                                        <TextField
+                                          key={campo.id}
+                                          size="small"
+                                          label={campo.nombre}
+                                          value={cargoSeleccionado.campos?.[campo.id] || ''}
+                                          onChange={(e) => {
+                                            setCargosSeleccionados(
+                                              cargosSeleccionados.map(cargo =>
+                                                cargo.tipoCargoId === tipoCargo.id
+                                                  ? {
+                                                      ...cargo,
+                                                      campos: {
+                                                        ...cargo.campos,
+                                                        [campo.id]: e.target.value
+                                                      }
+                                                    }
+                                                  : cargo
+                                              )
+                                            );
+                                          }}
+                                          placeholder={campo.nombre}
+                                          sx={{ 
+                                            minWidth: 130,
+                                            maxWidth: 150,
+                                            '& .MuiInputBase-root': {
+                                              height: '32px'
+                                            },
+                                            '& .MuiInputLabel-root': {
+                                              fontSize: '0.75rem'
+                                            }
+                                          }}
+                                        />
+                                      ));
+                                    })()}
+                                  </Box>
+                                )}
+                              </Box>
+                            );
+                          })}
+                        </Box>
+                      ) : (
+                        <Alert severity="info" sx={{ py: 1 }}>No hay tipos de cargo disponibles.</Alert>
+                      )}
+                    
                   </Box>
                 )}
 
                 {/* Tab Panel: Documentación */}
-                {tabValue === 1 && (
+                {tabValue === 2 && (
                   <Box>
-                    <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                      Marcá los documentos necesarios y aquellos que ya fueron recibidos.
-                    </Typography>
                     {documentacion.length === 0 ? (
                       <Alert severity="info" sx={{ mb: 2 }}>
                         No hay tipos de documentación configurados. Configurá los tipos de documentación en la sección de Configuración.
@@ -1272,16 +1725,18 @@ export default function Propiedades() {
                       sx={{ 
                         border: '1px solid', 
                         borderColor: 'divider', 
-                        borderRadius: 1
+                        borderRadius: 0.5
                       }}
                     >
-                      <Table size="small">
+                      <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.25, px: 1 } }}>
                         <TableHead>
                           <TableRow sx={{ bgcolor: 'grey.100' }}>
-                            <TableCell sx={{ width: '50%', py: 1, fontWeight: 'medium' }}>Documento</TableCell>
-                            <TableCell align="center" sx={{ width: '25%', py: 1, fontWeight: 'medium' }}>
+                            <TableCell sx={{ width: '50%', fontWeight: 'medium', fontSize: '0.8125rem' }}>Documento</TableCell>
+                            <TableCell align="center" sx={{ width: '25%', fontWeight: 'medium' }}>
                               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
                                 <Checkbox
+                                  size="small"
+                                  sx={{ py: 0, px: 0.5 }}
                                   indeterminate={
                                     documentacion.some(doc => doc.necesario) &&
                                     !documentacion.every(doc => doc.necesario)
@@ -1301,17 +1756,18 @@ export default function Propiedades() {
                                       }))
                                     );
                                   }}
-                                  size="small"
                                   onClick={(e) => e.stopPropagation()}
                                 />
-                                <Typography variant="caption" component="span">
-                                  Necesario
+                                <Typography variant="caption" component="span" sx={{ fontSize: '0.8rem' }}>
+                                  Solicitar
                                 </Typography>
                               </Box>
                             </TableCell>
-                            <TableCell align="center" sx={{ width: '25%', py: 1, fontWeight: 'medium' }}>
+                            <TableCell align="center" sx={{ width: '25%', fontWeight: 'medium' }}>
                               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5 }}>
                                 <Checkbox
+                                  size="small"
+                                  sx={{ py: 0, px: 0.5 }}
                                   indeterminate={
                                     documentacion.filter(doc => doc.necesario).length > 0 &&
                                     documentacion.filter(doc => doc.necesario).some(doc => doc.recibido) &&
@@ -1331,11 +1787,10 @@ export default function Propiedades() {
                                       }))
                                     );
                                   }}
-                                  size="small"
                                   disabled={documentacion.filter(doc => doc.necesario).length === 0}
                                   onClick={(e) => e.stopPropagation()}
                                 />
-                                <Typography variant="caption" component="span">
+                                <Typography variant="caption" component="span" sx={{ fontSize: '0.8rem' }}>
                                   Recibido
                                 </Typography>
                               </Box>
@@ -1344,11 +1799,11 @@ export default function Propiedades() {
                         </TableHead>
                         <TableBody>
                           {documentacion.map((doc, index) => (
-                            <TableRow key={doc.tipoDocumentoId || `doc-${index}`} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
-                              <TableCell sx={{ py: 1 }}>
-                                <Typography variant="body2">{doc.nombre}</Typography>
+                            <TableRow key={doc.tipoDocumentoPropiedadId || `doc-${index}`} sx={{ '&:hover': { bgcolor: 'action.hover' } }}>
+                              <TableCell>
+                                <Typography variant="body2" sx={{ fontSize: '0.8125rem', lineHeight: 1.2 }}>{doc.nombre}</Typography>
                               </TableCell>
-                              <TableCell align="center" sx={{ py: 1 }}>
+                              <TableCell align="center">
                                 <Checkbox
                                   checked={doc.necesario || false}
                                   onChange={(e) => {
@@ -1356,17 +1811,18 @@ export default function Propiedades() {
                                     const nuevoValor = e.target.checked;
                                     setDocumentacion(prev => 
                                       prev.map(d =>
-                                        d.tipoDocumentoId === doc.tipoDocumentoId 
+                                        d.tipoDocumentoPropiedadId === doc.tipoDocumentoPropiedadId 
                                           ? { ...d, necesario: nuevoValor, recibido: nuevoValor ? d.recibido : false } 
                                           : d
                                       )
                                     );
                                   }}
                                   size="small"
+                                  sx={{ py: 0 }}
                                   onClick={(e) => e.stopPropagation()}
                                 />
                               </TableCell>
-                              <TableCell align="center" sx={{ py: 1 }}>
+                              <TableCell align="center">
                                 <Checkbox
                                   checked={doc.recibido || false}
                                   onChange={(e) => {
@@ -1374,13 +1830,14 @@ export default function Propiedades() {
                                     const nuevoValor = e.target.checked;
                                     setDocumentacion(prev => 
                                       prev.map(d =>
-                                        d.tipoDocumentoId === doc.tipoDocumentoId 
+                                        d.tipoDocumentoPropiedadId === doc.tipoDocumentoPropiedadId 
                                           ? { ...d, recibido: nuevoValor } 
                                           : d
                                       )
                                     );
                                   }}
                                   size="small"
+                                  sx={{ py: 0 }}
                                   disabled={!doc.necesario}
                                   onClick={(e) => e.stopPropagation()}
                                 />
@@ -1398,13 +1855,26 @@ export default function Propiedades() {
           </DialogContent>
           <DialogActions>
             <Button onClick={() => {
+              const vieneDePropietarios = sessionStorage.getItem('propietarioIdParaAsociar');
               setOpen(false);
               resetForm();
+              // Limpiar sessionStorage de propiedades cuando se cancela
+              sessionStorage.removeItem('propiedadEnEdicion');
+              sessionStorage.removeItem('propiedadFormData');
+              sessionStorage.removeItem('propiedadEstadoCompleto');
+              sessionStorage.removeItem('propiedadIdParaAsociar');
+              sessionStorage.removeItem('propiedadNuevaParaAsociar');
+              // Si viene de Propietarios, volver allí
+              if (vieneDePropietarios && !editing) {
+                // NO eliminar propietarioIdParaAsociar ni propietarioEnEdicion cuando se cancela
+                // Se eliminarán cuando se cierre el diálogo de Propietarios normalmente
+                navigate('/clientes?tab=0');
+              }
             }}>
               Cancelar
             </Button>
             <Button type="submit" variant="contained">
-              {editing ? 'Actualizar' : 'Crear'}
+              {editing ? 'Guardar' : 'Crear'}
             </Button>
           </DialogActions>
         </form>

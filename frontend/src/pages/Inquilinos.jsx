@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -22,7 +22,12 @@ import {
   Card,
   CardContent,
   Divider,
-  Snackbar
+  Snackbar,
+  MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
+  FormHelperText
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
@@ -31,21 +36,26 @@ import PhoneIcon from '@mui/icons-material/Phone';
 import EmailIcon from '@mui/icons-material/Email';
 import BadgeIcon from '@mui/icons-material/Badge';
 import api from '../api';
-import ParametroSelect from '../components/ParametroSelect';
 
 export default function Inquilinos() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [formData, setFormData] = useState({
+    tipoPersonaId: '',
     nombre: '',
     apellido: '',
+    razonSocial: '',
     dni: '',
     cuit: '',
     mail: '',
     telefono: '',
-    direccion: '',
-    localidad: '',
-    condicionIva: ''
+    dirCalle: '',
+    dirNro: '',
+    dirPiso: '',
+    dirDepto: '',
+    provinciaId: '',
+    localidadId: '',
+    condicionIvaId: ''
   });
   const [errors, setErrors] = useState({});
   const [successMessage, setSuccessMessage] = useState('');
@@ -61,6 +71,51 @@ export default function Inquilinos() {
       return response.data;
     }
   });
+
+  // Obtener catálogos
+  const { data: tiposPersona } = useQuery({
+    queryKey: ['tiposPersona'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/tipos-persona');
+      return response.data;
+    }
+  });
+
+  const { data: provincias } = useQuery({
+    queryKey: ['provincias'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/provincias');
+      return response.data;
+    }
+  });
+
+  const { data: localidades } = useQuery({
+    queryKey: ['localidades', formData.provinciaId],
+    queryFn: async () => {
+      if (!formData.provinciaId) return [];
+      const response = await api.get(`/catalogos/provincias/${formData.provinciaId}/localidades`);
+      return response.data;
+    },
+    enabled: !!formData.provinciaId
+  });
+
+  const { data: condicionesIva } = useQuery({
+    queryKey: ['condicionesIva'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/condiciones-iva');
+      return response.data;
+    }
+  });
+
+  // Preseleccionar Persona Física por defecto
+  useEffect(() => {
+    if (tiposPersona && tiposPersona.length > 0 && !formData.tipoPersonaId && !editing) {
+      const personaFisica = tiposPersona.find(tp => tp.codigo === 'FISICA');
+      if (personaFisica) {
+        setFormData(prev => ({ ...prev, tipoPersonaId: personaFisica.id.toString() }));
+      }
+    }
+  }, [tiposPersona]);
 
   const createMutation = useMutation({
     mutationFn: (data) => api.post('/inquilinos', data),
@@ -112,16 +167,23 @@ export default function Inquilinos() {
   });
 
   const resetForm = () => {
+    const personaFisica = tiposPersona?.find(tp => tp.codigo === 'FISICA');
     setFormData({
+      tipoPersonaId: personaFisica?.id.toString() || '',
       nombre: '',
       apellido: '',
+      razonSocial: '',
       dni: '',
       cuit: '',
       mail: '',
       telefono: '',
-      direccion: '',
-      localidad: '',
-      condicionIva: ''
+      dirCalle: '',
+      dirNro: '',
+      dirPiso: '',
+      dirDepto: '',
+      provinciaId: '',
+      localidadId: '',
+      condicionIvaId: ''
     });
     setErrors({});
     setEditing(null);
@@ -168,14 +230,28 @@ export default function Inquilinos() {
   const validateForm = async () => {
     const newErrors = {};
 
-    // Validar nombre obligatorio
-    if (!formData.nombre || formData.nombre.trim() === '') {
-      newErrors.nombre = 'El nombre es obligatorio';
+    // Validar tipo de persona
+    if (!formData.tipoPersonaId) {
+      newErrors.tipoPersonaId = 'El tipo de persona es obligatorio';
+    }
+
+    const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
+    const esFisica = tipoPersona?.codigo === 'FISICA';
+
+    // Validar campos según tipo de persona
+    if (esFisica) {
+      if (!formData.nombre || formData.nombre.trim() === '') {
+        newErrors.nombre = 'El nombre es obligatorio para persona física';
+      }
+    } else {
+      if (!formData.razonSocial || formData.razonSocial.trim() === '') {
+        newErrors.razonSocial = 'La razón social es obligatoria para persona jurídica';
+      }
     }
 
     // Validar DNI o CUIT obligatorio (al menos uno)
-    const dniSinGuiones = formData.dni.replace(/\D/g, '');
-    const cuitSinGuiones = formData.cuit.replace(/\D/g, '');
+    const dniSinGuiones = formData.dni?.replace(/\D/g, '') || '';
+    const cuitSinGuiones = formData.cuit?.replace(/\D/g, '') || '';
 
     if (!dniSinGuiones && !cuitSinGuiones) {
       newErrors.dniCuit = 'Debe ingresar DNI o CUIT';
@@ -244,7 +320,23 @@ export default function Inquilinos() {
 
   const handleEdit = (inquilino) => {
     setEditing(inquilino);
-    setFormData(inquilino);
+    setFormData({
+      tipoPersonaId: inquilino.tipoPersonaId || '',
+      nombre: inquilino.nombre || '',
+      apellido: inquilino.apellido || '',
+      razonSocial: inquilino.razonSocial || '',
+      dni: inquilino.dni || '',
+      cuit: inquilino.cuit || '',
+      mail: inquilino.mail || '',
+      telefono: inquilino.telefono || '',
+      dirCalle: inquilino.dirCalle || '',
+      dirNro: inquilino.dirNro || '',
+      dirPiso: inquilino.dirPiso || '',
+      dirDepto: inquilino.dirDepto || '',
+      provinciaId: inquilino.provinciaId || '',
+      localidadId: inquilino.localidadId || '',
+      condicionIvaId: inquilino.condicionIvaId || ''
+    });
     setOpen(true);
   };
 
@@ -257,14 +349,31 @@ export default function Inquilinos() {
       return;
     }
 
+    // Preparar datos para enviar (convertir strings vacíos a null y IDs a números)
+    const dataToSend = {
+      tipoPersonaId: formData.tipoPersonaId ? parseInt(formData.tipoPersonaId) : null,
+      nombre: formData.nombre?.trim() || null,
+      apellido: formData.apellido?.trim() || null,
+      razonSocial: formData.razonSocial?.trim() || null,
+      dni: formData.dni?.trim() || null,
+      cuit: formData.cuit?.trim() || null,
+      mail: formData.mail?.trim() || null,
+      telefono: formData.telefono?.trim() || null,
+      dirCalle: formData.dirCalle?.trim() || null,
+      dirNro: formData.dirNro?.trim() || null,
+      dirPiso: formData.dirPiso?.trim() || null,
+      dirDepto: formData.dirDepto?.trim() || null,
+      provinciaId: formData.provinciaId ? parseInt(formData.provinciaId) : null,
+      localidadId: formData.localidadId ? parseInt(formData.localidadId) : null,
+      condicionIvaId: formData.condicionIvaId ? parseInt(formData.condicionIvaId) : null
+    };
+
     if (editing) {
-      updateMutation.mutate({ id: editing.id, data: formData });
+      updateMutation.mutate({ id: editing.id, data: dataToSend });
     } else {
-      createMutation.mutate(formData);
+      createMutation.mutate(dataToSend);
     }
   };
-
-  if (isLoading) return <div>Cargando...</div>;
 
   return (
     <Box>
@@ -292,7 +401,7 @@ export default function Inquilinos() {
             {data?.data?.map((inquilino) => (
               <TableRow key={inquilino.id}>
                 <TableCell>
-                  {inquilino.nombre} {inquilino.apellido}
+                  {inquilino.razonSocial || `${inquilino.nombre || ''} ${inquilino.apellido || ''}`.trim() || '-'}
                 </TableCell>
                 <TableCell>{inquilino.dni || '-'}</TableCell>
                 <TableCell>{inquilino.cuit || '-'}</TableCell>
@@ -329,7 +438,7 @@ export default function Inquilinos() {
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                     <Box>
                       <Typography variant="h6" fontWeight={600}>
-                        {inquilino.nombre} {inquilino.apellido}
+                        {inquilino.razonSocial || `${inquilino.nombre || ''} ${inquilino.apellido || ''}`.trim() || 'Sin nombre'}
                       </Typography>
                     </Box>
                     <Box>
@@ -405,137 +514,412 @@ export default function Inquilinos() {
             )}
             <Box sx={{ mt: 1 }}>
               <Grid container spacing={2}>
+                {(() => {
+                  const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
+                  const esFisica = tipoPersona?.codigo === 'FISICA';
+
+                  if (esFisica) {
+                    // Persona Física
+                    return (
+                      <>
+                        {/* Línea 1: tipo persona, nombre, apellido */}
+                        <Grid item xs={12} sm={4}>
+                          <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
+                            <InputLabel>Tipo de Persona *</InputLabel>
+                            <Select
+                              value={formData.tipoPersonaId}
+                              label="Tipo de Persona *"
+                              onChange={(e) => {
+                                const nuevoTipoId = e.target.value;
+                                
+                                // Limpiar TODOS los campos excepto el tipo de persona
+                                setFormData({ 
+                                  tipoPersonaId: nuevoTipoId,
+                                  nombre: '',
+                                  apellido: '',
+                                  razonSocial: '',
+                                  dni: '',
+                                  cuit: '',
+                                  mail: '',
+                                  telefono: '',
+                                  dirCalle: '',
+                                  dirNro: '',
+                                  dirPiso: '',
+                                  dirDepto: '',
+                                  provinciaId: '',
+                                  localidadId: '',
+                                  condicionIvaId: ''
+                                });
+                                
+                                // Limpiar todos los errores
+                                setErrors({});
+                              }}
+                            >
+                              {tiposPersona?.map((tipo) => (
+                                <MenuItem key={tipo.id} value={tipo.id}>
+                                  {tipo.nombre}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                            {errors.tipoPersonaId && <FormHelperText>{errors.tipoPersonaId}</FormHelperText>}
+                          </FormControl>
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Nombre *"
+                            fullWidth
+                            size="small"
+                            value={formData.nombre}
+                            onChange={(e) => {
+                              setFormData({ ...formData, nombre: e.target.value });
+                              if (errors.nombre) {
+                                setErrors({ ...errors, nombre: '' });
+                              }
+                            }}
+                            error={!!errors.nombre}
+                            helperText={errors.nombre}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Apellido"
+                            fullWidth
+                            size="small"
+                            value={formData.apellido}
+                            onChange={(e) => setFormData({ ...formData, apellido: e.target.value })}
+                          />
+                        </Grid>
+                        {/* Línea 2: DNI, CUIT, email, teléfono */}
+                        <Grid item xs={12} sm={3}>
+                          <TextField
+                            label="DNI *"
+                            type="text"
+                            fullWidth
+                            size="small"
+                            value={formData.dni}
+                            onChange={(e) => {
+                              const value = e.target.value.replace(/\D/g, '').substring(0, 8);
+                              setFormData({ ...formData, dni: value });
+                              if (errors.dni || errors.dniCuit) {
+                                const newErrors = { ...errors };
+                                delete newErrors.dni;
+                                delete newErrors.dniCuit;
+                                setErrors(newErrors);
+                              }
+                            }}
+                            inputProps={{ maxLength: 8 }}
+                            error={!!errors.dni || !!errors.dniCuit}
+                            helperText={errors.dni || (errors.dniCuit && !formData.cuit ? errors.dniCuit : '')}
+                            placeholder="Al menos DNI o CUIT requerido"
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={3}>
+                          <TextField
+                            label="CUIT *"
+                            type="text"
+                            fullWidth
+                            size="small"
+                            value={formData.cuit}
+                            onChange={(e) => {
+                              let value = e.target.value.replace(/\D/g, '');
+                              if (value.length > 2) value = value.substring(0, 2) + '-' + value.substring(2);
+                              if (value.length > 11) value = value.substring(0, 11) + '-' + value.substring(11);
+                              value = value.substring(0, 13);
+                              setFormData({ ...formData, cuit: value });
+                              if (errors.cuit || errors.dniCuit) {
+                                const newErrors = { ...errors };
+                                delete newErrors.cuit;
+                                delete newErrors.dniCuit;
+                                setErrors(newErrors);
+                              }
+                            }}
+                            placeholder="XX-XXXXXXXX-X"
+                            error={!!errors.cuit || !!errors.dniCuit}
+                            helperText={errors.cuit || (errors.dniCuit && !formData.dni ? errors.dniCuit : '')}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={3}>
+                          <TextField
+                            label="Email"
+                            type="email"
+                            fullWidth
+                            size="small"
+                            value={formData.mail}
+                            onChange={(e) => {
+                              setFormData({ ...formData, mail: e.target.value });
+                              if (errors.mail) {
+                                setErrors({ ...errors, mail: '' });
+                              }
+                            }}
+                            error={!!errors.mail}
+                            helperText={errors.mail || ''}
+                            inputProps={{ autoComplete: 'email' }}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={3}>
+                          <TextField
+                            label="Teléfono"
+                            type="tel"
+                            fullWidth
+                            size="small"
+                            value={formData.telefono}
+                            onChange={(e) => {
+                              const value = e.target.value.replace(/\D/g, '');
+                              setFormData({ ...formData, telefono: value });
+                              if (errors.telefono) {
+                                setErrors({ ...errors, telefono: '' });
+                              }
+                            }}
+                            placeholder="Solo números"
+                            error={!!errors.telefono}
+                            helperText={errors.telefono || ''}
+                          />
+                        </Grid>
+                      </>
+                    );
+                  } else if (formData.tipoPersonaId) {
+                    // Persona Jurídica
+                    return (
+                      <>
+                        {/* Línea 1: tipo persona, razón social */}
+                        <Grid item xs={12} sm={4}>
+                          <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
+                            <InputLabel>Tipo de Persona *</InputLabel>
+                            <Select
+                              value={formData.tipoPersonaId}
+                              label="Tipo de Persona *"
+                              onChange={(e) => {
+                                const nuevoTipoId = e.target.value;
+                                
+                                // Limpiar TODOS los campos excepto el tipo de persona
+                                setFormData({ 
+                                  tipoPersonaId: nuevoTipoId,
+                                  nombre: '',
+                                  apellido: '',
+                                  razonSocial: '',
+                                  dni: '',
+                                  cuit: '',
+                                  mail: '',
+                                  telefono: '',
+                                  dirCalle: '',
+                                  dirNro: '',
+                                  dirPiso: '',
+                                  dirDepto: '',
+                                  provinciaId: '',
+                                  localidadId: '',
+                                  condicionIvaId: ''
+                                });
+                                
+                                // Limpiar todos los errores
+                                setErrors({});
+                              }}
+                            >
+                              {tiposPersona?.map((tipo) => (
+                                <MenuItem key={tipo.id} value={tipo.id}>
+                                  {tipo.nombre}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                            {errors.tipoPersonaId && <FormHelperText>{errors.tipoPersonaId}</FormHelperText>}
+                          </FormControl>
+                        </Grid>
+                        <Grid item xs={12} sm={8}>
+                          <TextField
+                            label="Razón Social *"
+                            fullWidth
+                            size="small"
+                            value={formData.razonSocial}
+                            onChange={(e) => {
+                              setFormData({ ...formData, razonSocial: e.target.value });
+                              if (errors.razonSocial) {
+                                setErrors({ ...errors, razonSocial: '' });
+                              }
+                            }}
+                            error={!!errors.razonSocial}
+                            helperText={errors.razonSocial}
+                          />
+                        </Grid>
+                        {/* Línea 2: CUIT, email, teléfono */}
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="CUIT *"
+                            type="text"
+                            fullWidth
+                            size="small"
+                            value={formData.cuit}
+                            onChange={(e) => {
+                              let value = e.target.value.replace(/\D/g, '');
+                              if (value.length > 2) value = value.substring(0, 2) + '-' + value.substring(2);
+                              if (value.length > 11) value = value.substring(0, 11) + '-' + value.substring(11);
+                              value = value.substring(0, 13);
+                              setFormData({ ...formData, cuit: value });
+                              if (errors.cuit || errors.dniCuit) {
+                                const newErrors = { ...errors };
+                                delete newErrors.cuit;
+                                delete newErrors.dniCuit;
+                                setErrors(newErrors);
+                              }
+                            }}
+                            placeholder="XX-XXXXXXXX-X"
+                            error={!!errors.cuit || !!errors.dniCuit}
+                            helperText={errors.cuit || errors.dniCuit || ''}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Email"
+                            type="email"
+                            fullWidth
+                            size="small"
+                            value={formData.mail}
+                            onChange={(e) => {
+                              setFormData({ ...formData, mail: e.target.value });
+                              if (errors.mail) {
+                                setErrors({ ...errors, mail: '' });
+                              }
+                            }}
+                            error={!!errors.mail}
+                            helperText={errors.mail || ''}
+                            inputProps={{ autoComplete: 'email' }}
+                          />
+                        </Grid>
+                        <Grid item xs={12} sm={4}>
+                          <TextField
+                            label="Teléfono"
+                            type="tel"
+                            fullWidth
+                            size="small"
+                            value={formData.telefono}
+                            onChange={(e) => {
+                              const value = e.target.value.replace(/\D/g, '');
+                              setFormData({ ...formData, telefono: value });
+                              if (errors.telefono) {
+                                setErrors({ ...errors, telefono: '' });
+                              }
+                            }}
+                            placeholder="Solo números"
+                            error={!!errors.telefono}
+                            helperText={errors.telefono || ''}
+                          />
+                        </Grid>
+                      </>
+                    );
+                  } else {
+                    // Sin tipo de persona seleccionado
+                    return (
+                      <Grid item xs={12}>
+                        <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
+                          <InputLabel>Tipo de Persona *</InputLabel>
+                          <Select
+                            value={formData.tipoPersonaId}
+                            label="Tipo de Persona *"
+                            onChange={(e) => {
+                              setFormData({ ...formData, tipoPersonaId: e.target.value, localidadId: '' });
+                              if (errors.tipoPersonaId) {
+                                setErrors({ ...errors, tipoPersonaId: '' });
+                              }
+                            }}
+                          >
+                            {tiposPersona?.map((tipo) => (
+                              <MenuItem key={tipo.id} value={tipo.id}>
+                                {tipo.nombre}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                          {errors.tipoPersonaId && <FormHelperText>{errors.tipoPersonaId}</FormHelperText>}
+                        </FormControl>
+                      </Grid>
+                    );
+                  }
+                })()}
+
+                {/* Dirección - siempre visible */}
                 <Grid item xs={12} sm={6}>
                   <TextField
-                    label="Nombre *"
-                    fullWidth
-                    value={formData.nombre}
-                    onChange={(e) => {
-                      setFormData({ ...formData, nombre: e.target.value });
-                      if (errors.nombre) {
-                        setErrors({ ...errors, nombre: '' });
-                      }
-                    }}
-                    error={!!errors.nombre}
-                    helperText={errors.nombre}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    label="Apellido"
-                    fullWidth
-                    value={formData.apellido}
-                    onChange={(e) => setFormData({ ...formData, apellido: e.target.value })}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <TextField
-                    label="DNI *"
-                    type="text"
+                    label="Calle"
                     fullWidth
                     size="small"
-                    value={formData.dni}
-                    onChange={(e) => {
-                      const value = e.target.value.replace(/\D/g, '').substring(0, 8);
-                      setFormData({ ...formData, dni: value });
-                      if (errors.dni || errors.dniCuit) {
-                        const newErrors = { ...errors };
-                        delete newErrors.dni;
-                        delete newErrors.dniCuit;
-                        setErrors(newErrors);
-                      }
-                    }}
-                    inputProps={{ maxLength: 8 }}
-                    error={!!errors.dni || !!errors.dniCuit}
-                    helperText={errors.dni || (errors.dniCuit && !formData.cuit ? errors.dniCuit : '')}
-                    placeholder="Al menos DNI o CUIT requerido"
+                    value={formData.dirCalle}
+                    onChange={(e) => setFormData({ ...formData, dirCalle: e.target.value })}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4}>
+                <Grid item xs={12} sm={2}>
                   <TextField
-                    label="CUIT *"
-                    type="text"
+                    label="Nro"
                     fullWidth
                     size="small"
-                    value={formData.cuit}
-                    onChange={(e) => {
-                      let value = e.target.value.replace(/\D/g, '');
-                      if (value.length > 2) value = value.substring(0, 2) + '-' + value.substring(2);
-                      if (value.length > 11) value = value.substring(0, 11) + '-' + value.substring(11);
-                      value = value.substring(0, 13);
-                      setFormData({ ...formData, cuit: value });
-                      if (errors.cuit || errors.dniCuit) {
-                        const newErrors = { ...errors };
-                        delete newErrors.cuit;
-                        delete newErrors.dniCuit;
-                        setErrors(newErrors);
-                      }
-                    }}
-                    placeholder="XX-XXXXXXXX-X"
-                    error={!!errors.cuit || !!errors.dniCuit}
-                    helperText={errors.cuit || (errors.dniCuit && !formData.dni ? errors.dniCuit : '')}
+                    value={formData.dirNro}
+                    onChange={(e) => setFormData({ ...formData, dirNro: e.target.value })}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={2}>
+                  <TextField
+                    label="Piso"
+                    fullWidth
+                    size="small"
+                    value={formData.dirPiso}
+                    onChange={(e) => setFormData({ ...formData, dirPiso: e.target.value })}
+                  />
+                </Grid>
+                <Grid item xs={12} sm={2}>
+                  <TextField
+                    label="Depto"
+                    fullWidth
+                    size="small"
+                    value={formData.dirDepto}
+                    onChange={(e) => setFormData({ ...formData, dirDepto: e.target.value })}
                   />
                 </Grid>
                 <Grid item xs={12} sm={4}>
-                  <ParametroSelect
-                    categoriaCodigo="condicion_iva"
-                    label="Condición IVA"
-                    value={formData.condicionIva}
-                    onChange={(e) => setFormData({ ...formData, condicionIva: e.target.value })}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    label="Email"
-                    type="text"
-                    fullWidth
-                    value={formData.mail}
-                    onChange={(e) => {
-                      setFormData({ ...formData, mail: e.target.value });
-                      if (errors.mail) {
-                        setErrors({ ...errors, mail: '' });
-                      }
-                    }}
-                    error={!!errors.mail}
-                    helperText={errors.mail || ''}
-                    inputProps={{
-                      autoComplete: 'email'
-                    }}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    label="Teléfono"
-                    type="tel"
-                    fullWidth
-                    value={formData.telefono}
-                    onChange={(e) => {
-                      const value = e.target.value.replace(/\D/g, '');
-                      setFormData({ ...formData, telefono: value });
-                      if (errors.telefono) {
-                        setErrors({ ...errors, telefono: '' });
-                      }
-                    }}
-                    placeholder="Solo números"
-                    error={!!errors.telefono}
-                    helperText={errors.telefono || ''}
-                  />
-                </Grid>
-                <Grid item xs={12} sm={8}>
-                  <TextField
-                    label="Dirección"
-                    fullWidth
-                    value={formData.direccion}
-                    onChange={(e) => setFormData({ ...formData, direccion: e.target.value })}
-                  />
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Provincia</InputLabel>
+                    <Select
+                      value={formData.provinciaId}
+                      label="Provincia"
+                      onChange={(e) => {
+                        setFormData({ ...formData, provinciaId: e.target.value, localidadId: '' });
+                      }}
+                    >
+                      {provincias?.map((prov) => (
+                        <MenuItem key={prov.id} value={prov.id}>
+                          {prov.nombre}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 </Grid>
                 <Grid item xs={12} sm={4}>
-                  <TextField
-                    label="Localidad"
-                    fullWidth
-                    value={formData.localidad}
-                    onChange={(e) => setFormData({ ...formData, localidad: e.target.value })}
-                  />
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Localidad</InputLabel>
+                    <Select
+                      value={formData.localidadId}
+                      label="Localidad"
+                      onChange={(e) => setFormData({ ...formData, localidadId: e.target.value })}
+                      disabled={!formData.provinciaId}
+                    >
+                      {localidades?.map((loc) => (
+                        <MenuItem key={loc.id} value={loc.id}>
+                          {loc.nombre}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Grid>
+                <Grid item xs={12} sm={4}>
+                  <FormControl fullWidth size="small">
+                    <InputLabel>Condición IVA</InputLabel>
+                    <Select
+                      value={formData.condicionIvaId}
+                      label="Condición IVA"
+                      onChange={(e) => setFormData({ ...formData, condicionIvaId: e.target.value })}
+                    >
+                      {condicionesIva?.map((cond) => (
+                        <MenuItem key={cond.id} value={cond.id}>
+                          {cond.nombre}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
                 </Grid>
               </Grid>
             </Box>
@@ -543,7 +927,7 @@ export default function Inquilinos() {
           <DialogActions>
             <Button onClick={() => setOpen(false)}>Cancelar</Button>
             <Button type="submit" variant="contained">
-              {editing ? 'Actualizar' : 'Crear'}
+              {editing ? 'Guardar' : 'Crear'}
             </Button>
           </DialogActions>
         </form>

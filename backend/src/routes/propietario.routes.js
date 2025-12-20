@@ -4,7 +4,9 @@ import {
   getPropietarioById,
   createPropietario,
   updatePropietario,
-  deletePropietario
+  deletePropietario,
+  asociarPropiedades,
+  desasociarPropiedad
 } from '../controllers/propietario.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 
@@ -17,6 +19,8 @@ router.get('/:id', getPropietarioById);
 router.post('/', createPropietario);
 router.put('/:id', updatePropietario);
 router.delete('/:id', deletePropietario);
+router.post('/:id/propiedades', asociarPropiedades);
+router.delete('/:id/propiedades/:propiedadId', desasociarPropiedad);
 
 export default router;
 

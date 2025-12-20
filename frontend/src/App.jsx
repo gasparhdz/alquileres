@@ -2,8 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import Inquilinos from './pages/Inquilinos';
-import Propietarios from './pages/Propietarios';
+import Clientes from './pages/Clientes';
 import Propiedades from './pages/Propiedades';
 import Contratos from './pages/Contratos';
 import Liquidaciones from './pages/Liquidaciones';
@@ -14,10 +13,6 @@ import Layout from './components/Layout';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
-
-  if (loading) {
-    return <div>Cargando...</div>;
-  }
 
   if (!user) {
     return <Navigate to="/login" replace />;
@@ -41,8 +36,9 @@ function AppRoutes() {
         }
       >
         <Route index element={<Dashboard />} />
-        <Route path="inquilinos" element={<Inquilinos />} />
-        <Route path="propietarios" element={<Propietarios />} />
+        <Route path="clientes" element={<Clientes />} />
+        <Route path="inquilinos" element={<Navigate to="/clientes" replace />} />
+        <Route path="propietarios" element={<Navigate to="/clientes" replace />} />
         <Route path="propiedades" element={<Propiedades />} />
         <Route path="cuentas-tributarias" element={<CuentasTributarias />} />
         <Route path="contratos" element={<Contratos />} />

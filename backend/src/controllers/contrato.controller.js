@@ -11,16 +11,21 @@ const prisma = new PrismaClient();
  * @param {string} unidadId - ID de la propiedad
  * @returns {Promise<string|null>} - Código del estado de la propiedad o null si no se puede determinar
  */
-async function determinarEstadoPropiedad(unidadId) {
+async function determinarEstadoPropiedad(propiedadId) {
   try {
     // Obtener todos los contratos no eliminados de la propiedad
     const contratos = await prisma.contrato.findMany({
       where: {
-        unidadId: unidadId,
-        isDeleted: false
+        propiedadId: propiedadId,
+        deletedAt: null,
+        activo: true
       },
       select: {
-        estado: true,
+        estado: {
+          select: {
+            codigo: true
+          }
+        },
         fechaFin: true
       },
       orderBy: {
@@ -34,28 +39,28 @@ async function determinarEstadoPropiedad(unidadId) {
     }
 
     // Estados que hacen que la propiedad esté alquilada (incluye estados intermedios donde el contrato sigue activo)
-    const estadosAlquilada = ['vigente', 'prorrogado', 'renovado', 'suspendido', 'en_mora'];
+    const estadosAlquilada = ['VIGENTE', 'PRORROGADO', 'RENOVADO', 'SUSPENDIDO', 'EN_MORA'];
     
     // Estados que hacen que la propiedad esté no disponible (pero no alquilada aún)
-    const estadosNoDisponible = ['borrador', 'pendiente_de_firma'];
+    const estadosNoDisponible = ['BORRADOR', 'PENDIENTE_FIRMA'];
     
     // Estados que hacen que la propiedad esté disponible (contrato finalizado)
-    const estadosDisponible = ['vencido', 'rescindido', 'anulado', 'finalizado'];
+    const estadosDisponible = ['VENCIDO', 'RESCINDIDO', 'ANULADO', 'FINALIZADO'];
 
     // Prioridad 1: Si hay algún contrato que haga que la propiedad esté alquilada
-    const tieneContratoAlquilada = contratos.some(c => estadosAlquilada.includes(c.estado));
+    const tieneContratoAlquilada = contratos.some(c => estadosAlquilada.includes(c.estado?.codigo));
     if (tieneContratoAlquilada) {
       return 'alquilada';
     }
 
     // Prioridad 2: Si hay algún contrato que haga que la propiedad esté no disponible
-    const tieneContratoNoDisponible = contratos.some(c => estadosNoDisponible.includes(c.estado));
+    const tieneContratoNoDisponible = contratos.some(c => estadosNoDisponible.includes(c.estado?.codigo));
     if (tieneContratoNoDisponible) {
       return 'no_disponible';
     }
 
     // Prioridad 3: Si todos los contratos están en estados que liberan la propiedad
-    const todosDisponibles = contratos.every(c => estadosDisponible.includes(c.estado));
+    const todosDisponibles = contratos.every(c => estadosDisponible.includes(c.estado?.codigo));
     if (todosDisponibles) {
       return 'disponible';
     }
@@ -72,16 +77,23 @@ async function determinarEstadoPropiedad(unidadId) {
  * Actualiza el estado de la propiedad basándose en sus contratos
  * @param {string} unidadId - ID de la propiedad
  */
-async function actualizarEstadoPropiedad(unidadId) {
+async function actualizarEstadoPropiedad(propiedadId) {
   try {
-    const nuevoEstado = await determinarEstadoPropiedad(unidadId);
+    const nuevoEstado = await determinarEstadoPropiedad(propiedadId);
     
     if (nuevoEstado) {
-      await prisma.unidad.update({
-        where: { id: unidadId },
-        data: { estado: nuevoEstado }
+      // Buscar el estado correspondiente en el catálogo
+      const estadoPropiedad = await prisma.estadoPropiedad.findFirst({
+        where: { codigo: nuevoEstado.toUpperCase() }
       });
-      console.log(`Estado de propiedad ${unidadId} actualizado a: ${nuevoEstado}`);
+      
+      if (estadoPropiedad) {
+        await prisma.propiedad.update({
+          where: { id: propiedadId },
+          data: { estadoPropiedadId: estadoPropiedad.id }
+        });
+        console.log(`Estado de propiedad ${propiedadId} actualizado a: ${nuevoEstado}`);
+      }
     }
   } catch (error) {
     console.error('Error al actualizar estado de propiedad:', error);
@@ -92,14 +104,15 @@ async function actualizarEstadoPropiedad(unidadId) {
 // Contratos principales
 export const getAllContratos = async (req, res) => {
   try {
-    const { search, unidadId, inquilinoId, activo, page = 1, limit = 50 } = req.query;
+    const { search, propiedadId, inquilinoId, activo, page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const now = new Date();
 
     const where = {
-      isDeleted: false,
-      ...(unidadId && { unidadId }),
-      ...(inquilinoId && { inquilinoId }),
+      deletedAt: null,
+      activo: true,
+      ...(propiedadId && { propiedadId: parseInt(propiedadId) }),
+      ...(inquilinoId && { inquilinoId: parseInt(inquilinoId) }),
       ...(activo === 'true' && {
         OR: [
           { fechaFin: null },
@@ -109,9 +122,10 @@ export const getAllContratos = async (req, res) => {
       ...(search && {
         OR: [
           { nroContrato: { contains: search, mode: 'insensitive' } },
-          { unidad: { direccion: { contains: search, mode: 'insensitive' } } },
+          { propiedad: { dirCalle: { contains: search, mode: 'insensitive' } } },
           { inquilino: { nombre: { contains: search, mode: 'insensitive' } } },
-          { inquilino: { apellido: { contains: search, mode: 'insensitive' } } }
+          { inquilino: { apellido: { contains: search, mode: 'insensitive' } } },
+          { inquilino: { razonSocial: { contains: search, mode: 'insensitive' } } }
         ]
       })
     };
@@ -123,19 +137,36 @@ export const getAllContratos = async (req, res) => {
         take: parseInt(limit),
         orderBy: { fechaInicio: 'desc' },
         include: {
-          unidad: {
+          propiedad: {
             include: {
-              propietario: {
-                select: {
-                  id: true,
-                  nombre: true,
-                  apellido: true,
-                  razonSocial: true
+              localidad: {
+                include: {
+                  provincia: true
+                }
+              },
+              provincia: true,
+              propietarios: {
+                where: {
+                  deletedAt: null,
+                  activo: true
+                },
+                include: {
+                  propietario: {
+                    select: {
+                      id: true,
+                      nombre: true,
+                      apellido: true,
+                      razonSocial: true
+                    }
+                  }
                 }
               }
             }
           },
-          inquilino: true
+          inquilino: true,
+          estado: true,
+          moneda: true,
+          metodoAjuste: true
         }
       }),
       prisma.contrato.count({ where })
@@ -152,27 +183,65 @@ export const getAllContratos = async (req, res) => {
     });
   } catch (error) {
     console.error('Error al obtener contratos:', error);
-    res.status(500).json({ error: 'Error al obtener contratos' });
+    res.status(500).json({ error: 'Error al obtener contratos', details: error.message });
   }
 };
 
 export const getContratoById = async (req, res) => {
   try {
     const { id } = req.params;
+    const contratoId = parseInt(id);
+
+    if (isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
 
     const contrato = await prisma.contrato.findUnique({
-      where: { id },
+      where: { id: contratoId },
       include: {
-        unidad: {
+        propiedad: {
           include: {
-            propietario: true,
-            cuentas: true
+            propietarios: {
+              include: {
+                propietario: true
+              }
+            },
+            localidad: {
+              include: {
+                provincia: true
+              }
+            },
+            provincia: true,
+            tipoPropiedad: true,
+            estadoPropiedad: true,
+            destino: true,
+            ambientes: true
           }
         },
         inquilino: true,
-        responsabilidades: true,
-        garantias: true,
-        gastosIniciales: true,
+        moneda: true,
+        estado: true,
+        metodoAjuste: true,
+        responsabilidades: {
+          include: {
+            tipoImpuesto: true,
+            tipoCargo: true,
+            quienPagaProveedor: true,
+            quienSoportaCosto: true
+          }
+        },
+        garantias: {
+          include: {
+            tipoGarantia: true,
+            estadoGarantia: true
+          }
+        },
+        gastosIniciales: {
+          include: {
+            tipoGastoInicial: true,
+            quienPaga: true
+          }
+        },
         ajustes: {
           orderBy: { fechaAjuste: 'desc' }
         },
@@ -181,20 +250,12 @@ export const getContratoById = async (req, res) => {
           include: {
             items: true
           }
-        },
-        prorrogaDe: true,
-        renovadoPor: true,
-        renovacionDe: true
+        }
       }
     });
 
-    if (!contrato || contrato.isDeleted) {
+    if (!contrato || contrato.deletedAt || !contrato.activo) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
-    }
-
-    // Filtrar cuentas eliminadas manualmente
-    if (contrato.unidad && contrato.unidad.cuentas) {
-      contrato.unidad.cuentas = contrato.unidad.cuentas.filter(cuenta => !cuenta.isDeleted);
     }
 
     res.json(contrato);
@@ -257,51 +318,59 @@ export const createContrato = async (req, res) => {
   try {
     const data = req.body;
 
-    if (!data.unidadId || !data.inquilinoId || !data.fechaInicio || !data.montoInicial) {
-      return res.status(400).json({ error: 'Unidad, inquilino, fecha de inicio y monto inicial son requeridos' });
+    if (!data.propiedadId || !data.inquilinoId || !data.fechaInicio || !data.montoInicial) {
+      return res.status(400).json({ error: 'Propiedad, inquilino, fecha de inicio y monto inicial son requeridos' });
     }
 
-    // Verificar que la unidad y el inquilino existen
-    const [unidad, inquilino] = await Promise.all([
-      prisma.unidad.findUnique({ where: { id: data.unidadId } }),
+    // Verificar que la propiedad y el inquilino existen
+    const [propiedad, inquilino] = await Promise.all([
+      prisma.propiedad.findUnique({ where: { id: data.propiedadId } }),
       prisma.inquilino.findUnique({ where: { id: data.inquilinoId } })
     ]);
 
-    if (!unidad || unidad.isDeleted) {
-      return res.status(404).json({ error: 'Unidad no encontrada' });
+    if (!propiedad || propiedad.deletedAt || !propiedad.activo) {
+      return res.status(404).json({ error: 'Propiedad no encontrada' });
     }
-    if (!inquilino || inquilino.isDeleted) {
+    if (!inquilino || inquilino.deletedAt || !inquilino.activo) {
       return res.status(404).json({ error: 'Inquilino no encontrado' });
     }
 
     // Generar número de contrato consecutivo si no se proporciona
     let nroContrato = data.nroContrato;
     if (!nroContrato || nroContrato.trim() === '') {
-      const añoActual = new Date().getFullYear();
-      const prefijo = `CONT-${añoActual}-`;
-      
-      // Buscar todos los contratos del año actual con el formato CONT-YYYY-NNNN
-      const contratosAñoActual = await prisma.contrato.findMany({
+      // Buscar todos los contratos activos para obtener el número más alto
+      const todosLosContratos = await prisma.contrato.findMany({
         where: {
-          nroContrato: {
-            startsWith: prefijo
-          },
-          isDeleted: false
+          deletedAt: null,
+          activo: true
         },
         select: {
           nroContrato: true
         }
       });
 
-      // Encontrar el número más alto
+      // Extraer números de los contratos (pueden venir en formato antiguo CONT-YYYY-NNNN o solo número)
       let siguienteNumero = 1;
-      if (contratosAñoActual.length > 0) {
-        const numeros = contratosAñoActual
+      if (todosLosContratos.length > 0) {
+        const numeros = todosLosContratos
           .map(c => {
+            if (!c.nroContrato) return 0;
+            
+            // Si es solo número, parsearlo directamente
+            const numeroDirecto = parseInt(c.nroContrato, 10);
+            if (!isNaN(numeroDirecto) && numeroDirecto > 0) {
+              return numeroDirecto;
+            }
+            
+            // Si tiene formato antiguo CONT-YYYY-NNNN, extraer el número
             const partes = c.nroContrato.split('-');
             if (partes.length === 3 && partes[2]) {
-              return parseInt(partes[2], 10);
+              const numeroDelFormato = parseInt(partes[2], 10);
+              if (!isNaN(numeroDelFormato) && numeroDelFormato > 0) {
+                return numeroDelFormato;
+              }
             }
+            
             return 0;
           })
           .filter(n => !isNaN(n) && n > 0);
@@ -311,30 +380,29 @@ export const createContrato = async (req, res) => {
         }
       }
 
-      // Formato: CONT-YYYY-NNNN
-      nroContrato = `${prefijo}${siguienteNumero.toString().padStart(4, '0')}`;
+      // Formato: solo número (1, 2, 3, etc.)
+      nroContrato = siguienteNumero.toString();
     }
 
     // Construir objeto de datos explícitamente para evitar campos no deseados
+    const montoInicial = parseFloat(data.montoInicial);
+    const montoActual = data.montoActual ? parseFloat(data.montoActual) : montoInicial;
+    
     const contratoData = {
-        unidadId: data.unidadId,
+        propiedadId: data.propiedadId,
         inquilinoId: data.inquilinoId,
         nroContrato: nroContrato,
         fechaInicio: data.fechaInicio ? new Date(data.fechaInicio) : new Date(),
         fechaFin: data.fechaFin ? new Date(data.fechaFin) : null,
         duracionMeses: data.duracionMeses ? parseInt(data.duracionMeses, 10) : null,
-        montoInicial: parseFloat(data.montoInicial),
-        montoActual: data.montoActual ? parseFloat(data.montoActual) : parseFloat(data.montoInicial),
-        ultimoAjusteAt: data.ultimoAjusteAt ? new Date(data.ultimoAjusteAt) : null,
-        indiceAumento: data.indiceAumento || null,
-        periodoAumento: data.periodoAumento ? parseInt(data.periodoAumento, 10) : null,
+        montoInicial: montoInicial,
+        montoActual: montoActual, // Requerido, usar montoInicial si no viene
         gastosAdministrativos: data.gastosAdministrativos ? parseFloat(data.gastosAdministrativos) : null,
         honorariosPropietario: data.honorariosPropietario ? parseFloat(data.honorariosPropietario) : null,
-        metodoAjuste: data.metodoAjuste || null,
         frecuenciaAjusteMeses: data.frecuenciaAjusteMeses ? parseInt(data.frecuenciaAjusteMeses, 10) : null,
-        registradoAfip: data.registradoAfip !== undefined ? Boolean(data.registradoAfip) : false,
-        moneda: data.moneda || 'ARS',
-        estado: data.estado || 'borrador'
+        metodoAjusteContratoId: data.metodoAjusteContratoId ? parseInt(data.metodoAjusteContratoId, 10) : null,
+        monedaId: data.monedaId ? parseInt(data.monedaId, 10) : null,
+        estadoContratoId: data.estadoContratoId ? parseInt(data.estadoContratoId, 10) : null
     };
     
     // Solo agregar campos nuevos si están presentes en data y existen en el schema
@@ -373,73 +441,83 @@ export const createContrato = async (req, res) => {
     }
 
     const contrato = await prisma.contrato.create({
-      data: contratoData,
-      include: {
-        unidad: {
-          include: { propietario: true }
-        },
-        inquilino: true
-      }
+      data: contratoData
     });
-
-    // Actualizar el estado de la propiedad basándose en los contratos
-    await actualizarEstadoPropiedad(data.unidadId);
 
     res.status(201).json(contrato);
   } catch (error) {
     console.error('Error al crear contrato:', error);
+    console.error('Error details:', error.message);
+    console.error('Data received:', req.body);
     
     if (error.code === 'P2002') {
       return res.status(400).json({ error: 'Ya existe un contrato con estos datos' });
     }
 
-    res.status(500).json({ error: 'Error al crear contrato' });
+    res.status(500).json({ 
+      error: 'Error al crear contrato',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 };
 
 export const updateContrato = async (req, res) => {
+  const updateData = {}; // Definir fuera del try para que esté disponible en el catch
   try {
     const { id } = req.params;
+    const contratoId = parseInt(id);
     const data = req.body;
+
+    if (isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
 
     // Usar findUnique en lugar de findFirst para evitar problemas con campos que no existen
     const contrato = await prisma.contrato.findUnique({
-      where: { id }
+      where: { id: contratoId }
     });
 
-    if (!contrato || contrato.isDeleted) {
+    if (!contrato || contrato.deletedAt || !contrato.activo) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
-    // Verificar que unidad e inquilino existen si se están actualizando
-    if (data.unidadId) {
-      const unidad = await prisma.unidad.findUnique({
-        where: { id: data.unidadId }
+    // Verificar que propiedad e inquilino existen si se están actualizando
+    if (data.propiedadId) {
+      const propiedad = await prisma.propiedad.findUnique({
+        where: { id: parseInt(data.propiedadId) }
       });
-      if (!unidad || unidad.isDeleted) {
-        return res.status(400).json({ error: 'Unidad no encontrada' });
+      if (!propiedad || propiedad.deletedAt || !propiedad.activo) {
+        return res.status(400).json({ error: 'Propiedad no encontrada' });
       }
     }
 
     if (data.inquilinoId) {
       const inquilino = await prisma.inquilino.findUnique({
-        where: { id: data.inquilinoId }
+        where: { id: parseInt(data.inquilinoId) }
       });
-      if (!inquilino || inquilino.isDeleted) {
+      if (!inquilino || inquilino.deletedAt || !inquilino.activo) {
         return res.status(400).json({ error: 'Inquilino no encontrado' });
       }
     }
 
     // Construir objeto de actualización con solo los campos permitidos
-    const updateData = {};
+    // updateData ya está definido fuera del try
     
-    // Campos de relación usando connect (Prisma requiere esta sintaxis en update)
-    // Solo conectar si el ID es válido (no null, no undefined, no string vacío)
-    if (data.unidadId !== undefined && data.unidadId !== null && data.unidadId !== '') {
-      updateData.unidad = { connect: { id: data.unidadId } };
+    // Campos de relación usando IDs directos (según el nuevo schema)
+    if (data.propiedadId !== undefined && data.propiedadId !== null && data.propiedadId !== '') {
+      updateData.propiedadId = parseInt(data.propiedadId);
     }
     if (data.inquilinoId !== undefined && data.inquilinoId !== null && data.inquilinoId !== '') {
-      updateData.inquilino = { connect: { id: data.inquilinoId } };
+      updateData.inquilinoId = parseInt(data.inquilinoId);
+    }
+    if (data.monedaId !== undefined && data.monedaId !== null && data.monedaId !== '') {
+      updateData.monedaId = parseInt(data.monedaId);
+    }
+    if (data.estadoContratoId !== undefined && data.estadoContratoId !== null && data.estadoContratoId !== '') {
+      updateData.estadoContratoId = parseInt(data.estadoContratoId);
+    }
+    if (data.metodoAjusteContratoId !== undefined && data.metodoAjusteContratoId !== null && data.metodoAjusteContratoId !== '') {
+      updateData.metodoAjusteContratoId = parseInt(data.metodoAjusteContratoId);
     }
     
     // Campos escalares
@@ -455,10 +533,6 @@ export const updateContrato = async (req, res) => {
     if (data.frecuenciaAjusteMeses !== undefined) {
       updateData.frecuenciaAjusteMeses = data.frecuenciaAjusteMeses !== null && data.frecuenciaAjusteMeses !== '' ? parseInt(data.frecuenciaAjusteMeses, 10) : null;
     }
-    if (data.registradoAfip !== undefined) updateData.registradoAfip = Boolean(data.registradoAfip);
-    if (data.moneda !== undefined) updateData.moneda = data.moneda || null;
-    if (data.metodoAjuste !== undefined) updateData.metodoAjuste = data.metodoAjuste || null;
-    if (data.indiceAumento !== undefined) updateData.indiceAumento = data.indiceAumento || null;
     
     // Campos numéricos requeridos (montoInicial y montoActual no pueden ser null)
     if (data.montoInicial !== undefined && data.montoInicial !== null && data.montoInicial !== '') {
@@ -558,41 +632,45 @@ export const updateContrato = async (req, res) => {
       updateData.enMora = Boolean(data.enMora);
     }
 
-    // Obtener el contrato antes de actualizar para conocer la unidadId y el estado anterior
+    // Obtener el contrato antes de actualizar para conocer la propiedadId y el estado anterior
     const contratoAnterior = await prisma.contrato.findUnique({
-      where: { id },
-      select: { unidadId: true, estado: true }
+      where: { id: contratoId },
+      select: { propiedadId: true, estadoContratoId: true }
     });
 
     const updated = await prisma.contrato.update({
-      where: { id },
-      data: updateData,
-      include: {
-        unidad: {
-          include: { propietario: true }
-        },
-        inquilino: true
-      }
+      where: { id: contratoId },
+      data: updateData
     });
 
     // Determinar si se debe actualizar el estado de la propiedad
-    const estadoCambio = contratoAnterior?.estado !== updateData.estado;
-    const unidadCambio = updateData.unidad?.connect?.id && 
-                         contratoAnterior?.unidadId && 
-                         updateData.unidad.connect.id !== contratoAnterior.unidadId;
+    const estadoCambio = contratoAnterior?.estadoContratoId !== updateData.estadoContratoId;
+    const propiedadCambio = updateData.propiedadId && 
+                         contratoAnterior?.propiedadId && 
+                         updateData.propiedadId !== contratoAnterior.propiedadId;
 
     // Actualizar el estado de la propiedad si:
     // 1. Cambió el estado del contrato, o
-    // 2. Cambió la unidad asociada, o
+    // 2. Cambió la propiedad asociada, o
     // 3. Se actualizó cualquier campo que afecte el estado (siempre actualizar por seguridad)
-    const unidadIdParaActualizar = updateData.unidad?.connect?.id || contratoAnterior?.unidadId || updated.unidadId;
-    if (unidadIdParaActualizar && (estadoCambio || unidadCambio || updateData.estado !== undefined)) {
-      await actualizarEstadoPropiedad(unidadIdParaActualizar);
+    const propiedadIdParaActualizar = updateData.propiedadId || contratoAnterior?.propiedadId || updated.propiedadId;
+    if (propiedadIdParaActualizar && (estadoCambio || propiedadCambio || updateData.estadoContratoId !== undefined)) {
+      try {
+        await actualizarEstadoPropiedad(propiedadIdParaActualizar);
+      } catch (error) {
+        console.error('Error al actualizar estado de propiedad:', error);
+        // No fallar la actualización del contrato si falla la actualización del estado
+      }
     }
 
-    // Si cambió la unidad, también actualizar el estado de la unidad anterior
-    if (unidadCambio && contratoAnterior?.unidadId) {
-      await actualizarEstadoPropiedad(contratoAnterior.unidadId);
+    // Si cambió la propiedad, también actualizar el estado de la propiedad anterior
+    if (propiedadCambio && contratoAnterior?.propiedadId) {
+      try {
+        await actualizarEstadoPropiedad(contratoAnterior.propiedadId);
+      } catch (error) {
+        console.error('Error al actualizar estado de propiedad anterior:', error);
+        // No fallar la actualización del contrato si falla la actualización del estado
+      }
     }
 
     res.json(updated);
@@ -714,25 +792,52 @@ export const addResponsabilidad = async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
+    const contratoId = parseInt(id);
+    if (isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
+
     const contrato = await prisma.contrato.findFirst({
-      where: { id, isDeleted: false }
+      where: { 
+        id: contratoId, 
+        deletedAt: null, 
+        activo: true 
+      }
     });
 
     if (!contrato) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
+    // Validar que tenga al menos tipoImpuestoId o tipoCargoId
+    if (!data.tipoImpuestoId && !data.tipoCargoId) {
+      return res.status(400).json({ error: 'Debe proporcionar tipoImpuestoId o tipoCargoId' });
+    }
+
+    // Preparar datos asegurando que los IDs sean números
+    const responsabilidadData = {
+      contratoId: contratoId,
+      tipoImpuestoId: data.tipoImpuestoId ? parseInt(data.tipoImpuestoId) : null,
+      tipoCargoId: data.tipoCargoId ? parseInt(data.tipoCargoId) : null,
+      quienPagaProveedorId: data.quienPagaProveedorId ? parseInt(data.quienPagaProveedorId) : undefined,
+      quienSoportaCostoId: data.quienSoportaCostoId ? parseInt(data.quienSoportaCostoId) : undefined,
+      ...(data.titular !== undefined && { titular: data.titular })
+    };
+
     const responsabilidad = await prisma.contratoResponsabilidad.create({
-      data: {
-        ...data,
-        contratoId: id
+      data: responsabilidadData,
+      include: {
+        tipoImpuesto: true,
+        tipoCargo: true,
+        quienPagaProveedor: true,
+        quienSoportaCosto: true
       }
     });
 
     res.status(201).json(responsabilidad);
   } catch (error) {
     console.error('Error al crear responsabilidad:', error);
-    res.status(500).json({ error: 'Error al crear responsabilidad' });
+    res.status(500).json({ error: 'Error al crear responsabilidad', details: error.message });
   }
 };
 
@@ -741,23 +846,52 @@ export const updateResponsabilidad = async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
+    const responsabilidadId = parseInt(id);
+    if (isNaN(responsabilidadId)) {
+      return res.status(400).json({ error: 'ID de responsabilidad inválido' });
+    }
+
     const responsabilidad = await prisma.contratoResponsabilidad.findUnique({
-      where: { id }
+      where: { id: responsabilidadId }
     });
 
     if (!responsabilidad) {
       return res.status(404).json({ error: 'Responsabilidad no encontrada' });
     }
 
+    // Preparar datos asegurando que los IDs sean números
+    const updateData = {};
+    if (data.tipoImpuestoId !== undefined) {
+      updateData.tipoImpuestoId = data.tipoImpuestoId ? parseInt(data.tipoImpuestoId) : null;
+    }
+    if (data.tipoCargoId !== undefined) {
+      updateData.tipoCargoId = data.tipoCargoId ? parseInt(data.tipoCargoId) : null;
+    }
+    if (data.quienPagaProveedorId !== undefined) {
+      updateData.quienPagaProveedorId = data.quienPagaProveedorId ? parseInt(data.quienPagaProveedorId) : null;
+    }
+    if (data.quienSoportaCostoId !== undefined) {
+      updateData.quienSoportaCostoId = data.quienSoportaCostoId ? parseInt(data.quienSoportaCostoId) : null;
+    }
+    if (data.titular !== undefined) {
+      updateData.titular = data.titular;
+    }
+
     const updated = await prisma.contratoResponsabilidad.update({
-      where: { id },
-      data
+      where: { id: responsabilidadId },
+      data: updateData,
+      include: {
+        tipoImpuesto: true,
+        tipoCargo: true,
+        quienPagaProveedor: true,
+        quienSoportaCosto: true
+      }
     });
 
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar responsabilidad:', error);
-    res.status(500).json({ error: 'Error al actualizar responsabilidad' });
+    res.status(500).json({ error: 'Error al actualizar responsabilidad', details: error.message });
   }
 };
 
@@ -776,31 +910,211 @@ export const deleteResponsabilidad = async (req, res) => {
   }
 };
 
+// Helper para actualizar el gasto inicial de averiguación de garantías
+const actualizarGastoAveriguacionGarantias = async (contratoId) => {
+  try {
+    console.log(`[actualizarGastoAveriguacionGarantias] Iniciando para contratoId: ${contratoId}`);
+    
+    // Calcular el total de costos de averiguación de todas las garantías del contrato
+    const garantias = await prisma.contratoGarantia.findMany({
+      where: {
+        contratoId: contratoId,
+        activo: true
+      },
+      select: {
+        costoAveriguacion: true
+      }
+    });
+
+    console.log(`[actualizarGastoAveriguacionGarantias] Encontradas ${garantias.length} garantías activas`);
+
+    // Sumar todos los costos de averiguación
+    const totalAveriguacion = garantias.reduce((sum, garantia) => {
+      const costo = garantia.costoAveriguacion ? parseFloat(garantia.costoAveriguacion) : 0;
+      console.log(`[actualizarGastoAveriguacionGarantias] Costo: ${costo}, Suma acumulada: ${sum + costo}`);
+      return sum + costo;
+    }, 0);
+
+    console.log(`[actualizarGastoAveriguacionGarantias] Total calculado: ${totalAveriguacion}`);
+
+    // Buscar el tipo de gasto inicial con código "AVERIG" o "AVERIGUACION"
+    let tipoGastoAverig = await prisma.tipoGastoInicialContrato.findFirst({
+      where: {
+        codigo: 'AVERIG',
+        activo: true
+      }
+    });
+
+    // Si no se encuentra con "AVERIG", intentar con "AVERIGUACION"
+    if (!tipoGastoAverig) {
+      tipoGastoAverig = await prisma.tipoGastoInicialContrato.findFirst({
+        where: {
+          codigo: 'AVERIGUACION',
+          activo: true
+        }
+      });
+    }
+
+    // Si aún no se encuentra, buscar por nombre que contenga "averiguacion"
+    if (!tipoGastoAverig) {
+      tipoGastoAverig = await prisma.tipoGastoInicialContrato.findFirst({
+        where: {
+          activo: true,
+          OR: [
+            { nombre: { contains: 'averiguacion', mode: 'insensitive' } },
+            { nombre: { contains: 'averig', mode: 'insensitive' } }
+          ]
+        }
+      });
+    }
+
+    if (!tipoGastoAverig) {
+      console.error('[actualizarGastoAveriguacionGarantias] No se encontró el tipo de gasto inicial AVERIG/AVERIGUACION');
+      // Listar todos los tipos de gasto para debug
+      const todosLosTipos = await prisma.tipoGastoInicialContrato.findMany({
+        where: { activo: true },
+        select: { id: true, codigo: true, nombre: true }
+      });
+      console.log('[actualizarGastoAveriguacionGarantias] Tipos de gasto disponibles:', todosLosTipos);
+      return;
+    }
+
+    console.log(`[actualizarGastoAveriguacionGarantias] Tipo de gasto encontrado: ${tipoGastoAverig.codigo} - ${tipoGastoAverig.nombre} (ID: ${tipoGastoAverig.id})`);
+
+    // Buscar el gasto inicial existente de tipo AVERIG para este contrato
+    const gastoAverigExistente = await prisma.contratoGastoInicial.findFirst({
+      where: {
+        contratoId: contratoId,
+        tipoGastoInicialId: tipoGastoAverig.id
+      }
+    });
+
+    // Buscar un actor responsable por defecto (INQUILINO)
+    let quienPagaId = null;
+    const actorDefault = await prisma.actorResponsableContrato.findFirst({
+      where: {
+        activo: true,
+        deletedAt: null,
+        codigo: 'INQ'
+      }
+    });
+    if (actorDefault) {
+      quienPagaId = actorDefault.id;
+    } else {
+      // Si no existe INQ, buscar cualquier actor activo
+      const actorCualquiera = await prisma.actorResponsableContrato.findFirst({
+        where: {
+          activo: true,
+          deletedAt: null
+        }
+      });
+      if (actorCualquiera) {
+        quienPagaId = actorCualquiera.id;
+      }
+    }
+
+    if (gastoAverigExistente) {
+      // Actualizar el gasto existente
+      console.log(`[actualizarGastoAveriguacionGarantias] Actualizando gasto existente ID: ${gastoAverigExistente.id} con total: ${totalAveriguacion}`);
+      await prisma.contratoGastoInicial.update({
+        where: { id: gastoAverigExistente.id },
+        data: {
+          importe: totalAveriguacion,
+          valorCalculo: totalAveriguacion
+        }
+      });
+      console.log(`[actualizarGastoAveriguacionGarantias] Gasto actualizado exitosamente`);
+    } else if (totalAveriguacion > 0) {
+      // Crear el gasto inicial solo si hay un total mayor a 0
+      console.log(`[actualizarGastoAveriguacionGarantias] Creando nuevo gasto con total: ${totalAveriguacion}, quienPagaId: ${quienPagaId}`);
+      const nuevoGasto = await prisma.contratoGastoInicial.create({
+        data: {
+          contratoId: contratoId,
+          tipoGastoInicialId: tipoGastoAverig.id,
+          importe: totalAveriguacion,
+          valorCalculo: totalAveriguacion,
+          quienPagaId: quienPagaId
+        }
+      });
+      console.log(`[actualizarGastoAveriguacionGarantias] Gasto creado exitosamente con ID: ${nuevoGasto.id}`);
+    } else if (gastoAverigExistente && totalAveriguacion === 0) {
+      // Si el total es 0, eliminar el gasto inicial (opcional, o dejarlo en 0)
+      // Por ahora lo dejamos en 0 en lugar de eliminarlo
+      console.log(`[actualizarGastoAveriguacionGarantias] Actualizando gasto a 0 (ID: ${gastoAverigExistente.id})`);
+      await prisma.contratoGastoInicial.update({
+        where: { id: gastoAverigExistente.id },
+        data: {
+          importe: 0,
+          valorCalculo: 0
+        }
+      });
+    } else {
+      console.log(`[actualizarGastoAveriguacionGarantias] No hay gasto existente y total es 0, no se crea nada`);
+    }
+  } catch (error) {
+    console.error('[actualizarGastoAveriguacionGarantias] Error al actualizar gasto de averiguación de garantías:', error);
+    console.error('[actualizarGastoAveriguacionGarantias] Stack:', error.stack);
+    // No lanzar el error para no interrumpir el flujo principal
+  }
+};
+
 // Garantías
 export const addGarantia = async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
 
+    const contratoId = parseInt(id);
+    if (isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
+
     const contrato = await prisma.contrato.findFirst({
-      where: { id, isDeleted: false }
+      where: { 
+        id: contratoId, 
+        deletedAt: null, 
+        activo: true 
+      }
     });
 
     if (!contrato) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
-    const garantia = await prisma.garantia.create({
-      data: {
-        ...data,
-        contratoId: id
+    // Preparar datos asegurando que los IDs sean números y el costo sea decimal
+    const garantiaData = {
+      contratoId: contratoId,
+      tipoGarantiaId: data.tipoGarantiaId ? parseInt(data.tipoGarantiaId) : null,
+      estadoGarantiaId: data.estadoGarantiaId ? parseInt(data.estadoGarantiaId) : null,
+      apellido: data.apellido || null,
+      nombre: data.nombre || null,
+      dni: data.dni || null,
+      cuit: data.cuit || null,
+      telefono: data.telefono || null,
+      mail: data.mail || null,
+      direccion: data.direccion || null,
+      costoAveriguacion: data.costoAveriguacion ? parseFloat(data.costoAveriguacion) : null
+    };
+
+    const garantia = await prisma.contratoGarantia.create({
+      data: garantiaData,
+      include: {
+        tipoGarantia: true,
+        estadoGarantia: true
       }
     });
+
+    console.log(`[addGarantia] Garantía creada con ID: ${garantia.id}, costoAveriguacion: ${garantia.costoAveriguacion}`);
+
+    // Actualizar el gasto inicial de averiguación de garantías
+    console.log(`[addGarantia] Llamando a actualizarGastoAveriguacionGarantias para contratoId: ${contratoId}`);
+    await actualizarGastoAveriguacionGarantias(contratoId);
+    console.log(`[addGarantia] actualizarGastoAveriguacionGarantias completado`);
 
     res.status(201).json(garantia);
   } catch (error) {
     console.error('Error al crear garantía:', error);
-    res.status(500).json({ error: 'Error al crear garantía' });
+    res.status(500).json({ error: 'Error al crear garantía', details: error.message });
   }
 };
 
@@ -809,23 +1123,54 @@ export const updateGarantia = async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
-    const garantia = await prisma.garantia.findUnique({
-      where: { id }
+    const garantiaId = parseInt(id);
+    if (isNaN(garantiaId)) {
+      return res.status(400).json({ error: 'ID de garantía inválido' });
+    }
+
+    const garantia = await prisma.contratoGarantia.findUnique({
+      where: { id: garantiaId }
     });
 
     if (!garantia) {
       return res.status(404).json({ error: 'Garantía no encontrada' });
     }
 
-    const updated = await prisma.garantia.update({
-      where: { id },
-      data
+    // Preparar datos asegurando que los IDs sean números y el costo sea decimal
+    const updateData = {};
+    if (data.tipoGarantiaId !== undefined) {
+      updateData.tipoGarantiaId = data.tipoGarantiaId ? parseInt(data.tipoGarantiaId) : null;
+    }
+    if (data.estadoGarantiaId !== undefined) {
+      updateData.estadoGarantiaId = data.estadoGarantiaId ? parseInt(data.estadoGarantiaId) : null;
+    }
+    if (data.apellido !== undefined) updateData.apellido = data.apellido || null;
+    if (data.nombre !== undefined) updateData.nombre = data.nombre || null;
+    if (data.dni !== undefined) updateData.dni = data.dni || null;
+    if (data.cuit !== undefined) updateData.cuit = data.cuit || null;
+    if (data.telefono !== undefined) updateData.telefono = data.telefono || null;
+    if (data.mail !== undefined) updateData.mail = data.mail || null;
+    if (data.direccion !== undefined) updateData.direccion = data.direccion || null;
+    if (data.costoAveriguacion !== undefined) {
+      updateData.costoAveriguacion = data.costoAveriguacion ? parseFloat(data.costoAveriguacion) : null;
+    }
+
+    const updated = await prisma.contratoGarantia.update({
+      where: { id: garantiaId },
+      data: updateData,
+      include: {
+        tipoGarantia: true,
+        estadoGarantia: true
+      }
     });
+
+    // Actualizar el gasto inicial de averiguación de garantías
+    await actualizarGastoAveriguacionGarantias(updated.contratoId);
 
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar garantía:', error);
-    res.status(500).json({ error: 'Error al actualizar garantía' });
+    res.status(500).json({ error: 'Error al actualizar garantía', details: error.message });
   }
 };
 
@@ -833,9 +1178,27 @@ export const deleteGarantia = async (req, res) => {
   try {
     const { id } = req.params;
 
-    await prisma.garantia.delete({
-      where: { id }
+    const garantiaId = parseInt(id);
+    if (isNaN(garantiaId)) {
+      return res.status(400).json({ error: 'ID de garantía inválido' });
+    }
+
+    // Obtener la garantía antes de eliminarla para tener el contratoId
+    const garantia = await prisma.contratoGarantia.findUnique({
+      where: { id: garantiaId },
+      select: { contratoId: true }
     });
+
+    if (!garantia) {
+      return res.status(404).json({ error: 'Garantía no encontrada' });
+    }
+
+    await prisma.contratoGarantia.delete({
+      where: { id: garantiaId }
+    });
+
+    // Actualizar el gasto inicial de averiguación de garantías
+    await actualizarGastoAveriguacionGarantias(garantia.contratoId);
 
     res.json({ message: 'Garantía eliminada exitosamente' });
   } catch (error) {
@@ -851,17 +1214,55 @@ export const addGastoInicial = async (req, res) => {
     const data = req.body;
 
     const contrato = await prisma.contrato.findFirst({
-      where: { id, isDeleted: false }
+      where: { id: parseInt(id), deletedAt: null, activo: true }
     });
 
     if (!contrato) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
+    // Validar que tipoGastoInicialId esté presente
+    if (!data.tipoGastoInicialId) {
+      return res.status(400).json({ error: 'tipoGastoInicialId es requerido' });
+    }
+
+    // Validar que quienPagaId esté presente o usar un valor por defecto
+    let quienPagaId = data.quienPagaId ? parseInt(data.quienPagaId) : null;
+    
+    if (!quienPagaId) {
+      // Buscar un valor por defecto (por ejemplo, "INQUILINO" o el primer actor disponible)
+      const actorDefault = await prisma.actorResponsableContrato.findFirst({
+        where: { 
+          activo: true,
+          deletedAt: null,
+          codigo: 'INQ' // O el código que corresponda
+        }
+      });
+      
+      if (!actorDefault) {
+        // Si no existe "INQ", buscar cualquier actor activo
+        const actorCualquiera = await prisma.actorResponsableContrato.findFirst({
+          where: { 
+            activo: true,
+            deletedAt: null
+          }
+        });
+        
+        if (!actorCualquiera) {
+          return res.status(400).json({ error: 'quienPagaId es requerido y no se encontró un valor por defecto' });
+        }
+        
+        quienPagaId = actorCualquiera.id;
+      } else {
+        quienPagaId = actorDefault.id;
+      }
+    }
+
     const gasto = await prisma.contratoGastoInicial.create({
       data: {
-        ...data,
-        contratoId: id,
+        contratoId: parseInt(id),
+        tipoGastoInicialId: parseInt(data.tipoGastoInicialId),
+        quienPagaId: quienPagaId,
         importe: parseFloat(data.importe),
         valorCalculo: data.valorCalculo ? parseFloat(data.valorCalculo) : null
       }
@@ -879,29 +1280,54 @@ export const updateGastoInicial = async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
+    // Convertir id a entero
+    const gastoId = parseInt(id);
+    if (isNaN(gastoId)) {
+      return res.status(400).json({ error: 'ID de gasto inicial inválido' });
+    }
+
     const gasto = await prisma.contratoGastoInicial.findUnique({
-      where: { id }
+      where: { id: gastoId }
     });
 
     if (!gasto) {
       return res.status(404).json({ error: 'Gasto inicial no encontrado' });
     }
 
+    const updateData = {};
+    if (data.tipoGastoInicialId !== undefined) {
+      updateData.tipoGastoInicialId = parseInt(data.tipoGastoInicialId);
+    }
+    // Si se envía quienPagaId, actualizarlo (incluso si es null)
+    if (data.quienPagaId !== undefined) {
+      updateData.quienPagaId = data.quienPagaId !== null && data.quienPagaId !== '' 
+        ? parseInt(data.quienPagaId) 
+        : null;
+    }
+    if (data.importe !== undefined) {
+      updateData.importe = parseFloat(data.importe);
+    }
+    if (data.valorCalculo !== undefined) {
+      updateData.valorCalculo = data.valorCalculo !== null && data.valorCalculo !== '' ? parseFloat(data.valorCalculo) : null;
+    }
+
+    // Validar que hay datos para actualizar
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: 'No hay datos para actualizar' });
+    }
+
     const updated = await prisma.contratoGastoInicial.update({
-      where: { id },
-      data: {
-        ...data,
-        importe: data.importe ? parseFloat(data.importe) : undefined,
-        valorCalculo: data.valorCalculo !== undefined 
-          ? (data.valorCalculo !== null && data.valorCalculo !== '' ? parseFloat(data.valorCalculo) : null)
-          : undefined
-      }
+      where: { id: gastoId },
+      data: updateData
     });
 
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar gasto inicial:', error);
-    res.status(500).json({ error: 'Error al actualizar gasto inicial' });
+    res.status(500).json({ 
+      error: 'Error al actualizar gasto inicial', 
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    });
   }
 };
 

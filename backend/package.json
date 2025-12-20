@@ -10,8 +10,11 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "prisma:seed": "node src/prisma/seed.js",
+    "prisma:seed": "node prisma/seed/index.js",
     "truncate": "node truncate-tables.js"
+  },
+  "prisma": {
+    "seed": "node prisma/seed/index.js"
   },
   "keywords": [],
   "author": "",

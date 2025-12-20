@@ -44,12 +44,11 @@ const drawerWidthCollapsed = 72;
 
 const menuItems = [
   { text: 'Inicio', icon: <DashboardIcon />, path: '/' },
-  { text: 'Inquilinos', icon: <PeopleIcon />, path: '/inquilinos' },
-  { text: 'Propietarios', icon: <BusinessIcon />, path: '/propietarios' },
+  { text: 'Clientes', icon: <PeopleIcon />, path: '/clientes' },
   { text: 'Propiedades', icon: <HomeIcon />, path: '/propiedades' },
   { text: 'Contratos', icon: <DescriptionIcon />, path: '/contratos' },
   { text: 'Liquidaciones', icon: <ReceiptIcon />, path: '/liquidaciones' },
-  { text: 'Impuestos', icon: <CheckCircleIcon />, path: '/pendientes-impuestos' },
+  { text: 'Impuestos y Cargos', icon: <CheckCircleIcon />, path: '/pendientes-impuestos' },
   { text: 'Configuración', icon: <SettingsIcon />, path: '/configuracion' }
 ];
 
@@ -87,7 +86,7 @@ export default function Layout() {
           <ListItem key={item.text} disablePadding>
             <Tooltip title={!desktopOpen ? item.text : ''} placement="right">
               <ListItemButton
-                selected={location.pathname === item.path}
+                selected={location.pathname === item.path || (item.path === '/clientes' && (location.pathname === '/inquilinos' || location.pathname === '/propietarios'))}
                 onClick={() => {
                   navigate(item.path);
                   setMobileOpen(false);
@@ -108,7 +107,7 @@ export default function Layout() {
               >
                 <ListItemIcon
                   sx={{
-                    color: location.pathname === item.path ? '#059669' : 'inherit',
+                    color: (location.pathname === item.path || (item.path === '/clientes' && (location.pathname === '/inquilinos' || location.pathname === '/propietarios'))) ? '#059669' : 'inherit',
                     minWidth: desktopOpen ? 40 : 0,
                     justifyContent: 'center'
                   }}
@@ -119,7 +118,7 @@ export default function Layout() {
                   <ListItemText
                     primary={item.text}
                     primaryTypographyProps={{
-                      fontWeight: location.pathname === item.path ? 600 : 400
+                      fontWeight: (location.pathname === item.path || (item.path === '/clientes' && (location.pathname === '/inquilinos' || location.pathname === '/propietarios'))) ? 600 : 400
                     }}
                   />
                 )}

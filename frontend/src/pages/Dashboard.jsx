@@ -86,10 +86,10 @@ export default function Dashboard() {
     }
   });
 
-  const { data: unidades } = useQuery({
-    queryKey: ['unidades'],
+  const { data: propiedades } = useQuery({
+    queryKey: ['propiedades'],
     queryFn: async () => {
-      const response = await api.get('/unidades?limit=1');
+      const response = await api.get('/propiedades?limit=1');
       return response.data;
     }
   });
@@ -137,7 +137,7 @@ export default function Dashboard() {
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
             title="Propiedades"
-            value={unidades?.pagination?.total || 0}
+            value={propiedades?.pagination?.total || 0}
             icon={<HomeIcon sx={{ fontSize: 32 }} />}
             gradient="linear-gradient(135deg, #ea580c 0%, #f97316 100%)"
           />

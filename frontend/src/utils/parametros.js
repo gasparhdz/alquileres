@@ -58,16 +58,54 @@ export const useParametrosMap = (categoriaCodigo) => {
  * @returns {string} - Descripción o el valor original si no se encuentra
  */
 export const getDescripcion = (parametrosMapOrValue, valor) => {
-  // Compatibilidad: si solo se pasa un valor, asumir que es el mapa completo
+  // Si no hay mapa, devolver '-'
+  if (!parametrosMapOrValue) return '-';
+  
+  // Compatibilidad: si solo se pasa un valor string, devolverlo
   if (typeof parametrosMapOrValue === 'string') {
     return parametrosMapOrValue || '-';
   }
   
-  const parametrosMap = parametrosMapOrValue?.descripciones || parametrosMapOrValue || {};
-  const valorFinal = valor !== undefined ? valor : parametrosMapOrValue;
+  // Si el objeto tiene las claves del mapa pero no es un mapa válido, devolver '-'
+  if (parametrosMapOrValue.descripciones && parametrosMapOrValue.codigos && parametrosMapOrValue.abreviaturas) {
+    // Es un objeto de mapa, continuar
+  } else if (typeof parametrosMapOrValue === 'object' && !Array.isArray(parametrosMapOrValue)) {
+    // Si es un objeto pero no tiene la estructura del mapa, puede ser un objeto de parámetro directo
+    if (parametrosMapOrValue.descripcion) {
+      return parametrosMapOrValue.descripcion;
+    }
+    // Si no tiene descripcion, devolver '-'
+    return '-';
+  }
   
-  if (!valorFinal) return '-';
-  return parametrosMap[valorFinal] || valorFinal;
+  // Si no hay valor, devolver '-'
+  if (valor === undefined || valor === null || valor === '') {
+    return '-';
+  }
+  
+  // Extraer el mapa de descripciones
+  const parametrosMap = parametrosMapOrValue?.descripciones;
+  
+  // Si no hay mapa de descripciones, devolver el valor si es string, o '-'
+  if (!parametrosMap || typeof parametrosMap !== 'object' || Array.isArray(parametrosMap)) {
+    return typeof valor === 'string' ? valor : '-';
+  }
+  
+  // Buscar en el mapa
+  const descripcion = parametrosMap[valor];
+  
+  // Si se encuentra y es una cadena, devolverla
+  if (descripcion && typeof descripcion === 'string') {
+    return descripcion;
+  }
+  
+  // Si no se encuentra, devolver el valor original si es string, o '-'
+  if (typeof valor === 'string' && valor) {
+    return valor;
+  }
+  
+  // En cualquier otro caso, devolver '-'
+  return '-';
 };
 
 /**
