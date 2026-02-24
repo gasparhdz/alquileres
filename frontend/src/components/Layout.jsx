@@ -47,8 +47,8 @@ const menuItems = [
   { text: 'Clientes', icon: <PeopleIcon />, path: '/clientes' },
   { text: 'Propiedades', icon: <HomeIcon />, path: '/propiedades' },
   { text: 'Contratos', icon: <DescriptionIcon />, path: '/contratos' },
+  { text: 'Impuestos e Incidencias', icon: <CheckCircleIcon />, path: '/pendientes-impuestos' },
   { text: 'Liquidaciones', icon: <ReceiptIcon />, path: '/liquidaciones' },
-  { text: 'Impuestos y Cargos', icon: <CheckCircleIcon />, path: '/pendientes-impuestos' },
   { text: 'Configuración', icon: <SettingsIcon />, path: '/configuracion' }
 ];
 

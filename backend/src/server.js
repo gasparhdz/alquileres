@@ -18,6 +18,7 @@ import ajusteRoutes from './routes/ajuste.routes.js';
 import propiedadDocumentoRoutes from './routes/propiedadDocumento.routes.js';
 import catalogoRoutes from './routes/catalogo.routes.js';
 import catalogoABMRoutes from './routes/catalogoABM.routes.js';
+import dashboardRoutes from './routes/dashboard.routes.js';
 import propiedadImpuestoRoutes from './routes/propiedadImpuesto.routes.js';
 import propiedadCargoRoutes from './routes/propiedadCargo.routes.js';
 import tipoImpuestoPropiedadCampoRoutes from './routes/tipoImpuestoPropiedadCampo.routes.js';
@@ -77,6 +78,7 @@ app.use('/api/ajustes', ajusteRoutes);
 app.use('/api/documentos-propiedad', propiedadDocumentoRoutes);
 app.use('/api/catalogos', catalogoRoutes);
 app.use('/api/catalogos-abm', catalogoABMRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/propiedad-impuestos', propiedadImpuestoRoutes);
 app.use('/api/propiedad-cargos', propiedadCargoRoutes);
 app.use('/api/tipos-impuesto-propiedad-campos', tipoImpuestoPropiedadCampoRoutes);
@@ -103,9 +105,9 @@ const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || '0.0.0.0';
 
 app.listen(PORT, HOST, () => {
-  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`🌐 Accesible desde la red en: http://[TU_IP_LOCAL]:${PORT}`);
-  console.log(`   Ejecuta 'ipconfig' (Windows) o 'ifconfig' (Linux/Mac) para ver tu IP local`);
+  console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  //console.log(`🌐 Accesible desde la red en: http://[TU_IP_LOCAL]:${PORT}`);
+  //console.log(`   Ejecuta 'ipconfig' (Windows) o 'ifconfig' (Linux/Mac) para ver tu IP local`);
 });
 
 // Manejo de cierre graceful

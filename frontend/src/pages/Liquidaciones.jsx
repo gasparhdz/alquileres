@@ -47,6 +47,18 @@ import ParametroSelect from '../components/ParametroSelect';
 import { useParametrosMap, getDescripcion, getAbreviatura } from '../utils/parametros';
 import dayjs from 'dayjs';
 
+// Función helper para formatear período de YYYY-MM a MM-AAAA
+const formatPeriodo = (periodo) => {
+  if (!periodo) return '-';
+  // Si ya está en formato MM-AAAA, devolverlo tal cual
+  if (/^\d{2}-\d{4}$/.test(periodo)) return periodo;
+  // Si está en formato YYYY-MM, convertirlo a MM-AAAA
+  if (/^\d{4}-\d{2}$/.test(periodo)) {
+    return periodo.replace(/^(\d{4})-(\d{2})$/, '$2-$1');
+  }
+  return periodo;
+};
+
 function TabPanel({ children, value, index }) {
   return (
     <div hidden={value !== index}>
@@ -72,6 +84,14 @@ export default function Liquidaciones() {
   const tipoCargoMap = useParametrosMap('tipo_cargo');
   const tipoImpuestoMap = useParametrosMap('tipo_impuesto');
   const quienPagaMap = useParametrosMap('quien_paga');
+
+  // IDs de estados y tipos de cargo (comparar por id; código es editable por el usuario)
+  const estadoBorradorId = estadoLiquidacionMap?.lista?.find((p) => p.codigo === 'BORRADOR')?.id;
+  const estadoEmitidaId = estadoLiquidacionMap?.lista?.find((p) => p.codigo === 'EMITIDA')?.id;
+  const estadoPagadaId = estadoLiquidacionMap?.lista?.find((p) => p.codigo === 'PAGADA')?.id;
+  const tipoCargoExpensasId = tipoCargoMap?.lista?.find((p) => p.codigo === 'EXPENSAS')?.id;
+  const tipoCargoGastosInicialesId = tipoCargoMap?.lista?.find((p) => p.codigo === 'GASTOS_INICIALES')?.id;
+  const tipoCargoAlquilerId = tipoCargoMap?.lista?.find((p) => p.codigo === 'ALQUILER')?.id;
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['liquidaciones'],
@@ -189,95 +209,94 @@ export default function Liquidaciones() {
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table size="small">
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Período</TableCell>
               <TableCell>Nro. Liquidación</TableCell>
-              <TableCell>Inquilino</TableCell>
-              <TableCell>Unidad</TableCell>
+              <TableCell>Propiedad</TableCell>
               <TableCell>Estado</TableCell>
               <TableCell>Total</TableCell>
-              <TableCell>Vencimiento</TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {data?.data?.map((liquidacion) => (
-              <TableRow key={liquidacion.id}>
-                <TableCell>{liquidacion.periodo}</TableCell>
-                <TableCell>{liquidacion.numeracion || '-'}</TableCell>
-                <TableCell>
-                  {liquidacion.contrato?.inquilino?.razonSocial ||
-                    `${liquidacion.contrato?.inquilino?.nombre || ''} ${liquidacion.contrato?.inquilino?.apellido || ''}`.trim()}
-                </TableCell>
-                <TableCell>
-                  {liquidacion.contrato?.propiedad 
-                    ? `${liquidacion.contrato.propiedad.dirCalle} ${liquidacion.contrato.propiedad.dirNro}${liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}${liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}`
-                    : '-'}
-                </TableCell>
-                <TableCell>
-                  <Chip
-                    label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
-                    color={
-                      liquidacion.estado?.codigo === 'EMITIDA'
-                        ? 'success'
-                        : liquidacion.estado?.codigo === 'PAGADA'
-                        ? 'primary'
-                        : 'default'
-                    }
-                    size="small"
-                  />
-                </TableCell>
-                <TableCell>
-                  ${parseFloat(liquidacion.total).toLocaleString('es-AR', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2
-                  })}
-                </TableCell>
-                <TableCell>
-                  {liquidacion.vencimiento
-                    ? dayjs(liquidacion.vencimiento).format('DD/MM/YYYY')
-                    : '-'}
-                </TableCell>
-                <TableCell>
-                  <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-                    <IconButton size="small" onClick={() => handleView(liquidacion.id)} title="Ver detalle" sx={{ padding: '4px' }}>
-                      <VisibilityIcon fontSize="small" />
-                    </IconButton>
-                    {liquidacion.estado?.codigo === 'BORRADOR' && (
-                      <>
-                        <IconButton size="small" onClick={() => handleEdit(liquidacion.id)} title="Editar" sx={{ padding: '4px' }}>
-                          <EditIcon fontSize="small" />
-                        </IconButton>
+            {data?.data?.map((liquidacion) => {
+              // Obtener propiedad: primero desde liquidacion.propiedad, luego desde contrato.propiedad
+              const propiedad = liquidacion.propiedad || liquidacion.contrato?.propiedad;
+              const direccionPropiedad = propiedad
+                ? `${propiedad.dirCalle || ''} ${propiedad.dirNro || ''}${propiedad.dirPiso ? ` Piso ${propiedad.dirPiso}` : ''}${propiedad.dirDepto ? ` Dto ${propiedad.dirDepto}` : ''}`.trim()
+                : '-';
+              
+              // Obtener total: usar liquidacion.total o calcular desde items
+              const totalLiquidacion = liquidacion.total !== null && liquidacion.total !== undefined
+                ? parseFloat(liquidacion.total)
+                : (liquidacion.items?.reduce((sum, item) => sum + (parseFloat(item.importe || 0)), 0) || 0);
+              
+              return (
+                <TableRow key={liquidacion.id}>
+                  <TableCell>{formatPeriodo(liquidacion.periodo)}</TableCell>
+                  <TableCell>{liquidacion.numeracion || '-'}</TableCell>
+                  <TableCell>{direccionPropiedad}</TableCell>
+                  <TableCell>
+                    <Chip
+                      label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
+                      color={
+                        liquidacion.estado?.id === estadoEmitidaId
+                          ? 'success'
+                          : liquidacion.estado?.id === estadoPagadaId
+                          ? 'primary'
+                          : 'default'
+                      }
+                      size="small"
+                    />
+                  </TableCell>
+                  <TableCell>
+                    ${totalLiquidacion.toLocaleString('es-AR', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2
+                    })}
+                  </TableCell>
+                  <TableCell>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
+                      <IconButton size="small" onClick={() => handleView(liquidacion.id)} title="Ver detalle" sx={{ padding: '4px' }}>
+                        <VisibilityIcon fontSize="small" />
+                      </IconButton>
+                      {liquidacion.estado?.id === estadoBorradorId && (
+                        <>
+                          <IconButton size="small" onClick={() => handleEdit(liquidacion.id)} title="Editar" sx={{ padding: '4px' }}>
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            onClick={() => {
+                              if (window.confirm('¿Está seguro de eliminar esta liquidación?')) {
+                                deleteMutation.mutate(liquidacion.id);
+                              }
+                            }}
+                            title="Eliminar"
+                            sx={{ padding: '4px' }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </>
+                      )}
+                      {liquidacion.estado?.id === estadoEmitidaId && (
                         <IconButton
                           size="small"
-                          onClick={() => {
-                            if (window.confirm('¿Está seguro de eliminar esta liquidación?')) {
-                              deleteMutation.mutate(liquidacion.id);
-                            }
-                          }}
-                          title="Eliminar"
+                          onClick={() => handleDownloadPDF(liquidacion.id)}
+                          title="Descargar PDF"
                           sx={{ padding: '4px' }}
                         >
-                          <DeleteIcon fontSize="small" />
+                          <PictureAsPdfIcon fontSize="small" />
                         </IconButton>
-                      </>
-                    )}
-                    {liquidacion.estado?.codigo === 'EMITIDA' && (
-                      <IconButton
-                        size="small"
-                        onClick={() => handleDownloadPDF(liquidacion.id)}
-                        title="Descargar PDF"
-                        sx={{ padding: '4px' }}
-                      >
-                        <PictureAsPdfIcon fontSize="small" />
-                      </IconButton>
-                    )}
-                  </Box>
-                </TableCell>
-              </TableRow>
-            ))}
+                      )}
+                    </Box>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </TableContainer>
@@ -285,14 +304,26 @@ export default function Liquidaciones() {
       {/* Vista de cards para mobile */}
       <Box sx={{ display: { xs: 'block', md: 'none' } }}>
         <Grid container spacing={2}>
-          {data?.data?.map((liquidacion) => (
+          {data?.data?.map((liquidacion) => {
+            // Obtener propiedad: primero desde liquidacion.propiedad, luego desde contrato.propiedad
+            const propiedad = liquidacion.propiedad || liquidacion.contrato?.propiedad;
+            const direccionPropiedad = propiedad
+              ? `${propiedad.dirCalle || ''} ${propiedad.dirNro || ''}${propiedad.dirPiso ? ` Piso ${propiedad.dirPiso}` : ''}${propiedad.dirDepto ? ` Dto ${propiedad.dirDepto}` : ''}`.trim()
+              : '-';
+            
+            // Obtener total: usar liquidacion.total o calcular desde items
+            const totalLiquidacion = liquidacion.total !== null && liquidacion.total !== undefined
+              ? parseFloat(liquidacion.total)
+              : (liquidacion.items?.reduce((sum, item) => sum + (parseFloat(item.importe || 0)), 0) || 0);
+            
+            return (
             <Grid item xs={12} key={liquidacion.id}>
               <Card>
                 <CardContent>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                     <Box>
                       <Typography variant="h6" fontWeight={600}>
-                        {liquidacion.periodo}
+                        {formatPeriodo(liquidacion.periodo)}
                       </Typography>
                       {liquidacion.numeracion && (
                         <Typography variant="body2" color="text.secondary">
@@ -304,9 +335,9 @@ export default function Liquidaciones() {
                       <Chip
                         label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
                         color={
-                          liquidacion.estado?.codigo === 'EMITIDA'
+                          liquidacion.estado?.id === estadoEmitidaId
                             ? 'success'
-                            : liquidacion.estado?.codigo === 'PAGADA'
+                            : liquidacion.estado?.id === estadoPagadaId
                             ? 'primary'
                             : 'default'
                         }
@@ -316,21 +347,11 @@ export default function Liquidaciones() {
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    {liquidacion.contrato?.inquilino && (
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <PersonIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                        <Typography variant="body2">
-                          <strong>Inquilino:</strong>{' '}
-                          {liquidacion.contrato?.inquilino?.razonSocial ||
-                            `${liquidacion.contrato?.inquilino?.nombre || ''} ${liquidacion.contrato?.inquilino?.apellido || ''}`.trim()}
-                        </Typography>
-                      </Box>
-                    )}
-                    {liquidacion.contrato?.propiedad && (
+                    {direccionPropiedad !== '-' && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <HomeIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                         <Typography variant="body2">
-                          <strong>Propiedad:</strong> {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}{liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}{liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}
+                          <strong>Propiedad:</strong> {direccionPropiedad}
                         </Typography>
                       </Box>
                     )}
@@ -338,33 +359,26 @@ export default function Liquidaciones() {
                       <AttachMoneyIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                       <Typography variant="body2" fontWeight={600}>
                         <strong>Total:</strong> $
-                        {parseFloat(liquidacion.total).toLocaleString('es-AR', {
+                        {totalLiquidacion.toLocaleString('es-AR', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
                         })}
                       </Typography>
                     </Box>
-                    {liquidacion.vencimiento && (
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <CalendarTodayIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                        <Typography variant="body2">
-                          <strong>Vencimiento:</strong> {dayjs(liquidacion.vencimiento).format('DD/MM/YYYY')}
-                        </Typography>
-                      </Box>
-                    )}
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
                   <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', mt: 2 }}>
                     <IconButton size="small" onClick={() => handleView(liquidacion.id)}>
                       <VisibilityIcon />
                     </IconButton>
-                    {liquidacion.estado?.codigo === 'BORRADOR' && (
+                    {liquidacion.estado?.id === estadoBorradorId && (
                       <>
                         <IconButton size="small" onClick={() => handleEdit(liquidacion.id)}>
                           <EditIcon />
                         </IconButton>
                         <IconButton
                           size="small"
+                          color="error"
                           onClick={() => {
                             if (window.confirm('¿Está seguro de eliminar esta liquidación?')) {
                               deleteMutation.mutate(liquidacion.id);
@@ -375,7 +389,7 @@ export default function Liquidaciones() {
                         </IconButton>
                       </>
                     )}
-                    {liquidacion.estado?.codigo === 'EMITIDA' && (
+                    {liquidacion.estado?.id === estadoEmitidaId && (
                       <IconButton size="small" onClick={() => handleDownloadPDF(liquidacion.id)}>
                         <PictureAsPdfIcon />
                       </IconButton>
@@ -384,7 +398,8 @@ export default function Liquidaciones() {
                 </CardContent>
               </Card>
             </Grid>
-          ))}
+            );
+          })}
         </Grid>
       </Box>
 
@@ -422,7 +437,7 @@ export default function Liquidaciones() {
               value={generarForm.periodo}
               onChange={(e) => setGenerarForm({ ...generarForm, periodo: e.target.value })}
               InputLabelProps={{ shrink: true }}
-              helperText="Formato: YYYY-MM (ej: 2025-11)"
+              helperText="Formato: MM-AAAA (ej: 11-2025)"
             />
           </Box>
         </DialogContent>
@@ -879,9 +894,12 @@ function LiquidacionForm({ onClose }) {
                           onFocus={(e) => e.stopPropagation()}
                           inputProps={{ 
                             style: { MozAppearance: 'textfield' },
-                            onWheel: (e) => e.target.blur()
+                            onWheel: (e) => e.target.blur(),
+                            step: '0.01', 
+                            min: '0'
                           }}
                           sx={{
+                            width: '100%',
                             '& input[type=number]::-webkit-outer-spin-button': {
                               WebkitAppearance: 'none',
                               margin: 0
@@ -893,8 +911,6 @@ function LiquidacionForm({ onClose }) {
                           }}
                           onClick={(e) => e.stopPropagation()}
                           placeholder="0.00"
-                          inputProps={{ step: '0.01', min: '0' }}
-                          sx={{ width: '100%' }}
                           autoComplete="off"
                         />
                       </TableCell>
@@ -966,16 +982,56 @@ function LiquidacionForm({ onClose }) {
   );
 }
 
+// Normalizar ítems de la API al formato del formulario de edición.
+// Ítems pueden ser: impuestos (propiedadImpuesto.tipoImpuesto), cargos (tipoCargo), y Expensas con Ordinarias/Extraordinarias (tipoExpensa).
+function normalizarItemsEdicion(apiItems) {
+  if (!apiItems || !apiItems.length) return [];
+  return apiItems.map((item) => {
+    const esImpuesto = !!(item.propiedadImpuestoId || item.propiedadImpuesto);
+    const tipoImpuesto = item.propiedadImpuesto?.tipoImpuesto;
+    const tipoImpuestoNombre = tipoImpuesto ? (tipoImpuesto.nombre || tipoImpuesto.codigo || 'Impuesto') : '';
+    const tipoCargo = item.tipoCargoId ?? item.tipoCargo?.id ?? '';
+    const tipoCargoNombre = item.tipoCargo ? (item.tipoCargo.nombre || item.tipoCargo.codigo || '') : '';
+    const tipoExpensa = item.tipoExpensa;
+    const tipoExpensaId = item.tipoExpensaId ?? item.tipoExpensa?.id ?? null;
+    const tipoExpensaNombre = tipoExpensa ? (tipoExpensa.nombre || (tipoExpensa.codigo === 'ORD' ? 'Ordinarias' : tipoExpensa.codigo === 'EXT' ? 'Extraordinarias' : tipoExpensa.codigo)) : '';
+    return {
+      id: item.id,
+      estadoItemId: item.estadoItemId,
+      propiedadImpuestoId: item.propiedadImpuestoId ?? item.propiedadImpuesto?.id ?? null,
+      esImpuesto,
+      tipoImpuestoNombre: esImpuesto ? tipoImpuestoNombre : '',
+      tipoCargo,
+      tipoCargoNombre,
+      tipoExpensaId,
+      tipoExpensaNombre,
+      quienPaga: item.actorFacturadoId ?? item.actorFacturado?.id ?? '',
+      importe: item.importe != null ? Number(item.importe).toFixed(2) : '',
+      observaciones: item.observaciones || '',
+      orden: item.orden ?? 0
+    };
+  });
+}
+
 // Componente de edición de liquidación
 function LiquidacionEditForm({ liquidacion, onClose }) {
-  const [items, setItems] = useState(liquidacion.items || []);
+  const [items, setItems] = useState(() => normalizarItemsEdicion(liquidacion?.items));
   const [formData, setFormData] = useState({
-    vencimiento: liquidacion.vencimiento ? dayjs(liquidacion.vencimiento).format('YYYY-MM-DD') : '',
-    observaciones: liquidacion.observaciones || ''
+    vencimiento: liquidacion?.vencimiento ? dayjs(liquidacion.vencimiento).format('YYYY-MM-DD') : '',
+    observaciones: liquidacion?.observaciones || ''
   });
   const [successMessage, setSuccessMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const queryClient = useQueryClient();
+  const tipoCargoMap = useParametrosMap('tipo_cargo');
+  const tipoCargoExpensasId = tipoCargoMap?.lista?.find((p) => p.codigo === 'EXPENSAS')?.id ?? null;
+  const { data: tiposExpensa = [] } = useQuery({
+    queryKey: ['catalogos-abm', 'tipos-expensa'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-expensa?mostrarInactivos=false');
+      return response.data ?? [];
+    }
+  });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => api.put(`/liquidaciones/${id}`, data),
@@ -1016,8 +1072,13 @@ function LiquidacionEditForm({ liquidacion, onClose }) {
         ...formData,
         vencimiento: formData.vencimiento ? new Date(formData.vencimiento) : null,
         items: items.map((item, index) => ({
-          ...item,
+          propiedadImpuestoId: item.propiedadImpuestoId ?? null,
+          tipoCargoId: item.esImpuesto ? null : (item.tipoCargo ? Number(item.tipoCargo) : null),
+          tipoExpensaId: item.tipoExpensaId ?? null,
+          actorFacturadoId: item.quienPaga ? Number(item.quienPaga) : null,
           importe: parseFloat(item.importe || 0),
+          observaciones: item.observaciones || null,
+          estadoItemId: item.estadoItemId || null,
           orden: index
         })),
         total
@@ -1085,13 +1146,40 @@ function LiquidacionEditForm({ liquidacion, onClose }) {
                 {items.map((item, index) => (
                   <TableRow key={index}>
                     <TableCell>
-                      <ParametroSelect
-                        categoriaCodigo="tipo_cargo"
-                        label="Tipo"
-                        value={item.tipoCargo}
-                        onChange={(e) => handleUpdateItem(index, 'tipoCargo', e.target.value)}
-                        fullWidth={false}
-                      />
+                      {item.esImpuesto ? (
+                        <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                          {item.tipoImpuestoNombre || '-'}
+                        </Typography>
+                      ) : item.tipoCargoNombre ? (
+                        <Typography variant="body2" sx={{ fontSize: '0.875rem' }}>
+                          {item.tipoExpensaNombre ? `${item.tipoCargoNombre} - ${item.tipoExpensaNombre}` : item.tipoCargoNombre}
+                        </Typography>
+                      ) : (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          <ParametroSelect
+                            categoriaCodigo="tipo_cargo"
+                            label="Tipo"
+                            value={item.tipoCargo}
+                            onChange={(e) => handleUpdateItem(index, 'tipoCargo', e.target.value)}
+                            fullWidth={false}
+                          />
+                          {tipoCargoExpensasId != null && Number(item.tipoCargo) === tipoCargoExpensasId && (
+                            <FormControl size="small" sx={{ minWidth: 140 }}>
+                              <InputLabel>Tipo expensa</InputLabel>
+                              <Select
+                                value={item.tipoExpensaId ?? ''}
+                                label="Tipo expensa"
+                                onChange={(e) => handleUpdateItem(index, 'tipoExpensaId', e.target.value ? Number(e.target.value) : null)}
+                              >
+                                <MenuItem value=""><em>Seleccione...</em></MenuItem>
+                                {tiposExpensa.filter((t) => t.activo !== false).map((t) => (
+                                  <MenuItem key={t.id} value={t.id}>{t.nombre || t.codigo}</MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          )}
+                        </Box>
+                      )}
                     </TableCell>
                     <TableCell>
                       <TextField
@@ -1135,7 +1223,7 @@ function LiquidacionEditForm({ liquidacion, onClose }) {
                       />
                     </TableCell>
                     <TableCell>
-                      <IconButton size="small" onClick={() => handleRemoveItem(index)}>
+                      <IconButton size="small" color="error" onClick={() => handleRemoveItem(index)}>
                         <DeleteIcon fontSize="small" />
                       </IconButton>
                     </TableCell>
@@ -1176,6 +1264,12 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
   const quienPagaMap = useParametrosMap('quien_paga');
   const tipoUnidadMap = useParametrosMap('tipo_unidad');
 
+  const estadoEmitidaId = estadoLiquidacionMap?.lista?.find((p) => p.codigo === 'EMITIDA')?.id;
+  const estadoPagadaId = estadoLiquidacionMap?.lista?.find((p) => p.codigo === 'PAGADA')?.id;
+  const tipoCargoExpensasId = tipoCargoMap?.lista?.find((p) => p.codigo === 'EXPENSAS')?.id;
+  const tipoCargoGastosInicialesId = tipoCargoMap?.lista?.find((p) => p.codigo === 'GASTOS_INICIALES')?.id;
+  const tipoCargoAlquilerId = tipoCargoMap?.lista?.find((p) => p.codigo === 'ALQUILER')?.id;
+
   if (!liquidacion) {
     console.log('LiquidacionDetalle: liquidacion es null o undefined');
     return <Box sx={{ p: 2 }}>Cargando liquidación...</Box>;
@@ -1205,33 +1299,34 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
             <CardContent sx={{ py: '8px !important' }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="h6" component="div">
-                  Liquidación {liquidacion.numeracion ? `#${liquidacion.numeracion}` : liquidacion.periodo}
-                  {liquidacion.contrato?.propiedad && (
-                    <span style={{ fontWeight: 'normal', fontSize: '0.9em' }}>
-                      {' - '}
-                      {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}{liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}{liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}
+                  Contrato Nro. {liquidacion.contrato?.nroContrato ?? '-'}
+                  {' - '}
+                  {liquidacion.contrato?.propiedad ? (
+                    <>
+                      {liquidacion.contrato.propiedad.dirCalle} {liquidacion.contrato.propiedad.dirNro}
+                      {liquidacion.contrato.propiedad.dirPiso ? ` Piso ${liquidacion.contrato.propiedad.dirPiso}` : ''}
+                      {liquidacion.contrato.propiedad.dirDepto ? ` Dto ${liquidacion.contrato.propiedad.dirDepto}` : ''}
                       {liquidacion.contrato.propiedad.localidad?.nombre && `, ${liquidacion.contrato.propiedad.localidad.nombre}`}
                       {liquidacion.contrato.propiedad.provincia?.nombre && `, ${liquidacion.contrato.propiedad.provincia.nombre}`}
-                    </span>
+                    </>
+                  ) : (
+                    '-'
                   )}
+                  {' - '}
+                  Período {liquidacion.periodo ? formatPeriodo(liquidacion.periodo) : '-'}
                 </Typography>
-                <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                  <Chip
-                    label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
-                    size="small"
-                    sx={{
-                      bgcolor: liquidacion.estado?.codigo === 'EMITIDA'
-                        ? 'success.main'
-                        : liquidacion.estado?.codigo === 'PAGADA'
-                        ? 'info.main'
-                        : 'rgba(255, 255, 255, 0.2)',
-                      color: 'white'
-                    }}
-                  />
-                  <Typography variant="h6" sx={{ fontWeight: 'bold' }}>
-                    {formatoMoneda(liquidacion.total)}
-                  </Typography>
-                </Box>
+                <Chip
+                  label={liquidacion.estado?.nombre || liquidacion.estado?.codigo || '-'}
+                  size="small"
+                  sx={{
+                    bgcolor: liquidacion.estado?.id === estadoEmitidaId
+                      ? 'success.main'
+                      : liquidacion.estado?.id === estadoPagadaId
+                      ? 'info.main'
+                      : 'rgba(255, 255, 255, 0.2)',
+                    color: 'white'
+                  }}
+                />
               </Box>
             </CardContent>
           </Card>
@@ -1242,16 +1337,10 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
           <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1 }}>
               <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
-                Contrato
+                Detalle Contrato
               </Typography>
               {liquidacion.contrato ? (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  {liquidacion.contrato.nroContrato && (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary" display="block">Nro. Contrato</Typography>
-                      <Typography variant="body2" fontWeight="medium">{liquidacion.contrato.nroContrato}</Typography>
-                    </Box>
-                  )}
                   {liquidacion.contrato.propiedad && (
                     <Box>
                       <Typography variant="caption" color="text.secondary" display="block">Propiedad</Typography>
@@ -1264,27 +1353,29 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
                       </Typography>
                     </Box>
                   )}
-                  {liquidacion.contrato.fechaInicio && (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary" display="block">Fecha Inicio</Typography>
-                      <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaInicio)}</Typography>
+                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                    {liquidacion.contrato.fechaInicio && (
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="caption" color="text.secondary" display="block">Fecha Inicio</Typography>
+                        <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaInicio)}</Typography>
+                      </Box>
+                    )}
+                    {liquidacion.contrato.fechaFin && (
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography variant="caption" color="text.secondary" display="block">Fecha Fin</Typography>
+                        <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaFin)}</Typography>
+                      </Box>
+                    )}
+                  </Box>
+                  <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="caption" color="text.secondary" display="block">Monto Inicial</Typography>
+                      <Typography variant="body2" fontWeight="medium">{formatoMoneda(liquidacion.contrato.montoInicial)}</Typography>
                     </Box>
-                  )}
-                  {liquidacion.contrato.fechaFin && (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary" display="block">Fecha Fin</Typography>
-                      <Typography variant="body2">{formatoFecha(liquidacion.contrato.fechaFin)}</Typography>
-                    </Box>
-                  )}
-                  {liquidacion.contrato.montoActual && (
-                    <Box>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
                       <Typography variant="caption" color="text.secondary" display="block">Monto Actual</Typography>
                       <Typography variant="body2" fontWeight="medium">{formatoMoneda(liquidacion.contrato.montoActual)}</Typography>
                     </Box>
-                  )}
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" display="block">Período</Typography>
-                    <Typography variant="body2" fontWeight="medium">{liquidacion.periodo}</Typography>
                   </Box>
                   {liquidacion.vencimiento && (
                     <Box>
@@ -1306,79 +1397,50 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
           </Card>
         </Grid>
 
-        <Grid item xs={12} md={4}>
-          <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1, overflow: 'auto' }}>
-              <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
-                Propietarios
-              </Typography>
-              {liquidacion.contrato?.propiedad?.propietarios && liquidacion.contrato.propiedad.propietarios.length > 0 ? (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
-                  {liquidacion.contrato.propiedad.propietarios.map((prop, idx) => (
-                    <Box key={prop.propietario.id || idx}>
-                      <Typography variant="body2" fontWeight="medium">
-                        {prop.propietario.razonSocial || 
-                         `${prop.propietario.nombre || ''} ${prop.propietario.apellido || ''}`.trim()}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" component="div">
-                        {prop.propietario.dni && `DNI: ${prop.propietario.dni}`}
-                        {prop.propietario.dni && prop.propietario.cuit && ' • '}
-                        {prop.propietario.cuit && `CUIT: ${prop.propietario.cuit}`}
-                      </Typography>
-                      {prop.propietario.mail && (
-                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                          {prop.propietario.mail}
-                        </Typography>
-                      )}
-                      {prop.propietario.telefono && (
-                        <Typography variant="caption" color="text.secondary" display="block">
-                          {prop.propietario.telefono}
-                        </Typography>
-                      )}
+        {/* Card persona: misma estructura para Propietarios e Inquilino */}
+        {(['Propietarios', 'Inquilino']).map((titulo) => {
+          const esPropietarios = titulo === 'Propietarios';
+          const personas = esPropietarios
+            ? (liquidacion.contrato?.propiedad?.propietarios?.map((p) => p.propietario) ?? [])
+            : (liquidacion.contrato?.inquilino ? [liquidacion.contrato.inquilino] : []);
+          const sinDatos = esPropietarios ? 'Sin propietarios' : 'Sin inquilino';
+          return (
+            <Grid item xs={12} md={4} key={titulo}>
+              <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1, overflow: 'auto' }}>
+                  <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
+                    {titulo}
+                  </Typography>
+                  {personas.length > 0 ? (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.25 }}>
+                      {personas.map((persona, idx) => (
+                        <Box key={persona.id || idx} sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          <Typography variant="body2" fontWeight="medium">
+                            {persona.razonSocial || `${persona.nombre || ''} ${persona.apellido || ''}`.trim() || '-'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {persona.cuit ? `CUIT: ${persona.cuit}` : persona.dni ? `DNI: ${persona.dni}` : '-'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Condición IVA: {persona.condicionIva?.nombre || persona.condicionIva?.descripcion || '-'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Email: {persona.mail || persona.email || '-'}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            Teléfono: {persona.telefono || '-'}
+                          </Typography>
+                        </Box>
+                      ))}
                     </Box>
-                  ))}
-                </Box>
-              ) : (
-                <Typography variant="body2" color="text.secondary">Sin propietarios</Typography>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} md={4}>
-          <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <CardContent sx={{ p: 2, '&:last-child': { pb: 2 }, flex: 1, overflow: 'auto' }}>
-              <Typography variant="subtitle2" fontWeight="bold" gutterBottom sx={{ mb: 1.5 }}>
-                Inquilino
-              </Typography>
-              {liquidacion.contrato?.inquilino ? (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  <Typography variant="body2" fontWeight="medium">
-                    {liquidacion.contrato.inquilino.razonSocial ||
-                     `${liquidacion.contrato.inquilino.nombre || ''} ${liquidacion.contrato.inquilino.apellido || ''}`.trim()}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" component="div">
-                    {liquidacion.contrato.inquilino.dni && `DNI: ${liquidacion.contrato.inquilino.dni}`}
-                    {liquidacion.contrato.inquilino.dni && liquidacion.contrato.inquilino.cuit && ' • '}
-                    {liquidacion.contrato.inquilino.cuit && `CUIT: ${liquidacion.contrato.inquilino.cuit}`}
-                  </Typography>
-                  {liquidacion.contrato.inquilino.email && (
-                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                      {liquidacion.contrato.inquilino.email}
-                    </Typography>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">{sinDatos}</Typography>
                   )}
-                  {liquidacion.contrato.inquilino.telefono && (
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      {liquidacion.contrato.inquilino.telefono}
-                    </Typography>
-                  )}
-                </Box>
-              ) : (
-                <Typography variant="body2" color="text.secondary">Sin inquilino</Typography>
-              )}
-            </CardContent>
-          </Card>
-        </Grid>
+                </CardContent>
+              </Card>
+            </Grid>
+          );
+        })}
 
         {/* Items */}
         <Grid item xs={12}>
@@ -1393,52 +1455,73 @@ function LiquidacionDetalle({ liquidacion, onEmitir, onDownloadPDF }) {
                     <TableHead>
                       <TableRow>
                         <TableCell padding="none"><strong>Concepto</strong></TableCell>
-                        <TableCell padding="none" align="right"><strong>Importe</strong></TableCell>
-                        <TableCell padding="none"><strong>Paga</strong></TableCell>
-                        <TableCell padding="none"><strong>Cobra a</strong></TableCell>
+                        <TableCell padding="none" align="right"><strong>Inquilino</strong></TableCell>
+                        <TableCell padding="none" align="right"><strong>Propietario</strong></TableCell>
                         <TableCell padding="none"><strong>Observaciones</strong></TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {liquidacion.items.map((item) => {
-                        // Obtener el concepto
-                        const concepto = item.propiedadImpuesto?.tipoImpuesto 
-                          ? getAbreviatura(tipoImpuestoMap, item.propiedadImpuesto.tipoImpuesto.codigo)
-                          : item.tipoCargo?.codigo === 'EXPENSAS' && item.tipoExpensa
-                            ? `Expensas ${item.tipoExpensa.nombre || (item.tipoExpensa.codigo === 'ORD' ? 'Ordinarias' : 'Extraordinarias')}`
-                            : getDescripcion(tipoCargoMap, item.tipoCargo?.codigo || item.tipoCargo);
-                        
-                        // Determinar si mostrar "Cobra a" (no para Gastos iniciales ni Alquiler)
-                        const mostrarCobraA = item.tipoCargo?.codigo !== 'GASTOS_INICIALES' && item.tipoCargo?.codigo !== 'ALQUILER';
-                        
-                        // Obtener quién paga
-                        const quienPaga = item.actorFacturado?.nombre || item.actorFacturado?.codigo || 
-                                         (item.actorFacturadoId ? getDescripcion(quienPagaMap, item.actorFacturadoId) : '-');
-                        
-                        // Obtener a quién cobrar
-                        const quienCobra = mostrarCobraA 
-                          ? (item.quienSoportaCosto?.nombre || item.quienSoportaCosto?.codigo || 
-                             (item.quienSoportaCostoId ? getDescripcion(quienPagaMap, item.quienSoportaCostoId) : '-'))
-                          : '-';
-                        
-                        return (
-                          <TableRow key={item.id}>
-                            <TableCell padding="none">{concepto}</TableCell>
-                            <TableCell padding="none" align="right">{formatoMoneda(item.importe)}</TableCell>
-                            <TableCell padding="none">{quienPaga}</TableCell>
-                            <TableCell padding="none">{quienCobra}</TableCell>
-                            <TableCell padding="none">{item.observaciones || '-'}</TableCell>
+                      {(() => {
+                        // No liquidar ítems donde quien soporta el costo y quien paga son la misma parte (ej. inquilino paga expensas y le corresponden)
+                        const itemsALiquidar = liquidacion.items.filter((item) => {
+                          if (item.quienSoportaCostoId === item.pagadoPorActorId) return false;
+                          // No mostrar Expensas Extraordinarias con importe 0
+                          if (item.tipoExpensa?.codigo === 'EXT') {
+                            const importe = item.importe != null ? parseFloat(item.importe) : 0;
+                            if (importe === 0) return false;
+                          }
+                          return true;
+                        });
+                        let totalInquilino = 0;
+                        let totalPropietario = 0;
+                        const filas = itemsALiquidar.map((item) => {
+                          // Obtener el concepto (priorizar relación tipoCargo del API para que Alquiler y otros inactivos muestren nombre)
+                          const concepto = item.propiedadImpuesto?.tipoImpuesto 
+                            ? getAbreviatura(tipoImpuestoMap, item.propiedadImpuesto.tipoImpuesto.id)
+                            : item.tipoCargo?.id === tipoCargoExpensasId && item.tipoExpensa
+                              ? `Expensas ${item.tipoExpensa.nombre || (item.tipoExpensa.codigo === 'ORD' ? 'Ordinarias' : 'Extraordinarias')}`
+                              : (item.tipoCargo?.nombre || item.tipoCargo?.codigo) || getDescripcion(tipoCargoMap, item.tipoCargo?.id || item.tipoCargoId) || '-';
+                          const codigoResponsable = item.quienSoportaCosto?.codigo;
+                          const codigoPagadoPor = item.pagadoPorActor?.codigo;
+                          const importeNum = item.importe != null ? parseFloat(item.importe) : 0;
+                          const esInquilinoResponsable = codigoResponsable === 'INQ';
+                          const esPropietarioResponsable = codigoResponsable === 'PROP';
+                          // Inquilino pagó algo que corresponde al propietario → restar al inquilino (reintegro) y sumar al propietario
+                          const inquilinoPagoPorPropietario = esPropietarioResponsable && codigoPagadoPor === 'INQ';
+                          let importeInquilino = '-';
+                          let importePropietario = '-';
+                          if (esInquilinoResponsable) {
+                            importeInquilino = formatoMoneda(item.importe);
+                            totalInquilino += importeNum;
+                          } else if (inquilinoPagoPorPropietario) {
+                            importeInquilino = formatoMoneda(-importeNum);
+                            importePropietario = formatoMoneda(item.importe);
+                            totalInquilino -= importeNum;
+                            totalPropietario += importeNum;
+                          } else if (esPropietarioResponsable) {
+                            importePropietario = formatoMoneda(item.importe);
+                            totalPropietario += importeNum;
+                          }
+                          const esNegativoInquilino = inquilinoPagoPorPropietario;
+                          return (
+                            <TableRow key={item.id}>
+                              <TableCell padding="none">{concepto}</TableCell>
+                              <TableCell padding="none" align="right" sx={esNegativoInquilino ? { color: 'error.main', fontWeight: 500 } : undefined}>{importeInquilino}</TableCell>
+                              <TableCell padding="none" align="right">{importePropietario}</TableCell>
+                              <TableCell padding="none">{item.observaciones || '-'}</TableCell>
+                            </TableRow>
+                          );
+                        });
+                        return [
+                          ...filas,
+                          <TableRow key="total">
+                            <TableCell padding="none"><strong>TOTAL</strong></TableCell>
+                            <TableCell padding="none" align="right" sx={totalInquilino < 0 ? { color: 'error.main', fontWeight: 600 } : undefined}><strong>{formatoMoneda(totalInquilino)}</strong></TableCell>
+                            <TableCell padding="none" align="right"><strong>{formatoMoneda(totalPropietario)}</strong></TableCell>
+                            <TableCell padding="none" />
                           </TableRow>
-                        );
-                      })}
-                      <TableRow>
-                        <TableCell padding="none" colSpan={3}>
-                          <strong>TOTAL</strong>
-                        </TableCell>
-                        <TableCell padding="none" align="right">
-                          <strong>{formatoMoneda(liquidacion.total)}</strong>
-                        </TableCell>
-                      </TableRow>
+                        ];
+                      })()}
                     </TableBody>
                   </Table>
                 </TableContainer>

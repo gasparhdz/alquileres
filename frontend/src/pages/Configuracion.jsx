@@ -39,6 +39,18 @@ import ParametroSelect from '../components/ParametroSelect';
 import { useParametrosMap } from '../utils/parametros';
 import CatalogoABM from '../components/CatalogoABM';
 
+// Función helper para convertir YYYY-MM a MM-AAAA (para mostrar al usuario)
+const formatPeriodo = (periodo) => {
+  if (!periodo) return '-';
+  // Si ya está en formato MM-AAAA, devolverlo tal cual
+  if (/^\d{2}-\d{4}$/.test(periodo)) return periodo;
+  // Si está en formato YYYY-MM, convertirlo a MM-AAAA
+  if (/^\d{4}-\d{2}$/.test(periodo)) {
+    return periodo.replace(/^(\d{4})-(\d{2})$/, '$2-$1');
+  }
+  return periodo;
+};
+
 const INDICES_CODE = '__indices__';
 
 // Lista de catálogos disponibles
@@ -293,7 +305,7 @@ function ParametrosCategoriaSection({
       )}
 
       <TableContainer>
-        <Table size="small">
+        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: categoria.parametroCodigo === 'tipo_cargo' ? '12%' : '15%' }}>Código</TableCell>
@@ -358,6 +370,7 @@ function ParametrosCategoriaSection({
                         <span>
                           <IconButton
                             size="small"
+                            color="error"
                             onClick={() => handleDelete(parametro)}
                             disabled={deleteMutation.isLoading}
                           >
@@ -674,7 +687,7 @@ function IndicesSection({
       )}
 
       <TableContainer>
-        <Table size="small">
+        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '12%' }}>Código</TableCell>
@@ -699,7 +712,7 @@ function IndicesSection({
               <TableRow key={`${indice.codigo}-${indice.periodo}`} hover>
                 <TableCell>{indice.codigo}</TableCell>
                 <TableCell>{indice.descripcion}</TableCell>
-                <TableCell>{indice.periodo}</TableCell>
+                <TableCell>{formatPeriodo(indice.periodo)}</TableCell>
                 <TableCell>{indice.valor}</TableCell>
                 <TableCell>{indice.variacion ?? '-'}</TableCell>
                 <TableCell>{indice.fuente || '-'}</TableCell>
@@ -852,24 +865,18 @@ export default function Configuracion() {
   const categoriasConIndices = useMemo(() => {
     const lista = [];
 
+    // Categorías del API que no agregar: ya están en CATALOGOS o no tienen datos (evitar ítems que no levantan nada)
+    const codigosApiQueOmitir = [
+      'estado_liquidacion',  // = "Estados de Liquidación" (catálogo estados-liquidacion)
+      'tipo_impuesto',       // = "Impuestos y servicios" (usa endpoint genérico vacío; usar catálogos Tipos de Impuesto / Tipos de Cargo)
+      'tipo_cargo'          // = "Tipos de Cargo" (catálogo tipos-cargo)
+    ];
+
     // Agregar categorías de parámetros si existen
     if (categorias && categorias.length > 0) {
-      const categoriaTipoCargo = categorias.find((cat) => cat.codigo === 'tipo_cargo');
-
       categorias.forEach((cat) => {
-        if (cat.codigo === 'tipo_cargo') {
-          return;
-        }
-
-        if (cat.codigo === 'tipo_impuesto') {
-          lista.push({
-            codigo: cat.codigo,
-            parametroCodigo: 'tipo_cargo',
-            descripcion: 'Impuestos y servicios',
-            totalParametros: categoriaTipoCargo?._count?.parametros || 0,
-            especial: false
-          });
-          return;
+        if (codigosApiQueOmitir.includes(cat.codigo)) {
+          return; // Ya en CATALOGOS o sin datos, evitar duplicado
         }
 
         lista.push({

@@ -14,7 +14,8 @@ export const getCargosByPropiedad = async (req, res) => {
         activo: true
       },
       include: {
-        tipoCargo: true
+        tipoCargo: true,
+        periodicidad: true
       },
       orderBy: {
         tipoCargo: {
@@ -84,12 +85,12 @@ export const saveCargosPropiedad = async (req, res) => {
     const resultados = await Promise.all(
       cargos.map(async (cargo) => {
         const tipoCargoId = parseInt(cargo.tipoCargoId);
+        const periodicidadId = cargo.periodicidadId ? parseInt(cargo.periodicidadId) : null;
 
-        // Verificar que el tipo de cargo existe
+        // Verificar que el tipo de cargo existe (permitir inactivos para no romper propiedades ya guardadas)
         const tipoCargo = await prisma.tipoCargo.findFirst({
           where: {
             id: tipoCargoId,
-            activo: true,
             deletedAt: null
           }
         });
@@ -104,15 +105,17 @@ export const saveCargosPropiedad = async (req, res) => {
         );
 
         if (existente) {
-          // Reactivar existente
+          // Actualizar existente (incluyendo periodicidad)
           return await prisma.propiedadCargo.update({
             where: { id: existente.id },
             data: {
               activo: true,
-              deletedAt: null
+              deletedAt: null,
+              periodicidadId: periodicidadId
             },
             include: {
-              tipoCargo: true
+              tipoCargo: true,
+              periodicidad: true
             }
           });
         } else {
@@ -121,10 +124,12 @@ export const saveCargosPropiedad = async (req, res) => {
             data: {
               propiedadId: parseInt(propiedadId),
               tipoCargoId,
+              periodicidadId: periodicidadId,
               activo: true
             },
             include: {
-              tipoCargo: true
+              tipoCargo: true,
+              periodicidad: true
             }
           });
         }

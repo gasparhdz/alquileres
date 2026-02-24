@@ -114,10 +114,10 @@ export default async function seedParametros(prisma) {
   // Ambientes Propiedad
   // -------------------------
   await prisma.ambientePropiedad.upsert({
-    where: { codigo: "MONO" },
+    where: { codigo: "1AMB" },
     update: {},
     create: {
-      codigo: "MONO",
+      codigo: "1AMB",
       nombre: "Monoambiente",
       activo: true,
     },
@@ -144,10 +144,10 @@ export default async function seedParametros(prisma) {
   })
 
   await prisma.ambientePropiedad.upsert({
-    where: { codigo: "4MAS" },
+    where: { codigo: "4AMB" },
     update: {},
     create: {
-      codigo: "4MAS",
+      codigo: "4AMB",
       nombre: "Cuatro o más ambientes",
       activo: true,
     },
@@ -233,10 +233,10 @@ export default async function seedParametros(prisma) {
   // Destinos de Propiedad
   // -------------------------
   await prisma.destinoPropiedad.upsert({
-    where: { codigo: "VIV_FAM" },
+    where: { codigo: "VIV" },
     update: {},
     create: {
-      codigo: "VIV_FAM",
+      codigo: "VIV",
       nombre: "Vivienda familiar",
       activo: true,
     },
@@ -273,8 +273,9 @@ export default async function seedParametros(prisma) {
     { codigo: "API", nombre: "API" },
   ]
 
+  const tiposImpuestoCreados = {}
   for (const imp of impuestos) {
-    await prisma.tipoImpuestoPropiedad.upsert({
+    const tipoImpuesto = await prisma.tipoImpuestoPropiedad.upsert({
       where: { codigo: imp.codigo },
       update: {},
       create: {
@@ -283,6 +284,128 @@ export default async function seedParametros(prisma) {
         activo: true,
       },
     })
+    tiposImpuestoCreados[imp.codigo] = tipoImpuesto
+  }
+
+  // -------------------------
+  // Tipos de Impuesto Propiedad Campos
+  // -------------------------
+  const tiposImpuestoCampos = [
+    // Campos para AGUA
+    {
+      tipoImpuestoCodigo: "AGUA",
+      codigo: "P_SUM",
+      nombre: "Punto de Suministro",
+      orden: 1,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "AGUA",
+      codigo: "NRO_IDE",
+      nombre: "N° de identificacion",
+      orden: 2,
+      activo: false,
+    },
+    // Campos para LUZ
+    {
+      tipoImpuestoCodigo: "LUZ",
+      codigo: "NRO_CLI",
+      nombre: "N° de cliente",
+      orden: 1,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "LUZ",
+      codigo: "PLAN",
+      nombre: "Plan",
+      orden: 2,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "LUZ",
+      codigo: "RUTA",
+      nombre: "Ruta",
+      orden: 3,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "LUZ",
+      codigo: "DS",
+      nombre: "D.S.",
+      orden: 4,
+      activo: true,
+    },
+    // Campos para GAS
+    {
+      tipoImpuestoCodigo: "GAS",
+      codigo: "NRO_CLI",
+      nombre: "N° de cliente",
+      orden: 1,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "GAS",
+      codigo: "NRO_PRS",
+      nombre: "N° de persona",
+      orden: 2,
+      activo: true,
+    },
+    // Campos para TGI
+    {
+      tipoImpuestoCodigo: "TGI",
+      codigo: "CTA",
+      nombre: "Cuenta",
+      orden: 1,
+      activo: true,
+    },
+    {
+      tipoImpuestoCodigo: "TGI",
+      codigo: "COD_GES",
+      nombre: "Cod. Gest. Personal",
+      orden: 2,
+      activo: true,
+    },
+    // Campos para API
+    {
+      tipoImpuestoCodigo: "API",
+      codigo: "NRO_PART",
+      nombre: "N° de partida",
+      orden: 1,
+      activo: true,
+    },
+  ]
+
+  for (const campo of tiposImpuestoCampos) {
+    const tipoImpuesto = tiposImpuestoCreados[campo.tipoImpuestoCodigo]
+    if (tipoImpuesto) {
+      const campoExistente = await prisma.tipoImpuestoPropiedadCampo.findFirst({
+        where: {
+          tipoImpuestoId: tipoImpuesto.id,
+          codigo: campo.codigo,
+        },
+      })
+
+      if (campoExistente) {
+        await prisma.tipoImpuestoPropiedadCampo.update({
+          where: { id: campoExistente.id },
+          data: {
+            nombre: campo.nombre,
+            orden: campo.orden,
+            activo: campo.activo,
+          },
+        })
+      } else {
+        await prisma.tipoImpuestoPropiedadCampo.create({
+          data: {
+            tipoImpuestoId: tipoImpuesto.id,
+            codigo: campo.codigo,
+            nombre: campo.nombre,
+            orden: campo.orden,
+            activo: campo.activo,
+          },
+        })
+      }
+    }
   }
 
   // -------------------------
@@ -293,10 +416,14 @@ export default async function seedParametros(prisma) {
     { codigo: "EXPENSAS", nombre: "Expensas" },
     { codigo: "SEGURO", nombre: "Seguro" },
     { codigo: "GASTO_EXTRA", nombre: "Gasto extra" },
+    { codigo: "GASTOS_ADMINISTRATIVOS", nombre: "Gastos Administrativos" },
+    { codigo: "HONORARIOS", nombre: "Honorarios" },
+    { codigo: "INCIDENCIA", nombre: "Incidencia" },
   ]
 
+  const tiposCargoCreados = {}
   for (const tc of tiposCargo) {
-    await prisma.tipoCargo.upsert({
+    const tipoCargo = await prisma.tipoCargo.upsert({
       where: { codigo: tc.codigo },
       update: {},
       create: {
@@ -305,6 +432,84 @@ export default async function seedParametros(prisma) {
         activo: true,
       },
     })
+    tiposCargoCreados[tc.codigo] = tipoCargo
+  }
+
+  // -------------------------
+  // Tipos de Cargo Campos
+  // -------------------------
+  const tiposCargoCampos = [
+    // Campos para EXPENSAS
+    {
+      tipoCargoCodigo: "EXPENSAS",
+      codigo: "ADM_CON",
+      nombre: "Administrador consorcio",
+      orden: 1,
+    },
+    {
+      tipoCargoCodigo: "EXPENSAS",
+      codigo: "DIR",
+      nombre: "Dirección",
+      orden: 2,
+    },
+    {
+      tipoCargoCodigo: "EXPENSAS",
+      codigo: "TEL",
+      nombre: "Teléfono",
+      orden: 3,
+    },
+    {
+      tipoCargoCodigo: "EXPENSAS",
+      codigo: "MAIL",
+      nombre: "Email",
+      orden: 4,
+    },
+    // Campos para SEGURO
+    {
+      tipoCargoCodigo: "SEGURO",
+      codigo: "NRO_POLIZA",
+      nombre: "N° de Poliza",
+      orden: 1,
+    },
+    {
+      tipoCargoCodigo: "SEGURO",
+      codigo: "ASEG",
+      nombre: "Aseguradora",
+      orden: 2,
+    },
+  ]
+
+  for (const campo of tiposCargoCampos) {
+    const tipoCargo = tiposCargoCreados[campo.tipoCargoCodigo]
+    if (tipoCargo) {
+      const campoExistente = await prisma.tipoCargoCampo.findFirst({
+        where: {
+          tipoCargoId: tipoCargo.id,
+          codigo: campo.codigo,
+        },
+      })
+
+      if (campoExistente) {
+        await prisma.tipoCargoCampo.update({
+          where: { id: campoExistente.id },
+          data: {
+            nombre: campo.nombre,
+            orden: campo.orden,
+            activo: true,
+          },
+        })
+      } else {
+        await prisma.tipoCargoCampo.create({
+          data: {
+            tipoCargoId: tipoCargo.id,
+            codigo: campo.codigo,
+            nombre: campo.nombre,
+            orden: campo.orden,
+            activo: true,
+          },
+        })
+      }
+    }
   }
 
   // -------------------------
@@ -334,12 +539,12 @@ export default async function seedParametros(prisma) {
   // Periodicidades de Impuesto
   // -------------------------
   const periodicidades = [
-    { codigo: "MENSUAL", nombre: "Mensual" },
-    { codigo: "BIMESTRAL", nombre: "Bimestral" },
-    { codigo: "TRIMESTRAL", nombre: "Trimestral" },
-    { codigo: "CUATRIMESTRAL", nombre: "Cuatrimestral" },
-    { codigo: "SEMESTRAL", nombre: "Semestral" },
-    { codigo: "ANUAL", nombre: "Anual" },
+    { codigo: "1_MENSUAL", nombre: "Mensual" },
+    { codigo: "2_BIMESTRAL", nombre: "Bimestral" },
+    { codigo: "3_TRIMESTRAL", nombre: "Trimestral" },
+    { codigo: "4_CUATRIMESTRAL", nombre: "Cuatrimestral" },
+    { codigo: "6_SEMESTRAL", nombre: "Semestral" },
+    { codigo: "12_ANUAL", nombre: "Anual" },
   ]
 
   for (const per of periodicidades) {
@@ -382,15 +587,11 @@ export default async function seedParametros(prisma) {
     })
   }
 
-  // ============================================================
-  // NUEVO: Parámetros de Contratos
-  // ============================================================
-
   // -------------------------
   // Actores Responsable Contrato
   // -------------------------
   const actoresResponsables = [
-    { codigo: "INM", nombre: "Inmobiliaria / Administrador" },
+    { codigo: "INM", nombre: "Inmobiliaria" },
     { codigo: "INQ", nombre: "Inquilino" },
     { codigo: "PROP", nombre: "Propietario" },
   ]
@@ -411,9 +612,9 @@ export default async function seedParametros(prisma) {
   // Estados Garantía Contrato
   // -------------------------
   const estadosGarantia = [
-    { codigo: "revision", nombre: "En revisión" },
-    { codigo: "rechazada", nombre: "Rechazada" },
-    { codigo: "aprobada", nombre: "Aprobada" },
+    { codigo: "REVISION", nombre: "En revisión" },
+    { codigo: "RECHAZADA", nombre: "Rechazada" },
+    { codigo: "APROBADA", nombre: "Aprobada" },
   ]
 
   for (const est of estadosGarantia) {
@@ -432,15 +633,15 @@ export default async function seedParametros(prisma) {
   // Estados de Contrato
   // -------------------------
   const estadosContrato = [
-    { codigo: "borrador", nombre: "Borrador" },
-    { codigo: "pendiente_de_firma", nombre: "Pendiente de Firma" },
-    { codigo: "vigente", nombre: "Vigente" },
-    { codigo: "vencido", nombre: "Vencido" },
-    { codigo: "prorrogado", nombre: "Prorrogado" },
-    { codigo: "renovado", nombre: "Renovado" },
-    { codigo: "rescindido", nombre: "Rescindido" },
-    { codigo: "anulado", nombre: "Anulado" },
-    { codigo: "finalizado", nombre: "Finalizado" },
+    { codigo: "BORRADOR", nombre: "Borrador" },
+    { codigo: "PENDIENTE_FIRMA", nombre: "Pendiente de Firma" },
+    { codigo: "VIGENTE", nombre: "Vigente" },
+    { codigo: "VENCIDO", nombre: "Vencido" },
+    { codigo: "PRORROGADO", nombre: "Prorrogado" },
+    { codigo: "RENOVADO", nombre: "Renovado" },
+    { codigo: "RESCINDIDO", nombre: "Rescindido" },
+    { codigo: "ANULADO", nombre: "Anulado" },
+    { codigo: "FINALIZADO", nombre: "Finalizado" },
   ]
 
   for (const est of estadosContrato) {
@@ -482,11 +683,11 @@ export default async function seedParametros(prisma) {
   const metodosAjuste = [
     {
       codigo: "ICL",
-      nombre: "Índice de Contratos de Locación (ICL)",
+      nombre: "Índice de Contratos de Locación",
     },
     {
       codigo: "IPC",
-      nombre: "Índice de Precios al Consumidor (IPC)",
+      nombre: "Índice de Precios al Consumidor",
     },
   ]
 
@@ -573,8 +774,8 @@ export default async function seedParametros(prisma) {
       esFinal: false,
     },
     {
-      codigo: "CERRADA",
-      nombre: "Cerrada",
+      codigo: "LISTA",
+      nombre: "Lista para Emitir",
       esFinal: true,
     },
     {
@@ -629,6 +830,39 @@ export default async function seedParametros(prisma) {
       create: {
         codigo: est.codigo,
         nombre: est.nombre,
+        activo: true,
+      },
+    })
+  }
+
+  // -------------------------
+  // Monedas
+  // -------------------------
+  const monedas = [
+    {
+      codigo: "ARS",
+      nombre: "Peso",
+      simbolo: "$",
+    },
+    {
+      codigo: "USD",
+      nombre: "Dólar",
+      simbolo: "U$S",
+    },
+  ]
+
+  for (const moneda of monedas) {
+    await prisma.moneda.upsert({
+      where: { codigo: moneda.codigo },
+      update: {
+        nombre: moneda.nombre,
+        simbolo: moneda.simbolo,
+        activo: true,
+      },
+      create: {
+        codigo: moneda.codigo,
+        nombre: moneda.nombre,
+        simbolo: moneda.simbolo,
         activo: true,
       },
     })

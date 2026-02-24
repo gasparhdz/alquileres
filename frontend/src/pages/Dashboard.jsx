@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import {
   Grid,
   Typography,
@@ -6,13 +8,44 @@ import {
   Card,
   CardContent,
   LinearProgress,
-  Chip
+  Chip,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper
 } from '@mui/material';
 import DescriptionIcon from '@mui/icons-material/Description';
-import ReceiptIcon from '@mui/icons-material/Receipt';
 import PeopleIcon from '@mui/icons-material/People';
 import HomeIcon from '@mui/icons-material/Home';
+import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import api from '../api';
+
+const pulseAjustes = {
+  '@keyframes pulseAjustes': {
+    '0%, 100%': {
+      boxShadow: '0 4px 24px rgba(13, 148, 136, 0.5), 0 0 0 0 rgba(245, 158, 11, 0.5)'
+    },
+    '50%': {
+      boxShadow: '0 8px 32px rgba(13, 148, 136, 0.7), 0 0 0 10px rgba(245, 158, 11, 0)'
+    }
+  },
+  '@keyframes titilaNumero': {
+    '0%, 100%': { opacity: 1, transform: 'scale(1)' },
+    '50%': { opacity: 0.92, transform: 'scale(1.06)' }
+  },
+  '@keyframes pulseDot': {
+    '0%, 100%': { opacity: 1, transform: 'scale(1)' },
+    '50%': { opacity: 0.5, transform: 'scale(1.3)' }
+  }
+};
 
 const StatCard = ({ title, value, icon, color, gradient }) => (
   <Card
@@ -98,6 +131,27 @@ export default function Dashboard() {
     (l) => l.estado === 'borrador'
   ).length || 0;
 
+  const { data: ajustesPendientes, isLoading: loadingAjustes } = useQuery({
+    queryKey: ['dashboard', 'ajustes-pendientes'],
+    queryFn: async () => {
+      const res = await api.get('/dashboard/ajustes-pendientes', { params: { modo: 'todos', dias: 15 } });
+      return res.data;
+    }
+  });
+
+  const [openAjustesPendientes, setOpenAjustesPendientes] = useState(false);
+  const navigate = useNavigate();
+  const totalVencidos = ajustesPendientes?.meta?.totalVencidos ?? 0;
+  const totalProximos = ajustesPendientes?.meta?.totalProximos ?? 0;
+  const totalAjustesPendientes = totalVencidos + totalProximos;
+
+  const handleActualizarAjuste = (contratoId) => {
+    setOpenAjustesPendientes(false);
+    navigate(`/contratos?contratoId=${contratoId}&tab=ajustes&accion=nuevo`);
+  };
+
+  const formatFecha = (f) => (f ? new Date(f).toLocaleDateString('es-AR') : '-');
+
   return (
     <Box>
       <Box sx={{ mb: 4 }}>
@@ -117,12 +171,85 @@ export default function Dashboard() {
         </Grid>
 
         <Grid item xs={12} sm={6} md={3}>
-          <StatCard
-            title="Liquidaciones"
-            value={liquidaciones?.pagination?.total || 0}
-            icon={<ReceiptIcon sx={{ fontSize: 32 }} />}
-            gradient="linear-gradient(135deg, #0891b2 0%, #06b6d4 100%)"
-          />
+          <Card
+            onClick={() => !loadingAjustes && totalAjustesPendientes > 0 && setOpenAjustesPendientes(true)}
+            sx={{
+              ...pulseAjustes,
+              background: totalAjustesPendientes > 0
+                ? 'linear-gradient(135deg, #0f766e 0%, #0d9488 40%, #14b8a6 100%)'
+                : 'linear-gradient(135deg, #0d9488 0%, #14b8a6 100%)',
+              color: 'white',
+              height: '100%',
+              position: 'relative',
+              overflow: 'hidden',
+              cursor: loadingAjustes || totalAjustesPendientes === 0 ? 'default' : 'pointer',
+              opacity: loadingAjustes || totalAjustesPendientes === 0 ? 0.85 : 1,
+              boxShadow: totalAjustesPendientes > 0 ? '0 6px 28px rgba(13, 148, 136, 0.55)' : 'none',
+              animation: totalAjustesPendientes > 0 ? 'pulseAjustes 2.2s ease-in-out infinite' : 'none',
+              '&:hover': totalAjustesPendientes > 0 ? {
+                boxShadow: '0 10px 36px rgba(13, 148, 136, 0.65)',
+                transform: 'translateY(-3px)'
+              } : {}
+            }}
+          >
+            {totalAjustesPendientes > 0 && (
+              <Box
+                sx={{
+                  position: 'absolute',
+                  top: 8,
+                  right: 8,
+                  width: 10,
+                  height: 10,
+                  borderRadius: '50%',
+                  background: '#f59e0b',
+                  boxShadow: '0 0 12px rgba(245, 158, 11, 0.8)',
+                  animation: 'pulseDot 1.2s ease-in-out infinite'
+                }}
+              />
+            )}
+            <CardContent>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <Typography variant="body2" sx={{ opacity: 0.9 }}>
+                      Ajustes de alquiler
+                    </Typography>
+                    {totalAjustesPendientes > 0 && (
+                      <Chip
+                        label="¡Pendientes!"
+                        size="small"
+                        sx={{
+                          height: 22,
+                          fontSize: '0.7rem',
+                          fontWeight: 800,
+                          background: '#f59e0b',
+                          color: 'white',
+                          animation: 'titilaNumero 1.8s ease-in-out infinite'
+                        }}
+                      />
+                    )}
+                  </Box>
+                  <Typography
+                    variant="h3"
+                    fontWeight="bold"
+                    sx={
+                      totalAjustesPendientes > 0
+                        ? { animation: 'titilaNumero 2s ease-in-out infinite' }
+                        : {}
+                    }
+                  >
+                    {loadingAjustes ? '-' : totalAjustesPendientes}
+                  </Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.9 }}>
+                    {totalVencidos} vencidos, {totalProximos} próximos
+                  </Typography>
+                </Box>
+                <Box sx={{ p: 1.5, background: 'rgba(255,255,255,0.2)', borderRadius: 2 }}>
+                  <TrendingUpIcon sx={{ fontSize: 32 }} />
+                </Box>
+              </Box>
+            </CardContent>
+          </Card>
         </Grid>
 
         <Grid item xs={12} sm={6} md={3}>
@@ -171,6 +298,63 @@ export default function Dashboard() {
           </Card>
         </Grid>
       </Grid>
+
+      <Dialog open={openAjustesPendientes} onClose={() => setOpenAjustesPendientes(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Ajustes de alquiler pendientes</DialogTitle>
+        <DialogContent>
+          {loadingAjustes ? (
+            <LinearProgress />
+          ) : (
+            <TableContainer component={Paper} variant="outlined" sx={{ mt: 1 }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell><strong>Propiedad</strong></TableCell>
+                    <TableCell><strong>Inquilino</strong></TableCell>
+                    <TableCell align="right"><strong>Monto actual</strong></TableCell>
+                    <TableCell><strong>Próximo ajuste</strong></TableCell>
+                    <TableCell><strong>Estado</strong></TableCell>
+                    <TableCell align="right"><strong>Acciones</strong></TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {(!ajustesPendientes?.data || ajustesPendientes.data.length === 0) ? (
+                    <TableRow>
+                      <TableCell colSpan={6} align="center">No hay ajustes pendientes</TableCell>
+                    </TableRow>
+                  ) : (
+                    ajustesPendientes.data.map((row) => (
+                      <TableRow key={row.contratoId}>
+                        <TableCell>{row.propiedad || '-'}</TableCell>
+                        <TableCell>{row.inquilino || '-'}</TableCell>
+                        <TableCell align="right">
+                          {row.montoActual != null ? Number(row.montoActual).toLocaleString('es-AR', { minimumFractionDigits: 2 }) : '-'}
+                        </TableCell>
+                        <TableCell>{formatFecha(row.proximaFechaAjuste)}</TableCell>
+                        <TableCell>
+                          <Chip
+                            label={row.estado === 'vencido' ? 'Vencido' : 'Próximo'}
+                            size="small"
+                            color={row.estado === 'vencido' ? 'error' : 'warning'}
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Button size="small" variant="outlined" onClick={() => handleActualizarAjuste(row.contratoId)}>
+                            Actualizar
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenAjustesPendientes(false)}>Cerrar</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

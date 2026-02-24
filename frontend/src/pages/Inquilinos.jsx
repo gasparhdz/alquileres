@@ -236,7 +236,8 @@ export default function Inquilinos() {
     }
 
     const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
-    const esFisica = tipoPersona?.codigo === 'FISICA';
+    const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+    const esFisica = personaFisicaId != null && tipoPersona?.id === personaFisicaId;
 
     // Validar campos según tipo de persona
     if (esFisica) {
@@ -386,7 +387,7 @@ export default function Inquilinos() {
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Nombre/Apellido</TableCell>
@@ -413,6 +414,7 @@ export default function Inquilinos() {
                   </IconButton>
                   <IconButton
                     size="small"
+                    color="error"
                     onClick={() => {
                       if (window.confirm('¿Está seguro de eliminar este inquilino?')) {
                         deleteMutation.mutate(inquilino.id);
@@ -447,6 +449,7 @@ export default function Inquilinos() {
                       </IconButton>
                       <IconButton
                         size="small"
+                        color="error"
                         onClick={() => {
                           if (window.confirm('¿Está seguro de eliminar este inquilino?')) {
                             deleteMutation.mutate(inquilino.id);
@@ -516,7 +519,8 @@ export default function Inquilinos() {
               <Grid container spacing={2}>
                 {(() => {
                   const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
-                  const esFisica = tipoPersona?.codigo === 'FISICA';
+                  const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+                  const esFisica = personaFisicaId != null && tipoPersona?.id === personaFisicaId;
 
                   if (esFisica) {
                     // Persona Física

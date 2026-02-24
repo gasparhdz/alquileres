@@ -53,10 +53,14 @@ export const liquidacionApi = {
   },
 
   // Completar importe de un item (nuevo endpoint)
-  completarImporteItem: async (itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null) => {
-    const data = { importe };
-    if (actorFacturadoId !== null) data.actorFacturadoId = actorFacturadoId;
-    if (quienSoportaCostoId !== null) data.quienSoportaCostoId = quienSoportaCostoId;
+  completarImporteItem: async (itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null, pagadoPorActorId = null, vencimiento = null) => {
+    const data = {};
+    // Incluir importe siempre que venga (incluido 0) para que el backend marque como completado
+    if (importe !== undefined && importe !== null) data.importe = Number(importe);
+    if (actorFacturadoId !== null && actorFacturadoId !== undefined) data.actorFacturadoId = actorFacturadoId;
+    if (quienSoportaCostoId !== null && quienSoportaCostoId !== undefined) data.quienSoportaCostoId = quienSoportaCostoId;
+    if (pagadoPorActorId !== null && pagadoPorActorId !== undefined) data.pagadoPorActorId = pagadoPorActorId;
+    if (vencimiento !== null && vencimiento !== undefined) data.vencimiento = vencimiento;
     const response = await api.patch(`/liquidaciones/liquidacion-items/${itemId}`, data);
     return response.data;
   },
@@ -70,6 +74,23 @@ export const liquidacionApi = {
   // Completar item (endpoint antiguo - mantener por compatibilidad)
   completarItem: async (itemId, data) => {
     const response = await api.post(`/liquidaciones/items/${itemId}/completar`, data);
+    return response.data;
+  },
+
+  // Crear ítem manual (incidencia). payload: { concepto, importe, tipoCargoId?, tipoImpuestoId?, fechaGasto?, pagadoPorActorId?, quienSoportaCostoId? }
+  crearIncidencia: async (propiedadId, periodo, payload) => {
+    const body = {
+      propiedadId,
+      periodo,
+      concepto: payload.concepto ?? '',
+      importe: Number(payload.importe)
+    };
+    if (payload.tipoCargoId != null && payload.tipoCargoId !== '') body.tipoCargoId = payload.tipoCargoId;
+    if (payload.tipoImpuestoId != null && payload.tipoImpuestoId !== '') body.tipoImpuestoId = payload.tipoImpuestoId;
+    if (payload.fechaGasto) body.fechaGasto = payload.fechaGasto;
+    if (payload.pagadoPorActorId != null && payload.pagadoPorActorId !== '') body.pagadoPorActorId = payload.pagadoPorActorId;
+    if (payload.quienSoportaCostoId != null && payload.quienSoportaCostoId !== '') body.quienSoportaCostoId = payload.quienSoportaCostoId;
+    const response = await api.post('/liquidaciones/incidencias', body);
     return response.data;
   }
 };

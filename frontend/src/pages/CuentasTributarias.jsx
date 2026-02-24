@@ -48,6 +48,8 @@ export default function CuentasTributarias() {
     codigo1: '',
     codigo2: '',
     periodicidad: '',
+    usuarioEmail: '',
+    password: '',
     observaciones: ''
   });
   const [successMessage, setSuccessMessage] = useState('');
@@ -124,6 +126,8 @@ export default function CuentasTributarias() {
       codigo1: '',
       codigo2: '',
       periodicidad: '',
+      usuarioEmail: '',
+      password: '',
       observaciones: ''
     });
     setEditing(null);
@@ -142,6 +146,8 @@ export default function CuentasTributarias() {
       codigo1: cuenta.codigo1 || '',
       codigo2: cuenta.codigo2 || '',
       periodicidad: cuenta.periodicidad || '',
+      usuarioEmail: cuenta.usuarioEmail || cuenta.usuarioPortal || '',
+      password: cuenta.password || '',
       observaciones: cuenta.observaciones || ''
     });
     setOpen(true);
@@ -156,6 +162,8 @@ export default function CuentasTributarias() {
       codigo1: formData.codigo1?.trim() || null,
       codigo2: formData.codigo2?.trim() || null,
       periodicidad: formData.periodicidad || null,
+      usuarioEmail: formData.usuarioEmail?.trim() || null,
+      password: formData.password?.trim() || null,
       observaciones: formData.observaciones?.trim() || null
     };
 
@@ -187,6 +195,8 @@ export default function CuentasTributarias() {
               <TableCell>Código 1</TableCell>
               <TableCell>Código 2</TableCell>
               <TableCell>Periodicidad</TableCell>
+              <TableCell>Usuario</TableCell>
+              <TableCell>Contraseña</TableCell>
               <TableCell>Observaciones</TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
@@ -205,6 +215,8 @@ export default function CuentasTributarias() {
                 <TableCell>{cuenta.codigo1 || '-'}</TableCell>
                 <TableCell>{cuenta.codigo2 || '-'}</TableCell>
                 <TableCell>{getDescripcion(periodicidadMap, cuenta.periodicidad)}</TableCell>
+                <TableCell>{cuenta.usuarioEmail || cuenta.usuarioPortal || '-'}</TableCell>
+                <TableCell>{cuenta.password ? '••••••••' : '-'}</TableCell>
                 <TableCell>{cuenta.observaciones || '-'}</TableCell>
                 <TableCell>
                   <IconButton size="small" onClick={() => handleEdit(cuenta)} title="Editar">
@@ -212,6 +224,7 @@ export default function CuentasTributarias() {
                   </IconButton>
                   <IconButton
                     size="small"
+                    color="error"
                     onClick={() => {
                       if (window.confirm('¿Está seguro de eliminar esta cuenta tributaria?')) {
                         deleteMutation.mutate(cuenta.id);
@@ -226,7 +239,7 @@ export default function CuentasTributarias() {
             ))}
             {(!data?.data || data.data.length === 0) && (
               <TableRow>
-                <TableCell colSpan={8} align="center">
+                <TableCell colSpan={10} align="center">
                   <Typography color="text.secondary">No hay cuentas tributarias registradas</Typography>
                 </TableCell>
               </TableRow>
@@ -257,6 +270,7 @@ export default function CuentasTributarias() {
                       </IconButton>
                       <IconButton
                         size="small"
+                        color="error"
                         onClick={() => {
                           if (window.confirm('¿Está seguro de eliminar esta cuenta tributaria?')) {
                             deleteMutation.mutate(cuenta.id);
@@ -298,6 +312,20 @@ export default function CuentasTributarias() {
                         <CalendarTodayIcon fontSize="small" color="action" />
                         <Typography variant="body2">
                           <strong>Periodicidad:</strong> {getDescripcion(periodicidadMap, cuenta.periodicidad)}
+                        </Typography>
+                      </Box>
+                    )}
+                    {(cuenta.usuarioEmail || cuenta.usuarioPortal) && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2">
+                          <strong>Usuario:</strong> {cuenta.usuarioEmail || cuenta.usuarioPortal}
+                        </Typography>
+                      </Box>
+                    )}
+                    {cuenta.password && (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <Typography variant="body2">
+                          <strong>Contraseña:</strong> ••••••••
                         </Typography>
                       </Box>
                     )}
@@ -384,6 +412,27 @@ export default function CuentasTributarias() {
                   size="small"
                   value={formData.codigo2}
                   onChange={(e) => setFormData({ ...formData, codigo2: e.target.value })}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label="Usuario (Email/Portal)"
+                  fullWidth
+                  size="small"
+                  value={formData.usuarioEmail}
+                  onChange={(e) => setFormData({ ...formData, usuarioEmail: e.target.value })}
+                  placeholder="Usuario de la oficina virtual"
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  label="Contraseña"
+                  fullWidth
+                  size="small"
+                  type="password"
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  placeholder="Contraseña de la oficina virtual"
                 />
               </Grid>
               <Grid item xs={12}>

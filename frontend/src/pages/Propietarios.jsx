@@ -439,7 +439,8 @@ export default function Propietarios() {
     }
 
     const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
-    const esFisica = tipoPersona?.codigo === 'FISICA';
+    const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+    const esFisica = personaFisicaId != null && tipoPersona?.id === personaFisicaId;
 
     // Validar campos según tipo de persona
     if (esFisica) {
@@ -606,14 +607,15 @@ export default function Propietarios() {
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Nombre/Apellido</TableCell>
               <TableCell>DNI</TableCell>
               <TableCell>CUIT</TableCell>
               <TableCell>Email</TableCell>
-              <TableCell>Propiedades</TableCell>
+              <TableCell>Teléfono</TableCell>
+              <TableCell>Cant. Propiedades</TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
           </TableHead>
@@ -626,6 +628,7 @@ export default function Propietarios() {
                 <TableCell>{propietario.dni || '-'}</TableCell>
                 <TableCell>{propietario.cuit || '-'}</TableCell>
                 <TableCell>{propietario.mail || '-'}</TableCell>
+                <TableCell>{propietario.telefono || '-'}</TableCell>
                 <TableCell>{propietario.propiedades?.length || 0}</TableCell>
                 <TableCell>
                   <IconButton size="small" onClick={() => handleEdit(propietario)}>
@@ -633,6 +636,7 @@ export default function Propietarios() {
                   </IconButton>
                   <IconButton
                     size="small"
+                    color="error"
                     onClick={() => {
                       if (window.confirm('¿Está seguro de eliminar este propietario?')) {
                         deleteMutation.mutate(propietario.id);
@@ -667,6 +671,7 @@ export default function Propietarios() {
                       </IconButton>
                       <IconButton
                         size="small"
+                        color="error"
                         onClick={() => {
                           if (window.confirm('¿Está seguro de eliminar este propietario?')) {
                             deleteMutation.mutate(propietario.id);
@@ -768,7 +773,8 @@ export default function Propietarios() {
               <Grid container spacing={2}>
                 {(() => {
                   const tipoPersona = tiposPersona?.find(tp => tp.id === parseInt(formData.tipoPersonaId));
-                  const esFisica = tipoPersona?.codigo === 'FISICA';
+                  const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+                  const esFisica = personaFisicaId != null && tipoPersona?.id === personaFisicaId;
 
                   if (esFisica) {
                     // Persona Física
@@ -1285,6 +1291,7 @@ export default function Propietarios() {
                               }
                             }}
                             disabled={desasociarPropiedadMutation.isPending}
+                            color="error"
                           >
                             <DeleteIcon fontSize="small" />
                           </IconButton>

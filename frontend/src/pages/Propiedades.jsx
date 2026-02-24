@@ -28,6 +28,7 @@ import {
   CardContent,
   Divider,
   Chip,
+  Tooltip,
   Snackbar,
   Tabs,
   Tab,
@@ -351,6 +352,14 @@ export default function Propiedades() {
   };
 
   // Obtener tipos de documento de propiedad
+  const { data: tiposPersona } = useQuery({
+    queryKey: ['tipos-persona'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos/tipos-persona');
+      return response.data;
+    }
+  });
+
   const { data: tiposDocumentoPropiedad } = useQuery({
     queryKey: ['tipos-documento-propiedad'],
     queryFn: async () => {
@@ -465,16 +474,18 @@ export default function Propiedades() {
 
   // Limpiar localidad cuando cambia la provincia
   useEffect(() => {
-    if (formData.provinciaId && formData.localidadId) {
-      // Si cambió la provincia, limpiar localidad si no pertenece a la nueva provincia
-      if (localidades) {
-        const localidadActual = localidades.find(l => l.id === parseInt(formData.localidadId));
-        if (!localidadActual || localidadActual.provinciaId !== parseInt(formData.provinciaId)) {
+    // Solo procesar si hay una provincia seleccionada
+    if (formData.provinciaId) {
+      // Si hay localidad seleccionada y localidades cargadas, verificar que pertenezca a la provincia
+      if (formData.localidadId && localidades && localidades.length > 0) {
+        const localidadActual = localidades.find(l => String(l.id) === String(formData.localidadId));
+        // Solo limpiar si la localidad existe pero no pertenece a la provincia actual
+        // O si la localidad no existe en la lista (puede ser de otra provincia)
+        if (localidadActual && String(localidadActual.provinciaId) !== String(formData.provinciaId)) {
           setFormData(prev => ({ ...prev, localidadId: '' }));
         }
-      } else {
-        // Si aún no hay localidades cargadas, limpiar localidad
-        setFormData(prev => ({ ...prev, localidadId: '' }));
+        // Si la localidad no se encuentra en la lista, no la limpiamos automáticamente
+        // porque puede ser que las localidades aún se estén cargando o haya un problema de timing
       }
     } else if (!formData.provinciaId && formData.localidadId) {
       // Si se quita la provincia, limpiar localidad
@@ -567,13 +578,17 @@ export default function Propiedades() {
             camposIniciales[campo.id] = valoresCampos[campo.id] || '';
           });
           
-          // Obtener el tipo de cargo para usar su periodicidad por defecto
+          // Usar la periodicidad guardada en el cargo, o la del tipo de cargo como fallback
           const tipoCargo = tiposCargo?.find(tc => tc.id === cargo.tipoCargoId);
-          const periodicidadPorDefecto = tipoCargo?.periodicidadId || tipoCargo?.periodicidad?.id || null;
+          const periodicidadId = cargo.periodicidadId || 
+                                 cargo.periodicidad?.id || 
+                                 tipoCargo?.periodicidadId || 
+                                 tipoCargo?.periodicidad?.id || 
+                                 null;
           
           return {
             tipoCargoId: cargo.tipoCargoId,
-            periodicidadId: periodicidadPorDefecto,
+            periodicidadId: periodicidadId,
             propiedadCargoId: cargo.id,
             campos: camposIniciales
           };
@@ -731,7 +746,10 @@ export default function Propiedades() {
       try {
         // Guardar cargos
         const cargosResponse = await api.post(`/propiedad-cargos/propiedad/${propiedadId}`, {
-          cargos: cargosSeleccionados.map(cargo => ({ tipoCargoId: cargo.tipoCargoId }))
+          cargos: cargosSeleccionados.map(cargo => ({ 
+            tipoCargoId: cargo.tipoCargoId,
+            periodicidadId: cargo.periodicidadId || null
+          }))
         });
         
         // Guardar campos de cada cargo
@@ -849,12 +867,12 @@ export default function Propiedades() {
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Dirección</TableCell>
               <TableCell>Localidad</TableCell>
-              <TableCell>Propietario</TableCell>
+              <TableCell>Propietarios</TableCell>
               <TableCell>Tipo</TableCell>
               <TableCell>Estado</TableCell>
               <TableCell>Acciones</TableCell>
@@ -864,17 +882,42 @@ export default function Propiedades() {
             {propiedades?.data?.map((propiedad) => {
               const direccionCompleta = `${propiedad.dirCalle} ${propiedad.dirNro}${propiedad.dirPiso ? `, Piso ${propiedad.dirPiso}` : ''}${propiedad.dirDepto ? `, Depto ${propiedad.dirDepto}` : ''}`;
               const localidadNombre = propiedad.localidad?.nombre || propiedad.provincia?.nombre || '';
-              const propietariosNombres = propiedad.propietarios?.map(p => 
+              
+              // Preparar lista de propietarios
+              const propietariosList = propiedad.propietarios?.map(p => 
                 p.propietario.razonSocial || 
                 `${p.propietario.nombre || ''} ${p.propietario.apellido || ''}`.trim()
-              ).filter(Boolean).join(', ') || '';
+              ).filter(Boolean) || [];
+              
+              const propietariosNombres = propietariosList.join(', ');
+              
+              // Formatear para mostrar: primer propietario + "y N más" si hay más de uno
+              let propietariosDisplay = '';
+              let tooltipText = '';
+              
+              if (propietariosList.length === 0) {
+                propietariosDisplay = <em style={{ color: '#999' }}>Sin propietarios</em>;
+              } else if (propietariosList.length === 1) {
+                propietariosDisplay = propietariosList[0];
+              } else {
+                const primero = propietariosList[0];
+                const cantidadRestantes = propietariosList.length - 1;
+                propietariosDisplay = `${primero} y ${cantidadRestantes} más`;
+                tooltipText = propietariosNombres;
+              }
               
               return (
               <TableRow key={propiedad.id}>
                 <TableCell>{direccionCompleta}</TableCell>
                 <TableCell>{localidadNombre}</TableCell>
                 <TableCell>
-                  {propietariosNombres || <em style={{ color: '#999' }}>Sin propietarios</em>}
+                  {tooltipText ? (
+                    <Tooltip title={tooltipText} arrow>
+                      <span>{propietariosDisplay}</span>
+                    </Tooltip>
+                  ) : (
+                    propietariosDisplay
+                  )}
                 </TableCell>
                 <TableCell>{propiedad.tipoPropiedad?.nombre || '-'}</TableCell>
                 <TableCell>{propiedad.estadoPropiedad?.nombre || '-'}</TableCell>
@@ -884,6 +927,7 @@ export default function Propiedades() {
                   </IconButton>
                   <IconButton
                     size="small"
+                    color="error"
                     onClick={() => {
                       if (window.confirm('¿Está seguro de eliminar esta propiedad?')) {
                         deleteMutation.mutate(propiedad.id);
@@ -920,6 +964,7 @@ export default function Propiedades() {
                       </IconButton>
                       <IconButton
                         size="small"
+                        color="error"
                         onClick={() => {
                           if (window.confirm('¿Está seguro de eliminar esta propiedad?')) {
                             deleteMutation.mutate(propiedad.id);
@@ -946,10 +991,27 @@ export default function Propiedades() {
                         <PersonIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                         <Typography variant="body2">
                           <strong>Propietarios:</strong>{' '}
-                          {propiedad.propietarios.map(p => 
-                            p.propietario.razonSocial || 
-                            `${p.propietario.nombre || ''} ${p.propietario.apellido || ''}`.trim()
-                          ).filter(Boolean).join(', ')}
+                          {(() => {
+                            const propietariosList = propiedad.propietarios.map(p => 
+                              p.propietario.razonSocial || 
+                              `${p.propietario.nombre || ''} ${p.propietario.apellido || ''}`.trim()
+                            ).filter(Boolean);
+                            
+                            const propietariosNombres = propietariosList.join(', ');
+                            
+                            if (propietariosList.length === 1) {
+                              return propietariosList[0];
+                            } else if (propietariosList.length > 1) {
+                              const primero = propietariosList[0];
+                              const cantidadRestantes = propietariosList.length - 1;
+                              return (
+                                <Tooltip title={propietariosNombres} arrow>
+                                  <span>{`${primero} y ${cantidadRestantes} más`}</span>
+                                </Tooltip>
+                              );
+                            }
+                            return '';
+                          })()}
                         </Typography>
                       </Box>
                     ) : (
@@ -1103,7 +1165,7 @@ export default function Propiedades() {
                   <FormControl fullWidth size="small">
                     <InputLabel>Localidad</InputLabel>
                     <Select
-                      value={formData.localidadId || ''}
+                      value={formData.localidadId ? String(formData.localidadId) : ''}
                       onChange={(e) => {
                         setFormData({ ...formData, localidadId: e.target.value || '' });
                       }}
@@ -1114,7 +1176,7 @@ export default function Propiedades() {
                         <em>Seleccionar localidad</em>
                       </MenuItem>
                       {localidades?.map((loc) => (
-                        <MenuItem key={loc.id} value={loc.id}>
+                        <MenuItem key={loc.id} value={String(loc.id)}>
                           {loc.nombre}
                         </MenuItem>
                       ))}
@@ -1150,7 +1212,49 @@ export default function Propiedades() {
                     <InputLabel>Estado</InputLabel>
                     <Select
                       value={formData.estadoPropiedadId || ''}
-                      onChange={(e) => setFormData({ ...formData, estadoPropiedadId: e.target.value || '' })}
+                      onChange={async (e) => {
+                        const nuevoEstadoId = e.target.value || '';
+                        const nuevoEstado = estadosPropiedad?.find(est => est.id === parseInt(nuevoEstadoId));
+                        const nuevoEstadoCodigo = nuevoEstado?.codigo;
+                        
+                        setFormData({ ...formData, estadoPropiedadId: nuevoEstadoId });
+
+                        const tipoCargoAlquiler = tiposCargo?.find(tc => tc.codigo === 'ALQUILER');
+                        if (nuevoEstadoCodigo === 'ALQ' && tipoCargoAlquiler) {
+                          // Si el estado cambia a "Alquilada", agregar automáticamente el cargo Alquiler (no se muestra en la lista)
+                          const periodicidadMensual = periodicidadesImpuesto?.find(p => p.codigo === '1_MENSUAL');
+                          const cargoAlquilerExistente = cargosSeleccionados.find(
+                            cargo => cargo.tipoCargoId === tipoCargoAlquiler.id
+                          );
+                          if (!cargoAlquilerExistente) {
+                            const campos = await cargarCamposTipoCargo(tipoCargoAlquiler.id);
+                            const camposIniciales = {};
+                            campos.forEach(campo => { camposIniciales[campo.id] = ''; });
+                            setCargosSeleccionados([
+                              ...cargosSeleccionados,
+                              {
+                                tipoCargoId: tipoCargoAlquiler.id,
+                                periodicidadId: periodicidadMensual?.id || tipoCargoAlquiler.periodicidadId || null,
+                                propiedadCargoId: null,
+                                campos: camposIniciales
+                              }
+                            ]);
+                          } else if (cargoAlquilerExistente && !cargoAlquilerExistente.periodicidadId && periodicidadMensual) {
+                            setCargosSeleccionados(
+                              cargosSeleccionados.map(cargo =>
+                                cargo.tipoCargoId === tipoCargoAlquiler.id
+                                  ? { ...cargo, periodicidadId: periodicidadMensual.id }
+                                  : cargo
+                              )
+                            );
+                          }
+                        } else if (nuevoEstadoCodigo !== 'ALQ' && tipoCargoAlquiler) {
+                          // Si deja de estar Alquilada, quitar el cargo Alquiler
+                          setCargosSeleccionados(
+                            cargosSeleccionados.filter(cargo => cargo.tipoCargoId !== tipoCargoAlquiler.id)
+                          );
+                        }
+                      }}
                       label="Estado"
                     >
                       <MenuItem value="">
@@ -1287,8 +1391,9 @@ export default function Propiedades() {
                             propietarios
                               .filter(p => !formData.propietarioIds.includes(p.id))
                               .map((propietario) => {
-                                // Construir nombre completo
-                                const nombreCompleto = propietario.tipoPersona?.codigo === 'FISICA'
+                                const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+                                const esFisica = personaFisicaId != null && propietario.tipoPersona?.id === personaFisicaId;
+                                const nombreCompleto = esFisica
                                   ? `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || propietario.razonSocial || 'Sin nombre'
                                   : propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || 'Sin nombre';
                                 return (
@@ -1368,12 +1473,11 @@ export default function Propiedades() {
                         {formData.propietarioIds.map((propietarioId) => {
                           const propietario = Array.isArray(propietarios) ? propietarios.find(p => p.id === propietarioId) : null;
                           if (!propietario) return null;
-                          
-                          // Construir nombre completo
-                          const nombreCompleto = propietario.tipoPersona?.codigo === 'FISICA'
+                          const personaFisicaId = tiposPersona?.find(tp => tp.codigo === 'FISICA')?.id;
+                          const esFisica = personaFisicaId != null && propietario.tipoPersona?.id === personaFisicaId;
+                          const nombreCompleto = esFisica
                             ? `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || propietario.razonSocial || 'Sin nombre'
                             : propietario.razonSocial || `${propietario.nombre || ''} ${propietario.apellido || ''}`.trim() || 'Sin nombre';
-                          
                           return (
                             <Box
                               key={propietarioId}
@@ -1401,6 +1505,7 @@ export default function Propiedades() {
                                   });
                                 }}
                                 sx={{ py: 0, px: 0.5 }}
+                                color="error"
                               >
                                 <DeleteIcon fontSize="small" />
                               </IconButton>
@@ -1566,7 +1671,9 @@ export default function Propiedades() {
                    
                       {tiposCargo && tiposCargo.length > 0 ? (
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                          {tiposCargo.map((tipoCargo) => {
+                          {tiposCargo
+                            .filter((tc) => !['ALQUILER', 'GASTO_EXTRA', 'GASTOS_ADMINISTRATIVOS', 'HONORARIOS'].includes(tc.codigo))
+                            .map((tipoCargo) => {
                             const cargoSeleccionado = cargosSeleccionados.find(
                               cargo => cargo.tipoCargoId === tipoCargo.id
                             );
@@ -1626,7 +1733,10 @@ export default function Propiedades() {
                                   sx={{ py: 0 }}
                                 />
                                 <Box sx={{ minWidth: 120 }}>
-                                  <Typography variant="caption" fontWeight={estaSeleccionado ? 600 : 400}>
+                                  <Typography 
+                                    variant="caption" 
+                                    fontWeight={estaSeleccionado ? 600 : 400}
+                                  >
                                     {tipoCargo.nombre}
                                   </Typography>
                                 </Box>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -58,7 +58,7 @@ const CATALOGO_CONFIG = {
     fields: [
       { name: 'metodoAjusteContratoId', label: 'Método de Ajuste', type: 'select', required: true,
         optionsEndpoint: '/catalogos-abm/metodos-ajuste-contrato', optionLabel: 'nombre', optionValue: 'id' },
-      { name: 'periodo', label: 'Período (YYYY-MM)', type: 'text', required: true, placeholder: '2024-11' },
+      { name: 'periodo', label: 'Período (MM-AAAA)', type: 'text', required: true, placeholder: '11-2024' },
       { name: 'valor', label: 'Valor', type: 'number', required: true, step: '0.000001' },
       { name: 'variacion', label: 'Variación', type: 'number', required: false, step: '0.000001' },
       { name: 'fuente', label: 'Fuente', type: 'text', required: false },
@@ -109,6 +109,8 @@ const CATALOGO_CONFIG = {
       { name: 'nombre', label: 'Nombre', type: 'text', required: true },
       { name: 'periodicidadId', label: 'Periodicidad por Defecto', type: 'select', required: false,
         optionsEndpoint: '/catalogos-abm/periodicidades-impuesto', optionLabel: 'nombre', optionValue: 'id' },
+      { name: 'usuario', label: 'Usuario Oficina Virtual', type: 'text', required: false, placeholder: 'Usuario de la oficina virtual' },
+      { name: 'password', label: 'Contraseña Oficina Virtual', type: 'password', required: false, placeholder: 'Contraseña de la oficina virtual' },
       { name: 'activo', label: 'Activo', type: 'switch', required: false }
     ]
   },
@@ -164,9 +166,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
     queryKey: ['catalogos-abm', tipo, mostrarInactivos],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (!mostrarInactivos) {
-        params.set('mostrarInactivos', 'false');
-      }
+      params.set('mostrarInactivos', mostrarInactivos ? 'true' : 'false');
       const response = await api.get(`/catalogos-abm/${tipo}?${params.toString()}`);
       return response.data;
     }
@@ -174,19 +174,46 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
 
   // Obtener opciones para selects
   const selectFields = fields.filter(f => f.type === 'select');
-  const selectQueries = {};
   
-  selectFields.forEach(field => {
-    const queryKey = `select-${field.optionsEndpoint}`;
-    selectQueries[field.name] = useQuery({
-      queryKey: [queryKey],
-      queryFn: async () => {
-        const response = await api.get(field.optionsEndpoint);
-        return response.data;
-      },
-      enabled: !!field.optionsEndpoint
+  // Obtener endpoints únicos
+  const uniqueEndpoints = useMemo(() => {
+    const endpoints = new Set();
+    selectFields.forEach(field => {
+      if (field.optionsEndpoint) {
+        endpoints.add(field.optionsEndpoint);
+      }
     });
-  });
+    return Array.from(endpoints);
+  }, [selectFields]);
+
+  // Cache de opciones cargadas
+  const [selectOptionsCache, setSelectOptionsCache] = useState({});
+  
+  // Cargar todas las opciones cuando cambien los endpoints
+  useEffect(() => {
+    const loadAllOptions = async () => {
+      const promises = uniqueEndpoints.map(async (endpoint) => {
+        try {
+          const response = await api.get(endpoint);
+          return { endpoint, data: response.data || [] };
+        } catch (error) {
+          console.error(`Error al cargar opciones de ${endpoint}:`, error);
+          return { endpoint, data: [] };
+        }
+      });
+      
+      const results = await Promise.all(promises);
+      const newCache = {};
+      results.forEach(({ endpoint, data }) => {
+        newCache[endpoint] = data;
+      });
+      setSelectOptionsCache(newCache);
+    };
+    
+    if (uniqueEndpoints.length > 0) {
+      loadAllOptions();
+    }
+  }, [uniqueEndpoints]);
 
   const createMutation = useMutation({
     mutationFn: async (data) => {
@@ -363,6 +390,12 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
           editData[field.name] = String(editData[field.name]);
         }
       });
+      
+      // Convertir período de YYYY-MM a MM-AAAA para mostrar al usuario
+      if (editData.periodo && /^\d{4}-\d{2}$/.test(editData.periodo)) {
+        editData.periodo = editData.periodo.replace(/^(\d{4})-(\d{2})$/, '$2-$1');
+      }
+      
       setFormData(editData);
       setEditingItem(item);
     } else {
@@ -412,6 +445,11 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
     // Preparar datos para enviar
     const submitData = { ...formData };
     
+    // Convertir período de MM-AAAA a YYYY-MM si es necesario
+    if (submitData.periodo && /^\d{2}-\d{4}$/.test(submitData.periodo)) {
+      submitData.periodo = submitData.periodo.replace(/^(\d{2})-(\d{4})$/, '$2-$1');
+    }
+    
     // Convertir campos numéricos
     fields.forEach(field => {
       if (field.type === 'number') {
@@ -451,8 +489,9 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
     
     switch (field.type) {
       case 'select':
-        const selectQuery = selectQueries[field.name];
-        const options = selectQuery?.data || [];
+        const options = field.optionsEndpoint 
+          ? (selectOptionsCache[field.optionsEndpoint] || [])
+          : [];
         return (
           <FormControl fullWidth key={field.name} required={field.required}>
             <InputLabel>{field.label}</InputLabel>
@@ -545,6 +584,20 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
           />
         );
       
+      case 'password':
+        return (
+          <TextField
+            key={field.name}
+            fullWidth
+            label={field.label}
+            type="password"
+            value={value}
+            onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
+            required={field.required}
+            placeholder={field.placeholder}
+          />
+        );
+      
       default:
         return (
           <TextField
@@ -566,6 +619,9 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
     }
     if (fieldName === 'metodoAjusteContratoId' && item.metodoAjuste) {
       return item.metodoAjuste.nombre;
+    }
+    if (fieldName === 'periodicidadId' && item.periodicidad) {
+      return item.periodicidad.nombre;
     }
     if (fieldName === 'esPorcentaje') {
       return item[fieldName] ? 'Sí' : 'No';
@@ -620,10 +676,10 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
       )}
 
       <TableContainer>
-        <Table>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
           <TableHead>
             <TableRow>
-              {fields.filter(f => f.type !== 'switch').map(field => (
+              {fields.filter(f => f.type !== 'switch' && f.name !== 'usuario' && f.name !== 'password').map(field => (
                 <TableCell key={field.name}>{field.label}</TableCell>
               ))}
               <TableCell>Estado</TableCell>
@@ -633,14 +689,14 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={fields.length + 2} align="center">
+                <TableCell colSpan={fields.filter(f => f.type !== 'switch' && f.name !== 'usuario' && f.name !== 'password').length + 2} align="center">
                   Cargando...
                 </TableCell>
               </TableRow>
             ) : items && items.length > 0 ? (
               items.map((item) => (
                 <TableRow key={item.id}>
-                  {fields.filter(f => f.type !== 'switch').map(field => (
+                  {fields.filter(f => f.type !== 'switch' && f.name !== 'usuario' && f.name !== 'password').map(field => (
                     <TableCell key={field.name}>
                       {getDisplayValue(item, field.name) || '-'}
                     </TableCell>
@@ -656,7 +712,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
                     <IconButton size="small" onClick={() => handleOpenDialog(item)}>
                       <EditIcon />
                     </IconButton>
-                    <IconButton size="small" onClick={() => handleDelete(item.id)}>
+                    <IconButton size="small" color="error" onClick={() => handleDelete(item.id)}>
                       <DeleteIcon />
                     </IconButton>
                   </TableCell>
@@ -664,7 +720,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
               ))
             ) : (
               <TableRow>
-                <TableCell colSpan={fields.length + 2} align="center">
+                <TableCell colSpan={fields.filter(f => f.type !== 'switch' && f.name !== 'usuario' && f.name !== 'password').length + 2} align="center">
                   No hay registros
                 </TableCell>
               </TableRow>
@@ -707,7 +763,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
                   
                   {campos && campos.length > 0 ? (
                     <TableContainer>
-                      <Table size="small">
+                      <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
                         <TableHead>
                           <TableRow>
                             <TableCell>Código</TableCell>
@@ -726,7 +782,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
                                 <IconButton size="small" onClick={() => handleOpenCampoDialog(campo)}>
                                   <EditIcon fontSize="small" />
                                 </IconButton>
-                                <IconButton size="small" onClick={() => handleDeleteCampo(campo.id)}>
+                                <IconButton size="small" color="error" onClick={() => handleDeleteCampo(campo.id)}>
                                   <DeleteIcon fontSize="small" />
                                 </IconButton>
                               </TableCell>

@@ -226,6 +226,7 @@ export const getContratoById = async (req, res) => {
           include: {
             tipoImpuesto: true,
             tipoCargo: true,
+            tipoExpensa: true,
             quienPagaProveedor: true,
             quienSoportaCosto: true
           }
@@ -443,6 +444,67 @@ export const createContrato = async (req, res) => {
     const contrato = await prisma.contrato.create({
       data: contratoData
     });
+
+    // Actualizar estado de la propiedad a "Alquilada" y agregar cargo "Alquiler" con periodicidad mensual
+    try {
+      // Obtener el estado "Alquilada"
+      const estadoAlquilada = await prisma.estadoPropiedad.findFirst({
+        where: { codigo: 'ALQ', activo: true }
+      });
+
+      if (estadoAlquilada) {
+        await prisma.propiedad.update({
+          where: { id: data.propiedadId },
+          data: { estadoPropiedadId: estadoAlquilada.id }
+        });
+      }
+
+      // Obtener el tipo de cargo "Alquiler" y la periodicidad "Mensual"
+      const [tipoCargoAlquiler, periodicidadMensual] = await Promise.all([
+        prisma.tipoCargo.findFirst({
+          where: { codigo: 'ALQUILER', activo: true }
+        }),
+        prisma.periodicidadImpuesto.findFirst({
+          where: { codigo: '1_MENSUAL', activo: true }
+        })
+      ]);
+
+      if (tipoCargoAlquiler) {
+        // Verificar si ya existe el cargo "Alquiler" para esta propiedad
+        const cargoAlquilerExistente = await prisma.propiedadCargo.findFirst({
+          where: {
+            propiedadId: data.propiedadId,
+            tipoCargoId: tipoCargoAlquiler.id,
+            deletedAt: null
+          }
+        });
+
+        if (cargoAlquilerExistente) {
+          // Actualizar el cargo existente (reactivarlo y agregar periodicidad si no tiene)
+          await prisma.propiedadCargo.update({
+            where: { id: cargoAlquilerExistente.id },
+            data: {
+              activo: true,
+              deletedAt: null,
+              periodicidadId: periodicidadMensual?.id || cargoAlquilerExistente.periodicidadId || null
+            }
+          });
+        } else {
+          // Crear nuevo cargo "Alquiler"
+          await prisma.propiedadCargo.create({
+            data: {
+              propiedadId: data.propiedadId,
+              tipoCargoId: tipoCargoAlquiler.id,
+              periodicidadId: periodicidadMensual?.id || null,
+              activo: true
+            }
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error al actualizar estado y cargo de propiedad:', error);
+      // No fallar la creación del contrato si falla la actualización del estado/cargo
+    }
 
     res.status(201).json(contrato);
   } catch (error) {
@@ -814,27 +876,79 @@ export const addResponsabilidad = async (req, res) => {
       return res.status(400).json({ error: 'Debe proporcionar tipoImpuestoId o tipoCargoId' });
     }
 
-    // Preparar datos asegurando que los IDs sean números
+    const tipoImpuestoId = data.tipoImpuestoId ? parseInt(data.tipoImpuestoId) : null;
+    const tipoCargoId = data.tipoCargoId ? parseInt(data.tipoCargoId) : null;
+    const tipoExpensaId = data.tipoExpensaId != null && data.tipoExpensaId !== '' ? parseInt(data.tipoExpensaId) : null;
+    const quienPagaProveedorId = data.quienPagaProveedorId != null && data.quienPagaProveedorId !== '' ? parseInt(data.quienPagaProveedorId) : null;
+    const quienSoportaCostoId = data.quienSoportaCostoId != null && data.quienSoportaCostoId !== '' ? parseInt(data.quienSoportaCostoId) : null;
+
+    if (quienPagaProveedorId == null || isNaN(quienPagaProveedorId) || quienSoportaCostoId == null || isNaN(quienSoportaCostoId)) {
+      return res.status(400).json({ error: 'quienPagaProveedorId y quienSoportaCostoId son obligatorios y deben ser IDs válidos' });
+    }
+
     const responsabilidadData = {
-      contratoId: contratoId,
-      tipoImpuestoId: data.tipoImpuestoId ? parseInt(data.tipoImpuestoId) : null,
-      tipoCargoId: data.tipoCargoId ? parseInt(data.tipoCargoId) : null,
-      quienPagaProveedorId: data.quienPagaProveedorId ? parseInt(data.quienPagaProveedorId) : undefined,
-      quienSoportaCostoId: data.quienSoportaCostoId ? parseInt(data.quienSoportaCostoId) : undefined,
+      tipoImpuestoId,
+      tipoCargoId,
+      tipoExpensaId,
+      quienPagaProveedorId,
+      quienSoportaCostoId,
       ...(data.titular !== undefined && { titular: data.titular })
     };
 
-    const responsabilidad = await prisma.contratoResponsabilidad.create({
-      data: responsabilidadData,
-      include: {
-        tipoImpuesto: true,
-        tipoCargo: true,
-        quienPagaProveedor: true,
-        quienSoportaCosto: true
+    let responsabilidad;
+    let existed = false;
+    try {
+      let existente = null;
+      if (tipoImpuestoId) {
+        existente = await prisma.contratoResponsabilidad.findUnique({
+          where: { contratoId_tipoImpuestoId: { contratoId, tipoImpuestoId } }
+        });
+      } else {
+        existente = await prisma.contratoResponsabilidad.findFirst({
+          where: {
+            contratoId,
+            tipoCargoId,
+            tipoExpensaId: tipoExpensaId ?? null
+          }
+        });
       }
-    });
 
-    res.status(201).json(responsabilidad);
+      if (existente) {
+        existed = true;
+        responsabilidad = await prisma.contratoResponsabilidad.update({
+          where: { id: existente.id },
+          data: responsabilidadData,
+          include: {
+            tipoImpuesto: true,
+            tipoCargo: true,
+            tipoExpensa: true,
+            quienPagaProveedor: true,
+            quienSoportaCosto: true
+          }
+        });
+      } else {
+        responsabilidad = await prisma.contratoResponsabilidad.create({
+          data: {
+            contratoId,
+            ...responsabilidadData
+          },
+          include: {
+            tipoImpuesto: true,
+            tipoCargo: true,
+            tipoExpensa: true,
+            quienPagaProveedor: true,
+            quienSoportaCosto: true
+          }
+        });
+      }
+    } catch (prismaError) {
+      if (prismaError.code === 'P2002') {
+        return res.status(409).json({ error: 'Ya existe una responsabilidad para este concepto en el contrato' });
+      }
+      throw prismaError;
+    }
+
+    res.status(existed ? 200 : 201).json(responsabilidad);
   } catch (error) {
     console.error('Error al crear responsabilidad:', error);
     res.status(500).json({ error: 'Error al crear responsabilidad', details: error.message });
@@ -867,6 +981,9 @@ export const updateResponsabilidad = async (req, res) => {
     if (data.tipoCargoId !== undefined) {
       updateData.tipoCargoId = data.tipoCargoId ? parseInt(data.tipoCargoId) : null;
     }
+    if (data.tipoExpensaId !== undefined) {
+      updateData.tipoExpensaId = data.tipoExpensaId != null && data.tipoExpensaId !== '' ? parseInt(data.tipoExpensaId) : null;
+    }
     if (data.quienPagaProveedorId !== undefined) {
       updateData.quienPagaProveedorId = data.quienPagaProveedorId ? parseInt(data.quienPagaProveedorId) : null;
     }
@@ -883,6 +1000,7 @@ export const updateResponsabilidad = async (req, res) => {
       include: {
         tipoImpuesto: true,
         tipoCargo: true,
+        tipoExpensa: true,
         quienPagaProveedor: true,
         quienSoportaCosto: true
       }

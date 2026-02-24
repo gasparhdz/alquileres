@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -50,6 +51,25 @@ import api from '../api';
 import ParametroSelect from '../components/ParametroSelect';
 import { useParametrosMap, getDescripcion, getAbreviatura } from '../utils/parametros';
 import dayjs from 'dayjs';
+
+// Función helper para parsear fechas del backend como hora local (no UTC)
+// Esto evita el problema de que las fechas se muestren un día antes
+const parseFechaLocal = (fecha) => {
+  if (!fecha) return null;
+  // Si la fecha viene como string ISO con timezone, extraer solo la parte de fecha
+  // y crear un objeto dayjs en hora local
+  if (typeof fecha === 'string') {
+    // Extraer YYYY-MM-DD de cualquier formato
+    const match = fecha.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      const [, year, month, day] = match;
+      // Crear fecha en hora local (no UTC)
+      return dayjs(`${year}-${month}-${day}`).startOf('day');
+    }
+  }
+  // Si es un objeto Date, crear dayjs y ajustar a hora local
+  return dayjs(fecha).startOf('day');
+};
 
 function TabPanel({ children, value, index }) {
   return (
@@ -122,6 +142,9 @@ export default function Contratos() {
   const responsabilidadesEditablesRef = useRef([]);
   // Estado para filtro
   const [filtroEstado, setFiltroEstado] = useState('');
+  // Deep link: abrir contrato en tab Ajustes y/o modal Nuevo ajuste
+  const [openNuevoAjusteModal, setOpenNuevoAjusteModal] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const queryClient = useQueryClient();
 
@@ -257,11 +280,11 @@ export default function Contratos() {
       // Si el filtro es 'vencido', verificar si la fechaFin < hoy
       if (filtroEstado === 'vencido') {
         if (!contrato.fechaFin) return false;
-        const fechaFin = dayjs(contrato.fechaFin);
-        const hoy = dayjs();
+        const fechaFin = parseFechaLocal(contrato.fechaFin);
+        const hoy = dayjs().startOf('day');
         // Un contrato está vencido si la fecha fin pasó y el estado no es final
         const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo;
-        return fechaFin.isBefore(hoy, 'day') && 
+        return fechaFin && fechaFin.isBefore(hoy, 'day') && 
                !['FINALIZADO', 'ANULADO', 'CANCELADO', 'RESCINDIDO'].includes(estadoCodigo);
       }
       const estadoCodigo = contrato.estado?.codigo || contrato.estadoContrato?.codigo || contrato.estado;
@@ -512,14 +535,14 @@ export default function Contratos() {
           const payload = {
             ...(responsabilidad.tipoImpuestoId && { tipoImpuestoId: parseInt(responsabilidad.tipoImpuestoId) }),
             ...(responsabilidad.tipoCargoId && { tipoCargoId: parseInt(responsabilidad.tipoCargoId) }),
+            ...(responsabilidad.tipoExpensaId != null && responsabilidad.tipoExpensaId !== '' && { tipoExpensaId: parseInt(responsabilidad.tipoExpensaId) }),
             quienPagaProveedorId: responsabilidad.quienPagaProveedorId ? parseInt(responsabilidad.quienPagaProveedorId) : null,
             quienSoportaCostoId: responsabilidad.quienSoportaCostoId ? parseInt(responsabilidad.quienSoportaCostoId) : null
           };
           
-          // Buscar si ya existe en la BD
           const responsabilidadExistente = responsabilidadesExistentes.find(
             r => (responsabilidad.tipoImpuestoId && r.tipoImpuestoId === responsabilidad.tipoImpuestoId) ||
-                 (responsabilidad.tipoCargoId && r.tipoCargoId === responsabilidad.tipoCargoId)
+                 (responsabilidad.tipoCargoId && r.tipoCargoId === responsabilidad.tipoCargoId && (r.tipoExpensaId ?? null) === (responsabilidad.tipoExpensaId ?? null))
           );
           
           if (responsabilidadExistente) {
@@ -613,6 +636,50 @@ export default function Contratos() {
     enabled: !!selectedContrato
   });
 
+  const editingId = typeof editing === 'object' ? editing?.id : editing;
+  const { data: contratoParaEditar } = useQuery({
+    queryKey: ['contrato', editingId],
+    queryFn: async () => {
+      const response = await api.get(`/contratos/${editingId}`);
+      return response.data;
+    },
+    enabled: !!open && !!editingId && typeof editing === 'number'
+  });
+
+  useEffect(() => {
+    if (!open || !editingId || typeof editing !== 'number' || !contratoParaEditar) return;
+    const c = contratoParaEditar;
+    const propiedad = c.propiedad;
+    const propietarios = propiedad?.propietarios || [];
+    const nombrePropietario = propietarios.length > 0
+      ? propietarios.map(p => {
+          const prop = p.propietario || p;
+          return prop.razonSocial || `${prop.nombre || ''} ${prop.apellido || ''}`.trim();
+        }).join(', ')
+      : 'Sin propietario';
+    setPropietarioNombre(nombrePropietario);
+    const montoInicial = parseFloat(c.montoInicial) || 0;
+    const duracionMeses = parseInt(c.duracionMeses) || 0;
+    setMontoTotalContrato(montoInicial * duracionMeses);
+    setFormData({
+      propiedadId: c.propiedadId || '',
+      inquilinoId: c.inquilinoId || '',
+      nroContrato: c.nroContrato || '',
+      fechaInicio: c.fechaInicio ? parseFechaLocal(c.fechaInicio).format('YYYY-MM-DD') : '',
+      fechaFin: c.fechaFin ? parseFechaLocal(c.fechaFin).format('YYYY-MM-DD') : '',
+      duracionMeses: c.duracionMeses || '',
+      montoInicial: c.montoInicial ? formatNumberWithThousands(c.montoInicial) : '',
+      montoActual: (c.montoActual || c.montoInicial) ? formatNumberWithThousands(c.montoActual || c.montoInicial) : '',
+      gastosAdministrativos: c.gastosAdministrativos || '',
+      honorariosPropietario: c.honorariosPropietario || '',
+      metodoAjusteContratoId: c.metodoAjusteContratoId || '',
+      frecuenciaAjusteMeses: c.frecuenciaAjusteMeses || '',
+      monedaId: c.monedaId || '',
+      estadoContratoId: c.estadoContratoId || '',
+    });
+    setEditing(c);
+  }, [open, editingId, editing, contratoParaEditar]);
+
   const resetForm = () => {
     setFormData({
       propiedadId: '',
@@ -671,8 +738,9 @@ export default function Contratos() {
       propiedadId: contrato.propiedadId || '',
       inquilinoId: contrato.inquilinoId || '',
       nroContrato: contrato.nroContrato || '',
-      fechaInicio: contrato.fechaInicio ? dayjs(contrato.fechaInicio).format('YYYY-MM-DD') : '',
-      fechaFin: contrato.fechaFin ? dayjs(contrato.fechaFin).format('YYYY-MM-DD') : '',
+      // Usar parseFechaLocal para evitar problemas de zona horaria al cargar fechas
+      fechaInicio: contrato.fechaInicio ? parseFechaLocal(contrato.fechaInicio).format('YYYY-MM-DD') : '',
+      fechaFin: contrato.fechaFin ? parseFechaLocal(contrato.fechaFin).format('YYYY-MM-DD') : '',
       duracionMeses: contrato.duracionMeses || '',
       montoInicial: contrato.montoInicial ? formatNumberWithThousands(contrato.montoInicial) : '',
       montoActual: contrato.montoActual || contrato.montoInicial ? formatNumberWithThousands(contrato.montoActual || contrato.montoInicial) : '',
@@ -748,6 +816,21 @@ export default function Contratos() {
     const duracionMeses = parseInt(formData.duracionMeses) || 0;
     setMontoTotalContrato(montoInicial * duracionMeses);
   }, [formData.montoInicial, formData.duracionMeses]);
+
+  // Deep link: /contratos?contratoId=X&tab=ajustes&accion=nuevo -> abrir edición, tab Ajustes, modal Nuevo
+  useEffect(() => {
+    const contratoId = searchParams.get('contratoId');
+    const tab = searchParams.get('tab');
+    const accion = searchParams.get('accion');
+    if (!contratoId || tab !== 'ajustes') return;
+    const id = parseInt(contratoId, 10);
+    if (Number.isNaN(id)) return;
+    setEditing(id);
+    setOpen(true);
+    setTabValue(4);
+    if (accion === 'nuevo') setOpenNuevoAjusteModal(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const validateForm = () => {
     const newErrors = {};
@@ -864,11 +947,20 @@ export default function Contratos() {
       return isNaN(parsed) ? null : parsed;
     };
     
+    // Convertir fechas usando dayjs para evitar problemas de zona horaria
+    // dayjs crea la fecha en hora local, no UTC
+    const fechaInicioDate = formData.fechaInicio 
+      ? dayjs(formData.fechaInicio).startOf('day').toDate()
+      : null;
+    const fechaFinDate = formData.fechaFin 
+      ? dayjs(formData.fechaFin).startOf('day').toDate()
+      : null;
+
     const submitData = {
       propiedadId: formData.propiedadId || null,
       inquilinoId: formData.inquilinoId || null,
-      fechaInicio: formData.fechaInicio ? new Date(formData.fechaInicio) : null,
-      fechaFin: formData.fechaFin ? new Date(formData.fechaFin) : null,
+      fechaInicio: fechaInicioDate,
+      fechaFin: fechaFinDate,
       duracionMeses: parseSafeInteger(formData.duracionMeses),
       frecuenciaAjusteMeses: parseSafeInteger(formData.frecuenciaAjusteMeses),
       montoInicial: parseMonto(formData.montoInicial),
@@ -917,13 +1009,8 @@ export default function Contratos() {
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
         <Table size="small" sx={{
-          '& .MuiTableCell-root': {
-            padding: '6px 16px',
-            fontSize: '0.875rem'
-          },
-          '& .MuiTableCell-head': {
-            padding: '8px 16px'
-          }
+          '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' },
+          '& .MuiTableCell-head': { py: 0.5, px: 1 }
         }}>
           <TableHead>
             <TableRow>
@@ -945,9 +1032,9 @@ export default function Contratos() {
               let estadoReal = estadoCodigo;
               let esVencido = false;
               if (contrato.fechaFin && !['FINALIZADO', 'CANCELADO', 'ANULADO'].includes(estadoCodigo)) {
-                const fechaFin = dayjs(contrato.fechaFin);
-                const hoy = dayjs();
-                if (fechaFin.isBefore(hoy, 'day')) {
+                const fechaFin = parseFechaLocal(contrato.fechaFin);
+                const hoy = dayjs().startOf('day');
+                if (fechaFin && fechaFin.isBefore(hoy, 'day')) {
                   esVencido = true;
                   if (estadoCodigo === 'VIGENTE' || estadoCodigo === 'BORRADOR' || estadoCodigo === 'vigente' || estadoCodigo === 'borrador') {
                     estadoReal = 'vencido';
@@ -975,9 +1062,9 @@ export default function Contratos() {
                       }).join(', ')
                     : <em style={{ color: '#999' }}>Sin propietario</em>}
                 </TableCell>
-                <TableCell>{dayjs(contrato.fechaInicio).format('DD/MM/YYYY')}</TableCell>
+                <TableCell>{parseFechaLocal(contrato.fechaInicio)?.format('DD/MM/YYYY') || '-'}</TableCell>
                 <TableCell>
-                  {contrato.fechaFin ? dayjs(contrato.fechaFin).format('DD/MM/YYYY') : 'Indefinido'}
+                  {contrato.fechaFin ? parseFechaLocal(contrato.fechaFin)?.format('DD/MM/YYYY') : 'Indefinido'}
                 </TableCell>
                 <TableCell>
                   ${parseFloat(contrato.montoInicial).toLocaleString('es-AR', {
@@ -999,7 +1086,7 @@ export default function Contratos() {
                     title={esVencido && contrato.estadoContratoId && contrato.estado?.codigo !== 'VENCIDO' ? 'Contrato vencido (no actualizado en BD)' : ''}
                   />
                 </TableCell>
-                <TableCell sx={{ padding: '4px 8px' }}>
+                <TableCell>
                   <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
                     <IconButton size="small" onClick={() => handleView(contrato.id)} title="Ver detalle" sx={{ padding: '4px' }}>
                       <VisibilityIcon fontSize="small" />
@@ -1009,6 +1096,7 @@ export default function Contratos() {
                     </IconButton>
                     <IconButton
                       size="small"
+                      color="error"
                       onClick={() => {
                         if (window.confirm('¿Está seguro de eliminar este contrato?')) {
                           deleteMutation.mutate(contrato.id);
@@ -1046,9 +1134,9 @@ export default function Contratos() {
             let estadoReal = estadoCodigo;
             let esVencido = false;
             if (contrato.fechaFin && !['FINALIZADO', 'ANULADO', 'CANCELADO', 'RESCINDIDO'].includes(estadoCodigo)) {
-              const fechaFin = dayjs(contrato.fechaFin);
-              const hoy = dayjs();
-              if (fechaFin.isBefore(hoy, 'day')) {
+              const fechaFin = parseFechaLocal(contrato.fechaFin);
+              const hoy = dayjs().startOf('day');
+              if (fechaFin && fechaFin.isBefore(hoy, 'day')) {
                 esVencido = true;
                 // Solo mostrar como vencido si el estado actual permite esa transición
                 if (['VIGENTE', 'BORRADOR', 'vigente', 'borrador', 'activo', 'pendiente_de_firma', 'prorrogado'].includes(estadoCodigo)) {
@@ -1076,6 +1164,7 @@ export default function Contratos() {
                       </IconButton>
                       <IconButton
                         size="small"
+                        color="error"
                         onClick={() => {
                           if (window.confirm('¿Está seguro de eliminar este contrato?')) {
                             deleteMutation.mutate(contrato.id);
@@ -1119,13 +1208,13 @@ export default function Contratos() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <CalendarTodayIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                       <Typography variant="body2">
-                        <strong>Inicio:</strong> {dayjs(contrato.fechaInicio).format('DD/MM/YYYY')}
+                        <strong>Inicio:</strong> {parseFechaLocal(contrato.fechaInicio)?.format('DD/MM/YYYY') || '-'}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       <CalendarTodayIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
                       <Typography variant="body2">
-                        <strong>Fin:</strong> {contrato.fechaFin ? dayjs(contrato.fechaFin).format('DD/MM/YYYY') : 'Indefinido'}
+                        <strong>Fin:</strong> {contrato.fechaFin ? parseFechaLocal(contrato.fechaFin)?.format('DD/MM/YYYY') : 'Indefinido'}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -1200,6 +1289,7 @@ export default function Contratos() {
                 <Tab label="Gastos Iniciales" />
                 <Tab label="Responsabilidades" />
                 <Tab label="Garantías" />
+                <Tab label="Ajustes" />
               </Tabs>
 
               <TabPanel value={tabValue} index={0}>
@@ -1621,6 +1711,21 @@ export default function Contratos() {
                   setGarantiasTemporales={setGarantiasTemporales}
                 />
               </TabPanel>
+
+              <TabPanel value={tabValue} index={4}>
+                <ContratoAjustesTab
+                  contratoId={editingId}
+                  fechaInicio={formData.fechaInicio}
+                  fechaFin={formData.fechaFin}
+                  montoActual={formData.montoActual}
+                  onContratoUpdated={() => {
+                    queryClient.invalidateQueries({ queryKey: ['contrato', selectedContrato] });
+                    queryClient.invalidateQueries({ queryKey: ['contratos'] });
+                  }}
+                  openNuevoAjuste={tabValue === 4 && openNuevoAjusteModal}
+                  onCloseNuevoAjuste={() => setOpenNuevoAjusteModal(false)}
+                />
+              </TabPanel>
             </Box>
           </DialogContent>
           <DialogActions>
@@ -1662,6 +1767,373 @@ export default function Contratos() {
         </Alert>
       </Snackbar>
     </Box>
+  );
+}
+
+// Componente pestaña Ajustes de alquiler (historial, nuevo, editar, ver, anular)
+function ContratoAjustesTab({
+  contratoId,
+  fechaInicio,
+  fechaFin,
+  montoActual,
+  onContratoUpdated,
+  openNuevoAjusteModal,
+  onCloseNuevoAjuste
+}) {
+  const queryClient = useQueryClient();
+  const [modalNuevo, setModalNuevo] = useState(false);
+  const [modalEditar, setModalEditar] = useState(false);
+  const [modalVer, setModalVer] = useState(false);
+  const [anulandoAjuste, setAnulandoAjuste] = useState(null);
+  const [ajusteSeleccionado, setAjusteSeleccionado] = useState(null);
+  const [formAjuste, setFormAjuste] = useState({ fechaAjuste: '', montoNuevo: '', montoAnterior: '' });
+  const [errorAjuste, setErrorAjuste] = useState('');
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
+
+  const { data: ajustes = [], refetch: refetchAjustes } = useQuery({
+    queryKey: ['contrato-ajustes', contratoId],
+    queryFn: async () => {
+      const res = await api.get(`/contratos/${contratoId}/ajustes`);
+      return res.data;
+    },
+    enabled: !!contratoId
+  });
+
+  const montoActualNum = useMemo(() => {
+    if (montoActual === undefined || montoActual === null || montoActual === '') return null;
+    const v = typeof montoActual === 'string' ? parseNumberFromFormatted(montoActual) : montoActual;
+    return parseFloat(v);
+  }, [montoActual]);
+
+  // Monto anterior para un nuevo ajuste: último del historial (ajustes ordenados por fecha desc) o monto actual del contrato
+  const montoAnteriorParaNuevo = useMemo(() => {
+    if (ajustes?.length > 0 && ajustes[0].montoNuevo != null) {
+      return Number(ajustes[0].montoNuevo);
+    }
+    return montoActualNum;
+  }, [ajustes, montoActualNum]);
+
+  useEffect(() => {
+    if (openNuevoAjusteModal && contratoId) {
+      setModalNuevo(true);
+      setFormAjuste({
+        fechaAjuste: dayjs().format('YYYY-MM-DD'),
+        montoNuevo: '',
+        montoAnterior: montoAnteriorParaNuevo != null ? String(montoAnteriorParaNuevo) : ''
+      });
+      onCloseNuevoAjuste?.();
+    }
+  }, [openNuevoAjusteModal, contratoId, montoAnteriorParaNuevo, onCloseNuevoAjuste]);
+
+  const createMutation = useMutation({
+    mutationFn: (body) => api.post(`/contratos/${contratoId}/ajustes`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contrato-ajustes', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contrato', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contratos'] });
+      onContratoUpdated?.();
+      setModalNuevo(false);
+      setSnackbar({ open: true, message: 'Ajuste creado correctamente', severity: 'success' });
+      setErrorAjuste('');
+    },
+    onError: (err) => {
+      setErrorAjuste(err.response?.data?.error || 'Error al crear ajuste');
+    }
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ ajusteId, body }) => api.put(`/contratos/${contratoId}/ajustes/${ajusteId}`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contrato-ajustes', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contrato', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contratos'] });
+      onContratoUpdated?.();
+      setModalEditar(false);
+      setAjusteSeleccionado(null);
+      setSnackbar({ open: true, message: 'Ajuste actualizado', severity: 'success' });
+    },
+    onError: (err) => {
+      setErrorAjuste(err.response?.data?.error || 'Error al actualizar ajuste');
+    }
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (ajusteId) => api.delete(`/contratos/${contratoId}/ajustes/${ajusteId}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contrato-ajustes', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contrato', contratoId] });
+      queryClient.invalidateQueries({ queryKey: ['contratos'] });
+      onContratoUpdated?.();
+      setAnulandoAjuste(null);
+      setSnackbar({ open: true, message: 'Ajuste anulado', severity: 'success' });
+    },
+    onError: (err) => {
+      setSnackbar({ open: true, message: err.response?.data?.error || 'Error al anular', severity: 'error' });
+    }
+  });
+
+  const porcentajeCalculado = useMemo(() => {
+    const ant = parseFloat(parseNumberFromFormatted(formAjuste.montoAnterior));
+    const nuevo = parseFloat(parseNumberFromFormatted(formAjuste.montoNuevo));
+    if (!ant || ant === 0 || !formAjuste.montoNuevo) return null;
+    return (((nuevo - ant) / ant) * 100).toFixed(2);
+  }, [formAjuste.montoAnterior, formAjuste.montoNuevo]);
+
+  const handleOpenNuevo = () => {
+    setErrorAjuste('');
+    setFormAjuste({
+      fechaAjuste: dayjs().format('YYYY-MM-DD'),
+      montoNuevo: '',
+      montoAnterior: montoAnteriorParaNuevo != null ? String(montoAnteriorParaNuevo) : ''
+    });
+    setModalNuevo(true);
+  };
+
+  const handleSubmitNuevo = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setErrorAjuste('');
+    const montoNuevo = parseFloat(parseNumberFromFormatted(formAjuste.montoNuevo));
+    if (!montoNuevo || montoNuevo <= 0) {
+      setErrorAjuste('El monto nuevo debe ser mayor a 0');
+      return;
+    }
+    const fecha = formAjuste.fechaAjuste ? new Date(formAjuste.fechaAjuste) : new Date();
+    const fechaIni = fechaInicio ? new Date(fechaInicio) : null;
+    if (fechaIni && fecha < fechaIni) {
+      setErrorAjuste('La fecha de ajuste no puede ser anterior al inicio del contrato');
+      return;
+    }
+    if (fechaFin) {
+      const fechaF = new Date(fechaFin);
+      if (fecha > fechaF) {
+        setErrorAjuste('La fecha de ajuste no puede ser posterior al fin del contrato');
+        return;
+      }
+    }
+    createMutation.mutate({ fechaAjuste: formAjuste.fechaAjuste, montoNuevo });
+  };
+
+  const handleOpenEditar = (ajuste) => {
+    setAjusteSeleccionado(ajuste);
+    setErrorAjuste('');
+    setFormAjuste({
+      fechaAjuste: parseFechaLocal(ajuste.fechaAjuste).format('YYYY-MM-DD'),
+      montoAnterior: String(Number(ajuste.montoAnterior)),
+      montoNuevo: formatNumberWithThousands(Number(ajuste.montoNuevo))
+    });
+    setModalEditar(true);
+  };
+
+  const handleSubmitEditar = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setErrorAjuste('');
+    const montoNuevo = parseFloat(parseNumberFromFormatted(formAjuste.montoNuevo));
+    if (!montoNuevo || montoNuevo <= 0) {
+      setErrorAjuste('El monto nuevo debe ser mayor a 0');
+      return;
+    }
+    updateMutation.mutate({
+      ajusteId: ajusteSeleccionado.id,
+      body: {
+        fechaAjuste: formAjuste.fechaAjuste,
+        montoAnterior: parseFloat(formAjuste.montoAnterior),
+        montoNuevo
+      }
+    });
+  };
+
+  const handleAnular = (ajuste) => setAnulandoAjuste(ajuste);
+  const confirmAnular = () => {
+    if (anulandoAjuste) deleteMutation.mutate(anulandoAjuste.id);
+  };
+
+  const fmtFecha = (f) => (f ? parseFechaLocal(f).format('DD/MM/YYYY') : '-');
+  const fmtMoneda = (v) => (v != null ? Number(v).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '-');
+  const fmtPct = (v) => (v != null ? `${Number(v).toFixed(2)}%` : '-');
+
+  if (!contratoId) {
+    return (
+      <Typography color="text.secondary">
+        Guardá el contrato para gestionar ajustes de alquiler.
+      </Typography>
+    );
+  }
+
+  return (
+    <>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+        <Typography variant="h6">Historial de Ajustes</Typography>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpenNuevo}>
+          Nuevo ajuste
+        </Button>
+      </Box>
+      <TableContainer component={Paper} variant="outlined">
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell><strong>Fecha ajuste</strong></TableCell>
+              <TableCell align="right"><strong>Monto anterior</strong></TableCell>
+              <TableCell align="right"><strong>Monto nuevo</strong></TableCell>
+              <TableCell align="right"><strong>% aumento</strong></TableCell>
+              <TableCell><strong>Usuario</strong></TableCell>
+              <TableCell align="right"><strong>Acciones</strong></TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {ajustes.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} align="center" color="text.secondary">
+                  No hay ajustes registrados
+                </TableCell>
+              </TableRow>
+            ) : (
+              ajustes.map((a) => (
+                <TableRow key={a.id}>
+                  <TableCell>{fmtFecha(a.fechaAjuste)}</TableCell>
+                  <TableCell align="right">{fmtMoneda(a.montoAnterior)}</TableCell>
+                  <TableCell align="right">{fmtMoneda(a.montoNuevo)}</TableCell>
+                  <TableCell align="right">{fmtPct(a.porcentajeAumento)}</TableCell>
+                  <TableCell>{a.createdById ?? '-'}</TableCell>
+                  <TableCell align="right">
+                    <IconButton size="small" onClick={() => { setAjusteSeleccionado(a); setModalVer(true); }} title="Ver">
+                      <VisibilityIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton size="small" onClick={() => handleOpenEditar(a)} title="Editar">
+                      <EditIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton size="small" onClick={() => handleAnular(a)} color="error" title="Anular">
+                      <DeleteIcon fontSize="small" />
+                    </IconButton>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </TableContainer>
+
+      {/* Modal Nuevo ajuste */}
+      <Dialog open={modalNuevo} onClose={() => setModalNuevo(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Nuevo ajuste</DialogTitle>
+        <form onSubmit={handleSubmitNuevo}>
+          <DialogContent>
+            {errorAjuste && <Alert severity="error" sx={{ mb: 2 }}>{errorAjuste}</Alert>}
+            <Grid container spacing={2}>
+              <Grid item xs={12}>
+                <TextField fullWidth label="Fecha ajuste" type="date" value={formAjuste.fechaAjuste} onChange={(e) => setFormAjuste((p) => ({ ...p, fechaAjuste: e.target.value }))} InputLabelProps={{ shrink: true }} />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField fullWidth label="Monto anterior" value={formatNumberWithThousands(formAjuste.montoAnterior)} disabled InputProps={{ readOnly: true }} />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Monto nuevo *"
+                  type="text"
+                  value={formAjuste.montoNuevo}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === '' || /^[\d.,]*$/.test(value)) setFormAjuste((p) => ({ ...p, montoNuevo: value }));
+                  }}
+                  onBlur={(e) => {
+                    const formatted = formatNumberWithThousands(parseNumberFromFormatted(e.target.value));
+                    if (formatted !== '') setFormAjuste((p) => ({ ...p, montoNuevo: formatted }));
+                  }}
+                  required
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField fullWidth label="% aumento" value={porcentajeCalculado != null ? `${porcentajeCalculado}%` : '-'} disabled />
+              </Grid>
+            </Grid>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setModalNuevo(false)}>Cancelar</Button>
+            <Button type="submit" variant="contained" disabled={createMutation.isPending}>Guardar</Button>
+          </DialogActions>
+        </form>
+      </Dialog>
+
+      {/* Modal Editar ajuste */}
+      <Dialog open={modalEditar} onClose={() => { setModalEditar(false); setAjusteSeleccionado(null); }} maxWidth="sm" fullWidth>
+        <DialogTitle>Editar ajuste</DialogTitle>
+        <form onSubmit={handleSubmitEditar}>
+          <DialogContent>
+            {errorAjuste && <Alert severity="error" sx={{ mb: 2 }}>{errorAjuste}</Alert>}
+            <Grid container spacing={2}>
+              <Grid item xs={12}>
+                <TextField fullWidth label="Fecha ajuste" type="date" value={formAjuste.fechaAjuste} onChange={(e) => setFormAjuste((p) => ({ ...p, fechaAjuste: e.target.value }))} InputLabelProps={{ shrink: true }} />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField fullWidth label="Monto anterior" value={formatNumberWithThousands(formAjuste.montoAnterior)} disabled InputProps={{ readOnly: true }} />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField
+                  fullWidth
+                  label="Monto nuevo *"
+                  type="text"
+                  value={formAjuste.montoNuevo}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === '' || /^[\d.,]*$/.test(value)) setFormAjuste((p) => ({ ...p, montoNuevo: value }));
+                  }}
+                  onBlur={(e) => {
+                    const formatted = formatNumberWithThousands(parseNumberFromFormatted(e.target.value));
+                    if (formatted !== '') setFormAjuste((p) => ({ ...p, montoNuevo: formatted }));
+                  }}
+                  required
+                />
+              </Grid>
+              <Grid item xs={12}>
+                <TextField fullWidth label="% aumento" value={porcentajeCalculado != null ? `${porcentajeCalculado}%` : '-'} disabled />
+              </Grid>
+            </Grid>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => { setModalEditar(false); setAjusteSeleccionado(null); }}>Cancelar</Button>
+            <Button type="submit" variant="contained" disabled={updateMutation.isPending}>Guardar</Button>
+          </DialogActions>
+        </form>
+      </Dialog>
+
+      {/* Modal Ver detalle ajuste */}
+      <Dialog open={modalVer} onClose={() => { setModalVer(false); setAjusteSeleccionado(null); }}>
+        <DialogTitle>Detalle del ajuste</DialogTitle>
+        <DialogContent>
+          {ajusteSeleccionado && (
+            <Grid container spacing={2}>
+              <Grid item xs={12}><Typography variant="body2"><strong>Fecha ajuste:</strong> {fmtFecha(ajusteSeleccionado.fechaAjuste)}</Typography></Grid>
+              <Grid item xs={12}><Typography variant="body2"><strong>Monto anterior:</strong> {fmtMoneda(ajusteSeleccionado.montoAnterior)}</Typography></Grid>
+              <Grid item xs={12}><Typography variant="body2"><strong>Monto nuevo:</strong> {fmtMoneda(ajusteSeleccionado.montoNuevo)}</Typography></Grid>
+              <Grid item xs={12}><Typography variant="body2"><strong>% aumento:</strong> {fmtPct(ajusteSeleccionado.porcentajeAumento)}</Typography></Grid>
+            </Grid>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setModalVer(false); setAjusteSeleccionado(null); }}>Cerrar</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Confirmar anulación */}
+      <Dialog open={!!anulandoAjuste} onClose={() => setAnulandoAjuste(null)}>
+        <DialogTitle>Anular ajuste</DialogTitle>
+        <DialogContent>
+          ¿Anular este ajuste? El monto actual del contrato se recalculará según el historial restante.
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAnulandoAjuste(null)}>Cancelar</Button>
+          <Button color="error" variant="contained" onClick={confirmAnular} disabled={deleteMutation.isPending}>
+            Anular
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar open={snackbar.open} autoHideDuration={5000} onClose={() => setSnackbar((s) => ({ ...s, open: false }))} anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}>
+        <Alert severity={snackbar.severity} onClose={() => setSnackbar((s) => ({ ...s, open: false }))}>{snackbar.message}</Alert>
+      </Snackbar>
+    </>
   );
 }
 
@@ -1721,13 +2193,25 @@ function ContratoResponsabilidades({ contratoId, propiedadId, responsabilidadesT
     enabled: !!propiedadIdParaImpuestos
   });
 
+  const { data: tiposExpensa } = useQuery({
+    queryKey: ['tipos-expensa'],
+    queryFn: async () => {
+      const response = await api.get('/catalogos-abm/tipos-expensa');
+      return response.data || [];
+    }
+  });
+
   // Actores responsables (incluir todos, incluyendo Inmobiliaria)
   const actoresResponsablesFiltrados = useMemo(() => {
     if (!actoresResponsables) return [];
     return actoresResponsables.filter(a => a.activo === true);
   }, [actoresResponsables]);
 
-  // Combinar impuestos y cargos en una sola lista
+  // IDs por defecto para Expensas Extraordinarias (Inquilino paga, Propietario soporta)
+  const actorInquilinoId = useMemo(() => actoresResponsables?.find(a => a.codigo === 'INQ')?.id ?? null, [actoresResponsables]);
+  const actorPropietarioId = useMemo(() => actoresResponsables?.find(a => a.codigo === 'PROP')?.id ?? null, [actoresResponsables]);
+
+  // Combinar impuestos y cargos en una sola lista (sin Alquiler; Expensas como Ordinarias y Extraordinarias)
   const itemsCombinados = useMemo(() => {
     const items = [];
     
@@ -1740,58 +2224,90 @@ function ContratoResponsabilidades({ contratoId, propiedadId, responsabilidadesT
           tipoNombre: impuesto.tipoImpuesto?.nombre || impuesto.tipoImpuesto?.codigo || 'Sin nombre',
           tipoCodigo: impuesto.tipoImpuesto?.codigo || '',
           esImpuesto: true,
-          esCargo: false
+          esCargo: false,
+          tipoExpensaId: null
         });
       });
     }
     
-    // Agregar cargos
+    // Agregar cargos (excluir Alquiler; Expensas se abren en Ordinarias y Extraordinarias)
     if (cargosPropiedad && cargosPropiedad.length > 0) {
+      const tipoExpensaORD = tiposExpensa?.find(t => t.codigo === 'ORD');
+      const tipoExpensaEXT = tiposExpensa?.find(t => t.codigo === 'EXT');
       cargosPropiedad.forEach(cargo => {
+        const codigo = cargo.tipoCargo?.codigo || '';
+        if (codigo === 'ALQUILER') return;
+        if (codigo === 'EXPENSAS' && tiposExpensa?.length > 0) {
+          if (tipoExpensaORD) {
+            items.push({
+              id: cargo.id,
+              tipoId: cargo.tipoCargoId,
+              tipoNombre: 'Expensas Ordinarias',
+              tipoCodigo: 'EXPENSAS',
+              esImpuesto: false,
+              esCargo: true,
+              tipoExpensaId: tipoExpensaORD.id,
+              tipoExpensaCodigo: 'ORD'
+            });
+          }
+          if (tipoExpensaEXT) {
+            items.push({
+              id: `exp-ext-${cargo.id}`,
+              tipoId: cargo.tipoCargoId,
+              tipoNombre: 'Expensas Extraordinarias',
+              tipoCodigo: 'EXPENSAS',
+              esImpuesto: false,
+              esCargo: true,
+              tipoExpensaId: tipoExpensaEXT.id,
+              tipoExpensaCodigo: 'EXT'
+            });
+          }
+          return;
+        }
         items.push({
           id: cargo.id,
           tipoId: cargo.tipoCargoId,
           tipoNombre: cargo.tipoCargo?.nombre || cargo.tipoCargo?.codigo || 'Sin nombre',
-          tipoCodigo: cargo.tipoCargo?.codigo || '',
+          tipoCodigo: codigo,
           esImpuesto: false,
-          esCargo: true
+          esCargo: true,
+          tipoExpensaId: null
         });
       });
     }
     
     return items;
-  }, [impuestosPropiedad, cargosPropiedad]);
+  }, [impuestosPropiedad, cargosPropiedad, tiposExpensa]);
 
   // Obtener responsabilidades existentes del contrato
   const responsabilidadesExistentes = contrato?.responsabilidades || [];
 
-  // Función para obtener la responsabilidad de un item
-  // Prioriza responsabilidadesTemporales (cambios locales) sobre responsabilidadesExistentes (BD)
+  // Función para obtener la responsabilidad de un item (prioriza temporales, luego BD; default EXT = Inq paga, Prop soporta)
   const getResponsabilidadItem = (item) => {
-    // Primero buscar en responsabilidadesTemporales (cambios locales no guardados)
-    const responsabilidadTemporal = responsabilidadesTemporales.find(
-      resp => (item.esImpuesto && resp.tipoImpuestoId === item.tipoId) ||
-              (item.esCargo && resp.tipoCargoId === item.tipoId)
-    );
-    
-    if (responsabilidadTemporal) {
-      return responsabilidadTemporal;
-    }
-    
-    // Si no hay cambios locales, buscar en responsabilidadesExistentes (BD)
-    if (contratoId && responsabilidadesExistentes.length > 0) {
-      if (item.esImpuesto) {
-        return responsabilidadesExistentes.find(
-          resp => resp.tipoImpuestoId === item.tipoId
-        );
-      }
+    const matchResp = (resp) => {
+      if (item.esImpuesto) return resp.tipoImpuestoId === item.tipoId;
       if (item.esCargo) {
-        return responsabilidadesExistentes.find(
-          resp => resp.tipoCargoId === item.tipoId
-        );
+        if (resp.tipoCargoId !== item.tipoId) return false;
+        const respExp = (resp.tipoExpensaId ?? null);
+        const itemExp = (item.tipoExpensaId ?? null);
+        return respExp === itemExp;
       }
+      return false;
+    };
+    const responsabilidadTemporal = responsabilidadesTemporales.find(matchResp);
+    if (responsabilidadTemporal) return responsabilidadTemporal;
+    const existente = contratoId && responsabilidadesExistentes.length > 0
+      ? responsabilidadesExistentes.find(matchResp)
+      : null;
+    if (existente) return existente;
+    // Default Expensas Ordinarias: Inquilino paga, Inquilino soporta
+    if (item.esCargo && item.tipoExpensaCodigo === 'ORD' && actorInquilinoId != null) {
+      return { quienPagaProveedorId: actorInquilinoId, quienSoportaCostoId: actorInquilinoId };
     }
-    
+    // Default Expensas Extraordinarias: Inquilino paga, Propietario soporta
+    if (item.esCargo && item.tipoExpensaCodigo === 'EXT' && actorInquilinoId != null && actorPropietarioId != null) {
+      return { quienPagaProveedorId: actorInquilinoId, quienSoportaCostoId: actorPropietarioId };
+    }
     return null;
   };
 
@@ -1818,59 +2334,91 @@ function ContratoResponsabilidades({ contratoId, propiedadId, responsabilidadesT
     }
   });
 
-  // Handler para cambiar "Quién Paga"
-  // Solo actualiza el estado local, no guarda en BD hasta que se guarde el contrato
+  const mismoItem = (it, r) => {
+    if (it.esImpuesto) return r.tipoImpuestoId === it.tipoId;
+    if (it.esCargo) {
+      if (r.tipoCargoId !== it.tipoId) return false;
+      return (r.tipoExpensaId ?? null) === (it.tipoExpensaId ?? null);
+    }
+    return false;
+  };
+
   const handleQuienPagaChange = (item, nuevoQuienPagaId) => {
     const responsabilidadExistente = getResponsabilidadItem(item);
-    
     setResponsabilidadesTemporales(prev => {
-      const sinEsteItem = prev.filter(
-        r => (item.esImpuesto && r.tipoImpuestoId !== item.tipoId) ||
-             (item.esCargo && r.tipoCargoId !== item.tipoId)
-      );
-      
-      // Preservar el ID si existe (para actualizar) o crear nuevo
+      const sinEsteItem = prev.filter(r => !mismoItem(item, r));
       const nuevaResponsabilidad = {
         ...(responsabilidadExistente?.id && { id: responsabilidadExistente.id }),
         ...(item.esImpuesto ? { tipoImpuestoId: item.tipoId } : {}),
-        ...(item.esCargo ? { tipoCargoId: item.tipoId } : {}),
+        ...(item.esCargo ? { tipoCargoId: item.tipoId, ...(item.tipoExpensaId != null && { tipoExpensaId: item.tipoExpensaId }) } : {}),
         quienPagaProveedorId: nuevoQuienPagaId ? parseInt(nuevoQuienPagaId) : null,
-        quienSoportaCostoId: responsabilidadExistente?.quienSoportaCostoId || null
+        quienSoportaCostoId: responsabilidadExistente?.quienSoportaCostoId ?? null
       };
-      
-      if (nuevoQuienPagaId || responsabilidadExistente?.quienSoportaCostoId) {
-        return [...sinEsteItem, nuevaResponsabilidad];
-      }
+      if (nuevoQuienPagaId || nuevaResponsabilidad.quienSoportaCostoId) return [...sinEsteItem, nuevaResponsabilidad];
       return sinEsteItem;
     });
   };
 
-  // Handler para cambiar "Cobra a"
-  // Solo actualiza el estado local, no guarda en BD hasta que se guarde el contrato
   const handleQuienCobraChange = (item, nuevoQuienCobraId) => {
     const responsabilidadExistente = getResponsabilidadItem(item);
-    
     setResponsabilidadesTemporales(prev => {
-      const sinEsteItem = prev.filter(
-        r => (item.esImpuesto && r.tipoImpuestoId !== item.tipoId) ||
-             (item.esCargo && r.tipoCargoId !== item.tipoId)
-      );
-      
-      // Preservar el ID si existe (para actualizar) o crear nuevo
+      const sinEsteItem = prev.filter(r => !mismoItem(item, r));
       const nuevaResponsabilidad = {
         ...(responsabilidadExistente?.id && { id: responsabilidadExistente.id }),
         ...(item.esImpuesto ? { tipoImpuestoId: item.tipoId } : {}),
-        ...(item.esCargo ? { tipoCargoId: item.tipoId } : {}),
-        quienPagaProveedorId: responsabilidadExistente?.quienPagaProveedorId || null,
+        ...(item.esCargo ? { tipoCargoId: item.tipoId, ...(item.tipoExpensaId != null && { tipoExpensaId: item.tipoExpensaId }) } : {}),
+        quienPagaProveedorId: responsabilidadExistente?.quienPagaProveedorId ?? null,
         quienSoportaCostoId: nuevoQuienCobraId ? parseInt(nuevoQuienCobraId) : null
       };
-      
-      if (nuevoQuienCobraId || responsabilidadExistente?.quienPagaProveedorId) {
-        return [...sinEsteItem, nuevaResponsabilidad];
-      }
+      if (nuevoQuienCobraId || nuevaResponsabilidad.quienPagaProveedorId) return [...sinEsteItem, nuevaResponsabilidad];
       return sinEsteItem;
     });
   };
+
+  // Inicializar defaults: ORD = Inquilino/Inquilino, EXT = Inquilino/Propietario, si no existen en BD ni en temporales
+  useEffect(() => {
+    if (!itemsCombinados?.length || !actorInquilinoId) return;
+    const toAdd = [];
+    const ordItem = itemsCombinados.find(it => it.tipoExpensaCodigo === 'ORD');
+    if (ordItem) {
+      const yaExiste = responsabilidadesExistentes.some(
+        r => r.tipoCargoId === ordItem.tipoId && r.tipoExpensaId === ordItem.tipoExpensaId
+      );
+      const yaEnTemporales = responsabilidadesTemporales.some(
+        r => r.tipoCargoId === ordItem.tipoId && (r.tipoExpensaId ?? null) === ordItem.tipoExpensaId
+      );
+      if (!yaExiste && !yaEnTemporales) {
+        toAdd.push({
+          tipoCargoId: ordItem.tipoId,
+          tipoExpensaId: ordItem.tipoExpensaId,
+          quienPagaProveedorId: actorInquilinoId,
+          quienSoportaCostoId: actorInquilinoId
+        });
+      }
+    }
+    if (actorPropietarioId) {
+      const extItem = itemsCombinados.find(it => it.tipoExpensaCodigo === 'EXT');
+      if (extItem) {
+        const yaExiste = responsabilidadesExistentes.some(
+          r => r.tipoCargoId === extItem.tipoId && r.tipoExpensaId === extItem.tipoExpensaId
+        );
+        const yaEnTemporales = responsabilidadesTemporales.some(
+          r => r.tipoCargoId === extItem.tipoId && (r.tipoExpensaId ?? null) === extItem.tipoExpensaId
+        );
+        if (!yaExiste && !yaEnTemporales) {
+          toAdd.push({
+            tipoCargoId: extItem.tipoId,
+            tipoExpensaId: extItem.tipoExpensaId,
+            quienPagaProveedorId: actorInquilinoId,
+            quienSoportaCostoId: actorPropietarioId
+          });
+        }
+      }
+    }
+    if (toAdd.length > 0) {
+      setResponsabilidadesTemporales(prev => [...prev, ...toAdd]);
+    }
+  }, [itemsCombinados, responsabilidadesExistentes, actorInquilinoId, actorPropietarioId]);
 
   // Sincronizar responsabilidadesTemporales con el ref cuando cambien
   useEffect(() => {
@@ -1915,7 +2463,7 @@ function ContratoResponsabilidades({ contratoId, propiedadId, responsabilidadesT
               {itemsCombinados.map((item) => {
                 const responsabilidad = getResponsabilidadItem(item);
                 return (
-                  <TableRow key={`${item.esImpuesto ? 'imp' : 'carg'}-${item.id}`} sx={{ '& .MuiTableCell-root': { py: 0.5 } }}>
+                  <TableRow key={`${item.esImpuesto ? 'imp' : 'carg'}-${item.tipoId}-${item.tipoExpensaId ?? 'n'}`} sx={{ '& .MuiTableCell-root': { py: 0.5 } }}>
                     <TableCell sx={{ py: 0.5, fontSize: '0.875rem' }}>
                       {item.tipoNombre}
                     </TableCell>
@@ -2266,6 +2814,7 @@ function ContratoGarantias({ contratoId, garantiasTemporales, setGarantiasTempor
                     )}
                     <IconButton
                       size="small"
+                      color="error"
                       onClick={() => handleDelete(index, garantia.id)}
                     >
                       <DeleteIcon fontSize="small" />
@@ -3029,10 +3578,10 @@ function ContratoGastosIniciales({ contratoId, montoInicial, duracionMeses, gast
   };
 
 
-  // Obtener descripción del gasto desde el catálogo
+  // Obtener descripción del gasto desde el catálogo (solo por id; código es editable por el usuario)
   const getDescripcionGasto = (gasto) => {
-    if (!tiposGastoActivos) return gasto.tipoGastoInicialCodigo || 'Sin nombre';
-    const tipoGasto = tiposGastoActivos.find(t => t.id === gasto.tipoGastoInicialId || t.codigo === gasto.tipoGastoInicialCodigo);
+    if (!tiposGastoActivos || !gasto.tipoGastoInicialId) return gasto.tipoGastoInicialCodigo || 'Sin nombre';
+    const tipoGasto = tiposGastoActivos.find(t => t.id === gasto.tipoGastoInicialId);
     const nombre = tipoGasto?.nombre || gasto.tipoGastoInicialCodigo || 'Sin nombre';
     
     // Determinar el valor a mostrar entre paréntesis
@@ -3313,7 +3862,7 @@ function ContratoDetalle({ contrato }) {
 
   const formatoFecha = (fecha) => {
     if (!fecha) return '-';
-    return dayjs(fecha).format('DD/MM/YYYY');
+    return parseFechaLocal(fecha)?.format('DD/MM/YYYY') || '-';
   };
 
   const periodoAjuste = contrato.periodoAumento || contrato.frecuenciaAjusteMeses || null;
@@ -3622,32 +4171,21 @@ function ContratoDetalle({ contrato }) {
                   Configurá ajustes desde la pestaña "Ajustes" en la edición del contrato.
                 </Typography>
               </Box>
-              {contrato.ajustes && contrato.ajustes.length > 0 ? (
+              {contrato.ajustes && contrato.ajustes.filter((a) => a.activo !== false).length > 0 ? (
                 <TableContainer>
                   <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.75rem' } }}>
                     <TableHead>
                       <TableRow>
                         <TableCell padding="none"><strong>Fecha</strong></TableCell>
-                        <TableCell padding="none"><strong>Índice</strong></TableCell>
-                        <TableCell padding="none" align="right"><strong>Valor</strong></TableCell>
                         <TableCell padding="none" align="right"><strong>Monto anterior</strong></TableCell>
                         <TableCell padding="none" align="right"><strong>Monto nuevo</strong></TableCell>
                         <TableCell padding="none" align="right"><strong>% Aumento</strong></TableCell>
-                        <TableCell padding="none"><strong>Origen</strong></TableCell>
-                        <TableCell padding="none"><strong>Observaciones</strong></TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {contrato.ajustes.map((ajuste) => (
+                      {contrato.ajustes.filter((a) => a.activo !== false).map((ajuste) => (
                         <TableRow key={ajuste.id}>
                           <TableCell padding="none">{formatoFecha(ajuste.fechaAjuste)}</TableCell>
-                          <TableCell padding="none">{ajuste.indiceUsado}</TableCell>
-                          <TableCell padding="none" align="right">
-                            {parseFloat(ajuste.valorIndice).toLocaleString('es-AR', {
-                              minimumFractionDigits: 4,
-                              maximumFractionDigits: 4
-                            })}
-                          </TableCell>
                           <TableCell padding="none" align="right">
                             {formatoMoneda(ajuste.montoAnterior)}
                           </TableCell>
@@ -3660,8 +4198,6 @@ function ContratoDetalle({ contrato }) {
                               maximumFractionDigits: 2
                             })}%
                           </TableCell>
-                          <TableCell padding="none">{ajuste.origen === 'automatico' ? 'Automático' : 'Manual'}</TableCell>
-                          <TableCell padding="none">{ajuste.observaciones || '-'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

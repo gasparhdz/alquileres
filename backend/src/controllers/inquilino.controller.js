@@ -111,28 +111,64 @@ export const updateInquilino = async (req, res) => {
     const { id } = req.params;
     const data = req.body;
 
+    // Verificar que el inquilino existe y no está eliminado
     const inquilino = await prisma.inquilino.findFirst({
-      where: { id, isDeleted: false }
+      where: { 
+        id: parseInt(id), 
+        deletedAt: null,
+        activo: true
+      }
     });
 
     if (!inquilino) {
       return res.status(404).json({ error: 'Inquilino no encontrado' });
     }
 
+    // Filtrar solo los campos editables y preparar datos
+    const {
+      id: _id,
+      createdAt,
+      updatedAt,
+      deletedAt,
+      activo,
+      ...updateData
+    } = data;
+
+    // Preparar datos de actualización con validación y conversión de tipos
+    const inquilinoUpdateData = {
+      nombre: updateData.nombre?.trim() || null,
+      apellido: updateData.apellido?.trim() || null,
+      razonSocial: updateData.razonSocial?.trim() || null,
+      dni: updateData.dni?.trim() || null,
+      cuit: updateData.cuit?.trim() || null,
+      mail: updateData.mail?.trim() || null,
+      telefono: updateData.telefono?.trim() || null,
+      dirCalle: updateData.dirCalle?.trim() || null,
+      dirNro: updateData.dirNro?.trim() || null,
+      dirPiso: updateData.dirPiso?.trim() || null,
+      dirDepto: updateData.dirDepto?.trim() || null,
+      localidadId: updateData.localidadId ? parseInt(updateData.localidadId) : null,
+      provinciaId: updateData.provinciaId ? parseInt(updateData.provinciaId) : null,
+      tipoPersonaId: updateData.tipoPersonaId ? parseInt(updateData.tipoPersonaId) : null,
+      condicionIvaId: updateData.condicionIvaId ? parseInt(updateData.condicionIvaId) : null
+    };
+
     const updated = await prisma.inquilino.update({
-      where: { id },
-      data
+      where: { id: parseInt(id) },
+      data: inquilinoUpdateData
     });
 
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar inquilino:', error);
+    console.error('Error details:', error.message);
+    console.error('Data received:', req.body);
     
     if (error.code === 'P2002') {
-      return res.status(400).json({ error: 'Ya existe un inquilino con estos datos' });
+      return res.status(400).json({ error: 'Ya existe un inquilino con estos datos (DNI/CUIT duplicado)' });
     }
 
-    res.status(500).json({ error: 'Error al actualizar inquilino' });
+    res.status(500).json({ error: 'Error al actualizar inquilino', details: error.message });
   }
 };
 
@@ -141,7 +177,11 @@ export const deleteInquilino = async (req, res) => {
     const { id } = req.params;
 
     const inquilino = await prisma.inquilino.findFirst({
-      where: { id, isDeleted: false }
+      where: { 
+        id: parseInt(id), 
+        deletedAt: null,
+        activo: true
+      }
     });
 
     if (!inquilino) {
@@ -150,7 +190,7 @@ export const deleteInquilino = async (req, res) => {
 
     // Baja lógica
     await prisma.inquilino.update({
-      where: { id },
+      where: { id: parseInt(id) },
       data: {
         activo: false,
         deletedAt: new Date()

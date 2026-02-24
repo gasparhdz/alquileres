@@ -269,6 +269,8 @@ model TipoImpuestoPropiedad {
   codigo         String @unique // "AGUA", "LUZ", "GAS", "TGI", "API", etc.
   nombre         String // "Agua", "Luz", "Gas", etc.
   periodicidadId Int?   @map("periodicidad_id") // Periodicidad por defecto
+  usuario        String? // Usuario de la oficina virtual
+  password       String? // Contraseña de la oficina virtual
 
   activo Boolean @default(true)
 
@@ -324,7 +326,8 @@ model TipoExpensa {
   deletedAt   DateTime? @map("deleted_at")
   deletedById Int?      @map("deleted_by_id")
 
-  items LiquidacionItem[]
+  items            LiquidacionItem[]
+  responsabilidades ContratoResponsabilidad[]
 
   @@map("tipos_expensa")
 }
@@ -344,6 +347,7 @@ model PeriodicidadImpuesto {
   deletedById Int? @map("deleted_by_id")
 
   impuestos            PropiedadImpuesto[]
+  cargos               PropiedadCargo[]
   tiposImpuestoDefault TipoImpuestoPropiedad[] @relation("TiposImpuestoPeriodicidadDefault")
   tiposCargoDefault    TipoCargo[]             @relation("TiposCargoPeriodicidadDefault")
 
@@ -475,6 +479,7 @@ model ActorResponsableContrato {
 
   itemsComoFacturado  LiquidacionItem[]      @relation("ActorFacturadoItem")
   itemsComoSoportante LiquidacionItem[]      @relation("ActorSoportaCostoItem")
+  itemsComoPagador    LiquidacionItem[]      @relation("ActorPagoProveedorItem")
   gastosIniciales     ContratoGastoInicial[]
 
   @@map("actores_responsable_contrato")
@@ -844,9 +849,10 @@ model PropiedadImpuesto {
 }
 
 model PropiedadCargo {
-  id          Int @id @default(autoincrement())
-  propiedadId Int @map("propiedad_id")
-  tipoCargoId Int @map("tipo_cargo_id") // "ALQUILER", "EXPENSAS", "SEGURO", "GASTO_EXTRA", etc.
+  id             Int  @id @default(autoincrement())
+  propiedadId    Int  @map("propiedad_id")
+  tipoCargoId    Int  @map("tipo_cargo_id") // "ALQUILER", "EXPENSAS", "SEGURO", "GASTO_EXTRA", etc.
+  periodicidadId Int? @map("periodicidad_id")
 
   activo Boolean @default(true)
 
@@ -857,9 +863,10 @@ model PropiedadCargo {
   deletedAt   DateTime? @map("deleted_at")
   deletedById Int?      @map("deleted_by_id")
 
-  propiedad Propiedad             @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  tipoCargo TipoCargo             @relation(fields: [tipoCargoId], references: [id])
-  campos    PropiedadCargoCampo[]
+  propiedad    Propiedad             @relation(fields: [propiedadId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  tipoCargo    TipoCargo             @relation(fields: [tipoCargoId], references: [id])
+  periodicidad PeriodicidadImpuesto? @relation(fields: [periodicidadId], references: [id])
+  campos        PropiedadCargoCampo[]
 
   @@unique([propiedadId, tipoCargoId], name: "unique_propiedad_cargo")
   @@map("propiedad_cargos")
@@ -935,14 +942,15 @@ model ContratoResponsabilidad {
   id         Int @id @default(autoincrement())
   contratoId Int @map("contrato_id")
 
-  // Qué impuesto/cargo aplica (AGUA, LUZ, GAS, EXP_ORD, EXP_EXT, etc.)
+  // Qué impuesto/cargo aplica (AGUA, LUZ, GAS, EXPENSAS, etc.)
   tipoImpuestoId Int? @map("tipo_impuesto_id") // TipoImpuestoPropiedad (opcional si es cargo)
   tipoCargoId    Int? @map("tipo_cargo_id") // TipoCargo (opcional si es impuesto)
+  tipoExpensaId  Int? @map("tipo_expensa_id") // TipoExpensa (solo para cargo EXPENSAS: ORD o EXT)
 
   // Quién paga la boleta al proveedor (ADMIN, INQ, PROP)
   quienPagaProveedorId Int @map("quien_paga_proveedor_id")
 
-  // A quién se le cobra / quién soporta el costo (INQ o PROP en tu modelo actual)
+  // A quién se le cobra / quién soporta el costo (INQ o PROP)
   quienSoportaCostoId Int @map("quien_soporta_costo_id")
 
   // Opcional: un campo de texto para aclarar titular/casos especiales
@@ -959,11 +967,12 @@ model ContratoResponsabilidad {
   contrato           Contrato                 @relation(fields: [contratoId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   tipoImpuesto       TipoImpuestoPropiedad?   @relation(fields: [tipoImpuestoId], references: [id])
   tipoCargo          TipoCargo?               @relation(fields: [tipoCargoId], references: [id])
+  tipoExpensa        TipoExpensa?              @relation(fields: [tipoExpensaId], references: [id])
   quienPagaProveedor ActorResponsableContrato @relation("RespPagaProveedor", fields: [quienPagaProveedorId], references: [id])
   quienSoportaCosto  ActorResponsableContrato @relation("RespSoportaCosto", fields: [quienSoportaCostoId], references: [id])
 
   @@unique([contratoId, tipoImpuestoId], name: "unique_contrato_impuesto")
-  @@unique([contratoId, tipoCargoId], name: "unique_contrato_cargo")
+  @@unique([contratoId, tipoCargoId, tipoExpensaId], name: "unique_contrato_cargo_tipo_expensa")
   @@map("contrato_responsabilidades")
 }
 
@@ -1100,9 +1109,11 @@ model LiquidacionItem {
   contratoGastoInicialId   Int?     @map("contrato_gasto_inicial_id")
   periodoRef               String?  @map("periodo_ref")
   importe                  Decimal? @db.Decimal(12, 2)
+  vencimiento               DateTime? @map("vencimiento")
   estadoItemId             Int      @map("estado_item_id") // FK -> EstadoItemLiquidacion
   actorFacturadoId         Int?     @map("actor_facturado_id") // FK -> ActorResponsableContrato
   quienSoportaCostoId      Int?     @map("quien_soporta_costo_id") // FK -> ActorResponsableContrato
+  pagadoPorActorId         Int?     @map("pagado_por_actor_id") // FK -> ActorResponsableContrato (quién pagó efectivamente)
   visibleEnBoletaInquilino Boolean  @default(true) @map("visible_en_boleta_inq")
   afectaSaldoInquilino     Boolean  @default(true) @map("afecta_saldo_inq")
   refExterna               String?  @map("ref_externa") // nro de factura, comprobante, etc.
@@ -1128,6 +1139,7 @@ model LiquidacionItem {
 
   actorFacturado       ActorResponsableContrato? @relation("ActorFacturadoItem", fields: [actorFacturadoId], references: [id])
   quienSoportaCosto    ActorResponsableContrato? @relation("ActorSoportaCostoItem", fields: [quienSoportaCostoId], references: [id])
+  pagadoPorActor       ActorResponsableContrato? @relation("ActorPagoProveedorItem", fields: [pagadoPorActorId], references: [id])
   contratoGastoInicial ContratoGastoInicial?     @relation(fields: [contratoGastoInicialId], references: [id])
 
   @@index([estadoItemId])

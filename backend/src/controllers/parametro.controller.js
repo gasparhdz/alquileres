@@ -14,16 +14,46 @@ const prisma = getPrisma();
 
 export const getAllCategorias = async (req, res) => {
   try {
-    const categorias = await prisma.categoria.findMany({
-      include: {
+    // Obtener conteos de cada categoría
+    const [estadoLiquidacionCount, tipoCargoCount, tipoImpuestoCount] = await Promise.all([
+      prisma.estadoLiquidacion.count({ where: { activo: true, deletedAt: null } }),
+      prisma.tipoCargo.count({ where: { activo: true, deletedAt: null } }),
+      prisma.tipoImpuestoPropiedad.count({ where: { activo: true, deletedAt: null } })
+    ]);
+
+    // Definir categorías disponibles (Actores Responsables / quien_paga eliminado: se usa el catálogo "Responsables")
+    const categorias = [
+      {
+        id: 1,
+        codigo: 'estado_liquidacion',
+        nombre: 'Estados de Liquidación',
+        descripcion: 'Estados de Liquidación',
+        activo: true,
         _count: {
-          select: {
-            parametros: true
-          }
+          parametros: estadoLiquidacionCount
         }
       },
-      orderBy: { codigo: 'asc' }
-    });
+      {
+        id: 2,
+        codigo: 'tipo_cargo',
+        nombre: 'Tipos de Cargo',
+        descripcion: 'Tipos de Cargo',
+        activo: true,
+        _count: {
+          parametros: tipoCargoCount
+        }
+      },
+      {
+        id: 3,
+        codigo: 'tipo_impuesto',
+        nombre: 'Tipos de Impuesto',
+        descripcion: 'Tipos de Impuesto',
+        activo: true,
+        _count: {
+          parametros: tipoImpuestoCount
+        }
+      }
+    ];
 
     res.json(categorias);
   } catch (error) {
@@ -36,19 +66,77 @@ export const getCategoriaById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const categoria = await prisma.categoria.findUnique({
-      where: { id },
-      include: {
-        parametros: {
-          where: { activo: true },
-          orderBy: { id: 'asc' }
-        }
-      }
-    });
+    // Mapear ID a código de categoría
+    const categoriaMap = {
+      '1': { codigo: 'estado_liquidacion', nombre: 'Estados de Liquidación' },
+      '2': { codigo: 'tipo_cargo', nombre: 'Tipos de Cargo' },
+      '3': { codigo: 'tipo_impuesto', nombre: 'Tipos de Impuesto' }
+    };
 
-    if (!categoria) {
+    const categoriaInfo = categoriaMap[id];
+    if (!categoriaInfo) {
       return res.status(404).json({ error: 'Categoría no encontrada' });
     }
+
+    // Obtener parámetros directamente
+    let parametros = [];
+    const { codigo } = categoriaInfo;
+
+    switch (codigo) {
+      case 'estado_liquidacion':
+        parametros = await prisma.estadoLiquidacion.findMany({
+          where: { activo: true, deletedAt: null },
+          select: { id: true, codigo: true, nombre: true },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      case 'tipo_cargo':
+        parametros = await prisma.tipoCargo.findMany({
+          where: { activo: true, deletedAt: null },
+          select: { id: true, codigo: true, nombre: true },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      case 'tipo_impuesto':
+        parametros = await prisma.tipoImpuestoPropiedad.findMany({
+          where: { activo: true, deletedAt: null },
+          select: { id: true, codigo: true, nombre: true },
+          orderBy: { id: 'asc' }
+        });
+        parametros = parametros.map(p => ({
+          id: p.id,
+          codigo: p.codigo,
+          descripcion: p.nombre,
+          nombre: p.nombre
+        }));
+        break;
+
+      default:
+        return res.status(404).json({ error: 'Categoría no encontrada' });
+    }
+
+    const categoria = {
+      id: parseInt(id),
+      codigo: codigo,
+      nombre: categoriaInfo.nombre,
+      descripcion: categoriaInfo.nombre,
+      activo: true,
+      parametros: parametros
+    };
 
     res.json(categoria);
   } catch (error) {

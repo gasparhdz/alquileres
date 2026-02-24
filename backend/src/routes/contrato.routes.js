@@ -19,6 +19,10 @@ import {
 } from '../controllers/contrato.controller.js';
 import {
   getContratoAjustes,
+  getAjusteById,
+  createAjuste,
+  updateAjuste,
+  deleteAjuste,
   generarAjusteAutomatico,
   registrarAjusteManual,
   calcularAjustesProyectados
@@ -34,6 +38,10 @@ router.get('/unidad/:unidadId', getContratosByUnidad);
 router.get('/inquilino/:inquilinoId', getContratosByInquilino);
 router.get('/:id', getContratoById);
 router.get('/:id/ajustes', getContratoAjustes);
+router.get('/:id/ajustes/:ajusteId', getAjusteById);
+router.post('/:id/ajustes', createAjuste);
+router.put('/:id/ajustes/:ajusteId', updateAjuste);
+router.delete('/:id/ajustes/:ajusteId', deleteAjuste);
 router.post('/:id/ajustes/generar', generarAjusteAutomatico);
 router.post('/:id/ajustes/manual', registrarAjusteManual);
 router.post('/:id/ajustes/calcular', calcularAjustesProyectados);

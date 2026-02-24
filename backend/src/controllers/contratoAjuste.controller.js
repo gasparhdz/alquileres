@@ -2,6 +2,14 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+/**
+ * Reglas de ajuste y recálculo (documentación):
+ * - Alta: montoAnterior = Contrato.montoActual, porcentajeAumento = ((montoNuevo - montoAnterior) / montoAnterior) * 100.
+ *   Se persiste ContratoAjuste y se actualiza Contrato.montoActual = montoNuevo en la misma transacción.
+ * - Edición/Anulación: Contrato.montoActual se recalcula con recomputeContratoMontoActual() al último
+ *   ajuste activo por fechaAjuste; si no hay ajustes activos, se usa Contrato.montoInicial.
+ */
+
 const parseDecimalInput = (value) => {
   if (value === undefined || value === null || value === '') {
     return null;
@@ -36,12 +44,42 @@ const toFixedDecimal = (value, decimals) => {
   return parseFloat(Number(value).toFixed(decimals));
 };
 
+/** Fecha base + N meses (regla de negocio para próxima fecha de ajuste) */
+function computeNextAdjustmentDate(fechaBase, frecuenciaMeses) {
+  if (!fechaBase || frecuenciaMeses == null) return null;
+  return addMonths(new Date(fechaBase), Number(frecuenciaMeses));
+}
+
+/**
+ * Recalcula Contrato.montoActual según el último ajuste activo por fechaAjuste.
+ * Si no hay ajustes activos, usa montoInicial.
+ * @param {number} contratoId
+ * @param {import('@prisma/client').Prisma.TransactionClient} [tx] - opcional, para usar dentro de una transacción
+ */
+async function recomputeContratoMontoActual(contratoId, tx = prisma) {
+  const ultimo = await tx.contratoAjuste.findFirst({
+    where: { contratoId: Number(contratoId), activo: true, deletedAt: null },
+    orderBy: { fechaAjuste: 'desc' }
+  });
+  const contrato = await tx.contrato.findUnique({
+    where: { id: Number(contratoId) },
+    select: { montoInicial: true }
+  });
+  if (!contrato) return;
+  const montoActual = ultimo ? Number(ultimo.montoNuevo) : Number(contrato.montoInicial);
+  await tx.contrato.update({
+    where: { id: Number(contratoId) },
+    data: { montoActual }
+  });
+}
+
 const createAjusteTransaction = async ({
   contrato,
   fechaAjuste,
   montoAnterior,
   montoNuevo,
-  porcentajeAumento
+  porcentajeAumento,
+  createdById = null
 }) => {
   return prisma.$transaction(async (tx) => {
     const ajuste = await tx.contratoAjuste.create({
@@ -50,7 +88,8 @@ const createAjusteTransaction = async ({
         fechaAjuste,
         montoAnterior,
         montoNuevo,
-        porcentajeAumento
+        porcentajeAumento,
+        createdById
       }
     });
 
@@ -93,9 +132,13 @@ const getContratoWithConfig = async (id) => {
 export const getContratoAjustes = async (req, res) => {
   try {
     const { id } = req.params;
+    const contratoId = parseInt(id, 10);
+    if (Number.isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
 
     const ajustes = await prisma.contratoAjuste.findMany({
-      where: { contratoId: id },
+      where: { contratoId, activo: true, deletedAt: null },
       orderBy: { fechaAjuste: 'desc' }
     });
 
@@ -103,6 +146,206 @@ export const getContratoAjustes = async (req, res) => {
   } catch (error) {
     console.error('Error al obtener ajustes del contrato:', error);
     res.status(500).json({ error: 'Error al obtener ajustes del contrato' });
+  }
+};
+
+/**
+ * POST /api/contratos/:id/ajustes
+ * Crea ajuste manual: montoAnterior = contrato.montoActual, porcentajeAumento calculado.
+ * Actualiza Contrato.montoActual en la misma transacción.
+ */
+export const createAjuste = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const contratoId = parseInt(id, 10);
+    if (Number.isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
+
+    const { fechaAjuste: fechaAjusteBody, montoNuevo: montoNuevoBody } = req.body;
+    const montoNuevo = parseDecimalInput(montoNuevoBody);
+    if (montoNuevo === null || montoNuevo <= 0) {
+      return res.status(400).json({ error: 'montoNuevo es obligatorio y debe ser mayor a 0' });
+    }
+
+    const contrato = await prisma.contrato.findFirst({
+      where: { id: contratoId, activo: true, deletedAt: null }
+    });
+    if (!contrato) {
+      return res.status(404).json({ error: 'Contrato no encontrado' });
+    }
+
+    // montoAnterior = último ajuste activo por fechaAjuste (no por id), o montoInicial si no hay
+    const ultimoAjuste = await prisma.contratoAjuste.findFirst({
+      where: { contratoId, activo: true, deletedAt: null },
+      orderBy: { fechaAjuste: 'desc' }
+    });
+    const montoAnterior = ultimoAjuste
+      ? Number(ultimoAjuste.montoNuevo)
+      : Number(contrato.montoActual ?? contrato.montoInicial);
+    const fechaAjuste = fechaAjusteBody ? new Date(fechaAjusteBody) : new Date();
+    const fechaInicio = new Date(contrato.fechaInicio);
+    if (fechaAjuste < fechaInicio) {
+      return res.status(400).json({ error: 'La fecha de ajuste no puede ser anterior a la fecha de inicio del contrato' });
+    }
+    if (contrato.fechaFin) {
+      const fechaFin = new Date(contrato.fechaFin);
+      if (fechaAjuste > fechaFin) {
+        return res.status(400).json({ error: 'La fecha de ajuste no puede ser posterior a la fecha de fin del contrato' });
+      }
+    }
+
+    const porcentajeAumento = montoAnterior === 0
+      ? 0
+      : toFixedDecimal(((montoNuevo - montoAnterior) / montoAnterior) * 100, 4);
+    const userId = req.user?.id ?? req.user?.userId ?? null;
+
+    const ajuste = await createAjusteTransaction({
+      contrato: { id: contratoId },
+      fechaAjuste,
+      montoAnterior,
+      montoNuevo,
+      porcentajeAumento,
+      createdById: userId
+    });
+
+    res.status(201).json(ajuste);
+  } catch (error) {
+    console.error('Error al crear ajuste:', error);
+    res.status(500).json({ error: 'Error al crear ajuste' });
+  }
+};
+
+/**
+ * PUT /api/contratos/:id/ajustes/:ajusteId
+ * Edita ajuste; recalcula porcentaje si cambian montos; recalcula Contrato.montoActual al último ajuste activo.
+ */
+export const updateAjuste = async (req, res) => {
+  try {
+    const { id, ajusteId } = req.params;
+    const contratoId = parseInt(id, 10);
+    const ajusteIdNum = parseInt(ajusteId, 10);
+    if (Number.isNaN(contratoId) || Number.isNaN(ajusteIdNum)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+
+    const { fechaAjuste: fechaBody, montoAnterior: maBody, montoNuevo: mnBody } = req.body;
+    const ajuste = await prisma.contratoAjuste.findFirst({
+      where: { id: ajusteIdNum, contratoId, activo: true, deletedAt: null }
+    });
+    if (!ajuste) {
+      return res.status(404).json({ error: 'Ajuste no encontrado' });
+    }
+
+    const contrato = await prisma.contrato.findFirst({
+      where: { id: contratoId, activo: true, deletedAt: null }
+    });
+    if (!contrato) {
+      return res.status(404).json({ error: 'Contrato no encontrado' });
+    }
+
+    let montoAnterior = maBody !== undefined ? parseDecimalInput(maBody) : Number(ajuste.montoAnterior);
+    let montoNuevo = mnBody !== undefined ? parseDecimalInput(mnBody) : Number(ajuste.montoNuevo);
+    if (montoNuevo !== null && montoNuevo <= 0) {
+      return res.status(400).json({ error: 'montoNuevo debe ser mayor a 0' });
+    }
+    if (montoAnterior === null) montoAnterior = Number(ajuste.montoAnterior);
+    if (montoNuevo === null) montoNuevo = Number(ajuste.montoNuevo);
+    const porcentajeAumento = montoAnterior === 0
+      ? 0
+      : toFixedDecimal(((montoNuevo - montoAnterior) / montoAnterior) * 100, 4);
+
+    const fechaAjuste = fechaBody ? new Date(fechaBody) : new Date(ajuste.fechaAjuste);
+    const userId = req.user?.id ?? req.user?.userId ?? null;
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.contratoAjuste.update({
+        where: { id: ajusteIdNum },
+        data: {
+          fechaAjuste,
+          montoAnterior,
+          montoNuevo,
+          porcentajeAumento,
+          updatedById: userId
+        }
+      });
+      await recomputeContratoMontoActual(contratoId, tx);
+      return tx.contratoAjuste.findUnique({ where: { id: ajusteIdNum } });
+    });
+
+    res.json(updated);
+  } catch (error) {
+    console.error('Error al actualizar ajuste:', error);
+    res.status(500).json({ error: 'Error al actualizar ajuste' });
+  }
+};
+
+/**
+ * GET /api/contratos/:id/ajustes/:ajusteId
+ * Detalle de un ajuste (incluye anulados para historial).
+ */
+export const getAjusteById = async (req, res) => {
+  try {
+    const { id, ajusteId } = req.params;
+    const contratoId = parseInt(id, 10);
+    const ajusteIdNum = parseInt(ajusteId, 10);
+    if (Number.isNaN(contratoId) || Number.isNaN(ajusteIdNum)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+
+    const ajuste = await prisma.contratoAjuste.findFirst({
+      where: { id: ajusteIdNum, contratoId }
+    });
+    if (!ajuste) {
+      return res.status(404).json({ error: 'Ajuste no encontrado' });
+    }
+
+    res.json(ajuste);
+  } catch (error) {
+    console.error('Error al obtener ajuste:', error);
+    res.status(500).json({ error: 'Error al obtener ajuste' });
+  }
+};
+
+/**
+ * DELETE /api/contratos/:id/ajustes/:ajusteId
+ * Anula ajuste (soft: activo=false, deletedAt, deletedById) y recalcula Contrato.montoActual.
+ */
+export const deleteAjuste = async (req, res) => {
+  try {
+    const { id, ajusteId } = req.params;
+    const contratoId = parseInt(id, 10);
+    const ajusteIdNum = parseInt(ajusteId, 10);
+    if (Number.isNaN(contratoId) || Number.isNaN(ajusteIdNum)) {
+      return res.status(400).json({ error: 'IDs inválidos' });
+    }
+
+    const ajuste = await prisma.contratoAjuste.findFirst({
+      where: { id: ajusteIdNum, contratoId, activo: true, deletedAt: null }
+    });
+    if (!ajuste) {
+      return res.status(404).json({ error: 'Ajuste no encontrado' });
+    }
+
+    const now = new Date();
+    const userId = req.user?.id ?? req.user?.userId ?? null;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.contratoAjuste.update({
+        where: { id: ajusteIdNum },
+        data: {
+          activo: false,
+          deletedAt: now,
+          deletedById: userId
+        }
+      });
+      await recomputeContratoMontoActual(contratoId, tx);
+    });
+
+    res.status(204).send();
+  } catch (error) {
+    console.error('Error al anular ajuste:', error);
+    res.status(500).json({ error: 'Error al anular ajuste' });
   }
 };
 

@@ -37,7 +37,7 @@ const SPECIAL_FIELDS = {
   'tipoDocumentoPropiedad': ['descripcion'],
   'estadoContrato': ['esFinal'],
   'estadoLiquidacion': ['esFinal'],
-  'tipoImpuestoPropiedad': ['periodicidadId'],
+  'tipoImpuestoPropiedad': ['periodicidadId', 'usuario', 'password'],
   'tipoCargo': ['periodicidadId'],
   'tipoGastoInicialContrato': ['valorDefault', 'esPorcentaje']
 };
