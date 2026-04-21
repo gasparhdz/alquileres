@@ -1,113 +1,285 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import puppeteer from 'puppeteer';
+import prisma from '../db/prisma.js';
 import { getIds } from '../services/parametrosSistema.js';
+import { registrarDebitoInquilino, generarLiquidacionPropietario, generarLiquidacionPropietarioSinContrato } from '../services/cuentaCorriente.service.js';
+import {
+  rowToCamel,
+  calcularVencimientosAutomaticos,
+  correspondeGenerarPorPeriodicidad,
+  importeEnBoleta,
+  mesesConAjusteDebido,
+  buildUpdateDataForItem,
+  completarItem as completarItemService,
+  reabrirItem as reabrirItemService
+} from '../services/liquidacion.service.js';
 
-const prisma = new PrismaClient();
+const includeUltimasLiquidaciones = {
+  contrato: {
+    include: {
+      propiedad: { include: { localidad: true, provincia: true } },
+      inquilino: true
+    }
+  },
+  propiedad: { include: { localidad: true, provincia: true } },
+  estado: true,
+  items: {
+    where: { activo: true },
+    include: {
+      tipoCargo: true,
+      quienSoportaCosto: true,
+      pagadoPorActor: true
+    }
+  }
+};
 
+/** Include para listado de liquidaciones (getAllLiquidaciones). */
+const includeAllLiquidaciones = {
+  estado: true,
+  propiedad: {
+    include: {
+      localidad: true,
+      provincia: true
+    }
+  },
+  contrato: {
+    include: {
+      inquilino: true,
+      propiedad: {
+        include: { localidad: true, provincia: true }
+      }
+    }
+  },
+  items: {
+    where: { activo: true, deletedAt: null },
+    orderBy: { id: 'asc' },
+    include: {
+      tipoCargo: true,
+      quienSoportaCosto: true,
+      pagadoPorActor: true
+    }
+  }
+};
+
+/** Include para detalle de una liquidación (getLiquidacionById). */
+const includeLiquidacionById = {
+  estado: true,
+  propiedad: {
+    include: {
+      localidad: true,
+      provincia: true,
+      propietarios: {
+        where: { activo: true, deletedAt: null },
+        include: {
+          propietario: { include: { condicionIva: true } }
+        }
+      }
+    }
+  },
+  contrato: {
+    include: {
+      inquilino: { include: { condicionIva: true } },
+      propiedad: {
+        include: {
+          localidad: true,
+          provincia: true,
+          propietarios: {
+            where: { activo: true, deletedAt: null },
+            include: { propietario: true }
+          }
+        }
+      },
+      responsabilidades: {
+        where: { activo: true, deletedAt: null }
+      }
+    }
+  },
+  items: {
+    where: { activo: true, deletedAt: null },
+    orderBy: { id: 'asc' },
+    include: {
+      propiedadImpuesto: { include: { tipoImpuesto: true } },
+      tipoCargo: true,
+      tipoExpensa: true,
+      actorFacturado: true,
+      quienSoportaCosto: true,
+      pagadoPorActor: true,
+      contratoGastoInicial: { include: { tipoGastoInicial: true } }
+    }
+  }
+};
+
+/** Include para items de impuestos pendientes (getImpuestosPendientes). */
+const includeImpuestosPendientesItems = {
+  liquidacion: {
+    include: {
+      propiedad: {
+        include: { localidad: true, provincia: true }
+      },
+      contrato: {
+        include: { inquilino: true }
+      }
+    }
+  },
+  propiedadImpuesto: {
+    include: {
+      tipoImpuesto: true,
+      campos: { include: { tipoCampo: true } }
+    }
+  },
+  tipoCargo: true,
+  tipoExpensa: true,
+  actorFacturado: true,
+  quienSoportaCosto: true,
+  pagadoPorActor: true,
+  estadoItem: true
+};
+
+/**
+ * GET /liquidaciones/cliente/:id?rol=inquilino|propietario
+ * Devuelve las últimas 5 liquidaciones del cliente (inquilino por contrato, propietario por propiedades).
+ */
+export const getUltimasLiquidacionesPorCliente = async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const rol = (req.query.rol || '').toLowerCase();
+
+    if (isNaN(id) || !['inquilino', 'propietario'].includes(rol)) {
+      return res.status(400).json({
+        error: 'Parámetros inválidos: id numérico y rol=inquilino|propietario requeridos'
+      });
+    }
+
+    let liquidaciones;
+
+    if (rol === 'inquilino') {
+      liquidaciones = await prisma.liquidacion.findMany({
+        where: {
+          contrato: { inquilinoId: id },
+          activo: true,
+          deletedAt: null
+        },
+        include: includeUltimasLiquidaciones,
+        orderBy: { id: 'desc' },
+        take: 5
+      });
+    } else {
+      const relaciones = await prisma.propiedadPropietario.findMany({
+        where: { propietarioId: id },
+        select: { propiedadId: true }
+      });
+      const propiedadIds = relaciones.map((r) => r.propiedadId);
+      if (propiedadIds.length === 0) {
+        return res.json([]);
+      }
+      liquidaciones = await prisma.liquidacion.findMany({
+        where: {
+          propiedadId: { in: propiedadIds },
+          activo: true,
+          deletedAt: null
+        },
+        include: includeUltimasLiquidaciones,
+        orderBy: { id: 'desc' },
+        take: 5
+      });
+    }
+
+    return res.json(liquidaciones);
+  } catch (err) {
+    console.error('getUltimasLiquidacionesPorCliente:', err);
+    return res.status(500).json({ error: err.message || 'Error al obtener liquidaciones del cliente' });
+  }
+};
+
+/**
+ * GET /liquidaciones
+ * Lista liquidaciones con paginación server-side. Params: page, limit, search, periodo, estado, sortBy, sortOrder.
+ */
 export const getAllLiquidaciones = async (req, res) => {
   try {
-    const { contratoId, propiedadId, periodo, estado, page = 1, limit = 50 } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const { contratoId, propiedadId, periodo, estado, page = 1, limit = 50, search, sortBy = 'periodo', sortOrder = 'desc' } = req.query;
+    const pageNum = parseInt(page, 10) || 1;
+    const limitNum = Math.min(parseInt(limit, 10) || 50, 100);
+    const skip = (pageNum - 1) * limitNum;
 
     const where = {
       deletedAt: null,
-      activo: true,
-      ...(contratoId && { contratoId: parseInt(contratoId) }),
-      ...(propiedadId && { propiedadId: parseInt(propiedadId) }),
-      ...(periodo && { periodo }),
-      ...(estado && { estadoLiquidacionId: parseInt(estado) })
+      activo: true
     };
+    if (contratoId) where.contratoId = parseInt(contratoId, 10);
+    if (propiedadId) where.propiedadId = parseInt(propiedadId, 10);
+    if (periodo) where.periodo = periodo;
+    if (estado) where.estadoLiquidacionId = parseInt(estado, 10);
+
+    const searchTrim = typeof search === 'string' ? search.trim() : '';
+    if (searchTrim) {
+      where.OR = [
+        { propiedad: { dirCalle: { contains: searchTrim, mode: 'insensitive' } } },
+        { propiedad: { dirNro: { contains: searchTrim, mode: 'insensitive' } } },
+        { contrato: { inquilino: { nombre: { contains: searchTrim, mode: 'insensitive' } } } },
+        { contrato: { inquilino: { apellido: { contains: searchTrim, mode: 'insensitive' } } } },
+        { contrato: { inquilino: { razonSocial: { contains: searchTrim, mode: 'insensitive' } } } }
+      ];
+    }
+
+    const orderField = ['periodo', 'numeracion', 'id'].includes(sortBy) ? sortBy : 'periodo';
+    const orderDir = sortOrder === 'asc' ? 'asc' : 'desc';
+    const orderBy = { [orderField]: orderDir };
 
     const [liquidaciones, total] = await Promise.all([
       prisma.liquidacion.findMany({
         where,
+        orderBy,
         skip,
-        take: parseInt(limit),
-        orderBy: { periodo: 'desc' },
-        include: {
-          estado: {
-            select: {
-              id: true,
-              codigo: true,
-              nombre: true
-            }
-          },
-          propiedad: {
-            include: {
-              localidad: {
-                include: {
-                  provincia: true
-                }
-              },
-              provincia: true
-            }
-          },
-          contrato: {
-            include: {
-              inquilino: true,
-              propiedad: {
-                include: {
-                  localidad: {
-                    include: {
-                      provincia: true
-                    }
-                  },
-                  provincia: true,
-                  propietarios: {
-                    where: {
-                      deletedAt: null,
-                      activo: true
-                    },
-                    include: {
-                      propietario: {
-                        select: {
-                          id: true,
-                          nombre: true,
-                          apellido: true,
-                          razonSocial: true
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          items: {
-            orderBy: { id: 'asc' }
-          }
-        }
+        take: limitNum,
+        include: includeAllLiquidaciones
       }),
       prisma.liquidacion.count({ where })
     ]);
 
-    // Recalcular totales si están en 0 o null, o si hay items con importe pero el total no coincide
-    for (const liquidacion of liquidaciones) {
-      const totalCalculado = liquidacion.items.reduce((sum, item) => {
-        return sum + (item.importe ? parseFloat(item.importe) : 0);
-      }, 0);
-      
-      // Actualizar en base de datos si el total calculado es diferente al guardado
-      // (solo si hay al menos un item con importe, para evitar recalcular liquidaciones vacías)
-      const tieneItemsConImporte = liquidacion.items.some(item => item.importe !== null && item.importe !== undefined && parseFloat(item.importe) !== 0);
-      
-      if (tieneItemsConImporte && (liquidacion.total === null || liquidacion.total === undefined || Math.abs(parseFloat(liquidacion.total) - totalCalculado) > 0.01)) {
-        await prisma.liquidacion.update({
-          where: { id: liquidacion.id },
-          data: { total: totalCalculado }
-        });
-        liquidacion.total = totalCalculado;
-      }
+    if (liquidaciones.length === 0) {
+      return res.json({
+        data: [],
+        meta: { total: 0, page: pageNum, limit: limitNum, totalPages: 0 }
+      });
     }
 
-    res.json({
-      data: liquidaciones,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / parseInt(limit))
+    // Serializar Decimal y recalcular totales si difieren
+    const data = liquidaciones.map((liq) => {
+      const totalNum = liq.total != null ? Number(liq.total) : 0;
+      const items = (liq.items || []).map((item) => ({
+        ...item,
+        importe: item.importe != null ? Number(item.importe) : null,
+        importeAnterior: item.importeAnterior != null ? Number(item.importeAnterior) : null
+      }));
+      const totalCalculado = items.reduce((sum, item) => sum + (item.importe || 0), 0);
+      const tieneItemsConImporte = items.some((item) => item.importe != null && item.importe !== 0);
+      let totalFinal = totalNum;
+      if (tieneItemsConImporte && Math.abs(totalNum - totalCalculado) > 0.01) {
+        totalFinal = totalCalculado;
+        prisma.liquidacion.update({
+          where: { id: liq.id },
+          data: { total: totalCalculado }
+        }).catch((err) => console.error('Error actualizando total liquidación', liq.id, err));
       }
+      return {
+        ...liq,
+        total: totalFinal,
+        items,
+        propiedad: liq.propiedad || null,
+        contrato: liq.contrato ? {
+          id: liq.contrato.id,
+          honorariosPropietario: liq.contrato.honorariosPropietario != null ? Number(liq.contrato.honorariosPropietario) : null,
+          inquilino: liq.contrato.inquilino || null,
+          propiedad: liq.contrato.propiedad || null
+        } : null
+      };
+    });
+
+    const totalPages = Math.ceil(total / limitNum);
+    res.json({
+      data,
+      meta: { total, page: pageNum, limit: limitNum, totalPages }
     });
   } catch (error) {
     console.error('Error al obtener liquidaciones:', error);
@@ -115,6 +287,10 @@ export const getAllLiquidaciones = async (req, res) => {
   }
 };
 
+/**
+ * GET /liquidaciones/:id
+ * Obtiene una liquidación por ID con toda su jerarquía. Usa Prisma findUnique + include.
+ */
 export const getLiquidacionById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -125,71 +301,66 @@ export const getLiquidacionById = async (req, res) => {
     }
 
     const liquidacion = await prisma.liquidacion.findUnique({
-      where: { id: liquidacionId },
-      include: {
-        estado: {
-          select: {
-            id: true,
-            codigo: true,
-            nombre: true
-          }
-        },
-        contrato: {
-          include: {
-            inquilino: {
-              include: {
-                condicionIva: true
-              }
-            },
-            propiedad: {
-              include: {
-                localidad: {
-                  include: {
-                    provincia: true
-                  }
-                },
-                provincia: true,
-                propietarios: {
-                  where: {
-                    deletedAt: null,
-                    activo: true
-                  },
-                  include: {
-                    propietario: {
-                      include: {
-                        condicionIva: true
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            responsabilidades: true
-          }
-        },
-        items: {
-          orderBy: { id: 'asc' },
-          include: {
-            propiedadImpuesto: {
-              include: {
-                tipoImpuesto: true
-              }
-            },
-            tipoCargo: true,
-            tipoExpensa: true,
-            actorFacturado: true,
-            quienSoportaCosto: true,
-            pagadoPorActor: true
-          }
-        }
-      }
+      where: {
+        id: liquidacionId,
+        deletedAt: null
+      },
+      include: includeLiquidacionById
     });
 
     if (!liquidacion) {
       return res.status(404).json({ error: 'Liquidación no encontrada' });
     }
 
-    res.json(liquidacion);
+    // DTO: mismo formato que el código anterior (camelCase, contrato.propiedad.propietarios como array de { propietario })
+    const contrato = liquidacion.contrato ? {
+      ...liquidacion.contrato,
+      inquilino: liquidacion.contrato.inquilino || null,
+      propiedad: liquidacion.contrato.propiedad ? {
+        ...liquidacion.contrato.propiedad,
+        localidad: liquidacion.contrato.propiedad.localidad || null,
+        provincia: liquidacion.contrato.propiedad.provincia || null,
+        propietarios: (liquidacion.contrato.propiedad.propietarios || []).map((pp) => ({ propietario: pp.propietario || null }))
+      } : null,
+      responsabilidades: liquidacion.contrato.responsabilidades || []
+    } : null;
+
+    const propiedad = liquidacion.propiedad ? {
+      ...liquidacion.propiedad,
+      localidad: liquidacion.propiedad.localidad || null,
+      provincia: liquidacion.propiedad.provincia || null,
+      propietarios: (liquidacion.propiedad.propietarios || []).map((pp) => ({
+        propietario: pp.propietario ? { ...pp.propietario, condicionIva: pp.propietario.condicionIva || null } : null
+      }))
+    } : null;
+
+    const items = (liquidacion.items || []).map((item) => ({
+      ...item,
+      importe: item.importe != null ? Number(item.importe) : null,
+      importeAnterior: item.importeAnterior != null ? Number(item.importeAnterior) : null,
+      propiedadImpuesto: item.propiedadImpuesto ? {
+        ...item.propiedadImpuesto,
+        tipoImpuesto: item.propiedadImpuesto.tipoImpuesto || null
+      } : null,
+      tipoCargo: item.tipoCargo || null,
+      tipoExpensa: item.tipoExpensa || null,
+      actorFacturado: item.actorFacturado || null,
+      quienSoportaCosto: item.quienSoportaCosto || null,
+      pagadoPorActor: item.pagadoPorActor || null,
+      contratoGastoInicial: item.contratoGastoInicial ? {
+        id: item.contratoGastoInicial.id,
+        tipoGastoInicial: item.contratoGastoInicial.tipoGastoInicial || null
+      } : null
+    }));
+
+    res.json({
+      ...liquidacion,
+      total: liquidacion.total != null ? Number(liquidacion.total) : liquidacion.total,
+      estado: liquidacion.estado || null,
+      propiedad,
+      contrato,
+      items
+    });
   } catch (error) {
     console.error('Error al obtener liquidación:', error);
     res.status(500).json({ error: 'Error al obtener liquidación' });
@@ -288,6 +459,9 @@ export const generateLiquidacion = async (req, res) => {
     // Calcular total
     const total = items.reduce((sum, item) => sum + parseFloat(item.importe || 0), 0);
 
+    // Calcular vencimientos automáticos
+    const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+
     // Crear liquidación
     const liquidacion = await prisma.liquidacion.create({
       data: {
@@ -296,6 +470,11 @@ export const generateLiquidacion = async (req, res) => {
         periodo,
         estadoLiquidacionId: 1, // Estado borrador por defecto
         total,
+        vencimiento: vencimientosAuto.vencimiento,
+        vencimiento2: vencimientosAuto.vencimiento2,
+        interes2: vencimientosAuto.interes2,
+        vencimiento3: vencimientosAuto.vencimiento3,
+        interes3: vencimientosAuto.interes3,
         items: {
           create: items
         }
@@ -377,6 +556,9 @@ export const createLiquidacion = async (req, res) => {
       orden: item.orden !== undefined ? parseInt(item.orden) : index
     }));
 
+    // Calcular vencimientos automáticos si no se proporcionan
+    const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+    
     // Crear liquidación
     const liquidacion = await prisma.liquidacion.create({
       data: {
@@ -385,7 +567,11 @@ export const createLiquidacion = async (req, res) => {
         periodo,
         total,
         estadoLiquidacionId: estadoLiquidacionId || 1, // Estado por defecto (borrador)
-        vencimiento: vencimiento ? new Date(vencimiento) : null,
+        vencimiento: vencimiento ? new Date(vencimiento) : vencimientosAuto.vencimiento,
+        vencimiento2: vencimientosAuto.vencimiento2,
+        interes2: vencimientosAuto.interes2,
+        vencimiento3: vencimientosAuto.vencimiento3,
+        interes3: vencimientosAuto.interes3,
         observaciones: observaciones || null,
         items: {
           create: itemsData
@@ -420,19 +606,17 @@ export const createLiquidacion = async (req, res) => {
 
 export const updateLiquidacion = async (req, res) => {
   try {
-    const { id } = req.params;
+    const idNum = parseInt(req.params.id, 10);
     const { items, ...data } = req.body;
 
-    const liquidacion = await prisma.liquidacion.findUnique({
-      where: { id }
-    });
-
+    const liqRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidaciones WHERE id = ${idNum} AND deleted_at IS NULL`);
+    const liquidacion = Array.isArray(liqRows) ? liqRows[0] : liqRows;
     if (!liquidacion) {
       return res.status(404).json({ error: 'Liquidación no encontrada' });
     }
 
     const ids = await getIds();
-    if (ids.estadoLiquidacionEmitidaId && liquidacion.estadoLiquidacionId === ids.estadoLiquidacionEmitidaId) {
+    if (ids.estadoLiquidacionEmitidaId && liquidacion.estado_liquidacion_id === ids.estadoLiquidacionEmitidaId) {
       return res.status(400).json({ error: 'No se puede modificar una liquidación ya emitida' });
     }
 
@@ -440,44 +624,109 @@ export const updateLiquidacion = async (req, res) => {
     if (items && Array.isArray(items)) {
       const ids = await getIds();
       await prisma.liquidacionItem.deleteMany({
-        where: { liquidacionId: id }
+        where: { liquidacionId: idNum }
       });
-      const liquidacionIdNum = parseInt(id, 10);
       const importeNum = (i) => (i != null && i !== '' ? parseFloat(i) : 0);
       await prisma.liquidacionItem.createMany({
         data: items.map((item) => ({
-          liquidacionId: liquidacionIdNum,
+          liquidacionId: idNum,
           estadoItemId: item.estadoItemId ?? ids.estadoItemCompletadoId,
           propiedadImpuestoId: item.propiedadImpuestoId != null && item.propiedadImpuestoId !== '' ? parseInt(item.propiedadImpuestoId, 10) : null,
           tipoCargoId: item.tipoCargoId != null && item.tipoCargoId !== '' ? parseInt(item.tipoCargoId, 10) : null,
           tipoExpensaId: item.tipoExpensaId != null && item.tipoExpensaId !== '' ? parseInt(item.tipoExpensaId, 10) : null,
+          contratoGastoInicialId: item.contratoGastoInicialId != null && item.contratoGastoInicialId !== '' ? parseInt(item.contratoGastoInicialId, 10) : null,
           actorFacturadoId: item.actorFacturadoId != null && item.actorFacturadoId !== '' ? parseInt(item.actorFacturadoId, 10) : null,
+          quienSoportaCostoId: item.quienSoportaCostoId != null && item.quienSoportaCostoId !== '' ? parseInt(item.quienSoportaCostoId, 10) : null,
+          pagadoPorActorId: item.pagadoPorActorId != null && item.pagadoPorActorId !== '' ? parseInt(item.pagadoPorActorId, 10) : null,
           importe: importeNum(item.importe),
           observaciones: item.observaciones || null
         }))
       });
     }
 
-    // Calcular nuevo total
-    const allItems = await prisma.liquidacionItem.findMany({
-      where: { liquidacionId: id }
-    });
+    // Calcular nuevo total (raw evita P2022)
+    const allItemsRows = await prisma.$queryRaw(Prisma.sql`SELECT importe FROM liquidacion_items WHERE liquidacion_id = ${idNum} AND activo = true AND deleted_at IS NULL`);
+    const allItemsList = Array.isArray(allItemsRows) ? allItemsRows : [allItemsRows].filter(Boolean);
+    const total = allItemsList.reduce((sum, item) => sum + parseFloat(item.importe || 0), 0);
 
-    const total = allItems.reduce((sum, item) => sum + parseFloat(item.importe || 0), 0);
+    // Preparar datos de actualización con manejo correcto de fechas
+    const updateData = { ...data, total };
+    
+    // Procesar estado como entero
+    if (data.estadoLiquidacionId !== undefined) {
+      updateData.estadoLiquidacionId = data.estadoLiquidacionId ? parseInt(data.estadoLiquidacionId, 10) : null;
+    }
 
-    // Actualizar liquidación
-    const updated = await prisma.liquidacion.update({
-      where: { id },
-      data: {
-        ...data,
-        total
-      },
-      include: {
-        items: {
-          orderBy: { id: 'asc' }
-        }
+    // Procesar vencimientos como fechas
+    if (data.vencimiento !== undefined) {
+      updateData.vencimiento = data.vencimiento ? new Date(data.vencimiento) : null;
+    }
+    if (data.vencimiento2 !== undefined) {
+      updateData.vencimiento2 = data.vencimiento2 ? new Date(data.vencimiento2) : null;
+    }
+    if (data.vencimiento3 !== undefined) {
+      updateData.vencimiento3 = data.vencimiento3 ? new Date(data.vencimiento3) : null;
+    }
+    // Procesar intereses como decimales
+    if (data.interes2 !== undefined) {
+      updateData.interes2 = data.interes2 !== null && data.interes2 !== '' ? parseFloat(data.interes2) : null;
+    }
+    if (data.interes3 !== undefined) {
+      updateData.interes3 = data.interes3 !== null && data.interes3 !== '' ? parseFloat(data.interes3) : null;
+    }
+
+    // Validar: no permitir pasar a "Lista para emitir" si hay ítems incompletos (pendientes de importe)
+    if (ids.estadoLiquidacionListaId && updateData.estadoLiquidacionId === ids.estadoLiquidacionListaId) {
+      const itemsRows = await prisma.$queryRaw(Prisma.sql`
+        SELECT id, estado_item_id, importe FROM liquidacion_items WHERE liquidacion_id = ${idNum} AND activo = true AND deleted_at IS NULL
+      `);
+      const itemsList = Array.isArray(itemsRows) ? itemsRows : [itemsRows].filter(Boolean);
+      const pendientes = itemsList.filter(
+        (it) => it.estado_item_id === ids.estadoItemPendienteId || (it.importe == null && it.estado_item_id !== ids.estadoItemCompletadoId)
+      );
+      if (pendientes.length > 0) {
+        return res.status(400).json({
+          error: 'No se puede marcar como Lista para emitir',
+          detalles: `Falta cargar el importe en ${pendientes.length} ítem(s). Complete todos los importes antes de pasar a "Lista para emitir".`
+        });
       }
-    });
+    }
+
+    // Actualizar liquidación con raw UPDATE para evitar P2022 (columna 'existe')
+    // Si no vienen vencimientos/intereses en el body y en BD están vacíos, completar con cálculo automático por período
+    const periodo = liquidacion.periodo;
+    const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+    const usuarioId = req.user?.id ?? null;
+    const totalFinal = updateData.total !== undefined ? updateData.total : parseFloat(liquidacion.total ?? 0);
+    const estadoIdFinal = updateData.estadoLiquidacionId !== undefined ? updateData.estadoLiquidacionId : liquidacion.estado_liquidacion_id;
+    const vencFinal = updateData.vencimiento !== undefined ? updateData.vencimiento : (liquidacion.vencimiento ?? vencimientosAuto.vencimiento);
+    const venc2Final = updateData.vencimiento2 !== undefined ? updateData.vencimiento2 : (liquidacion.vencimiento_2 ?? vencimientosAuto.vencimiento2);
+    const venc3Final = updateData.vencimiento3 !== undefined ? updateData.vencimiento3 : (liquidacion.vencimiento_3 ?? vencimientosAuto.vencimiento3);
+    const int2Final = updateData.interes2 !== undefined ? updateData.interes2 : (liquidacion.interes_2 ?? vencimientosAuto.interes2);
+    const int3Final = updateData.interes3 !== undefined ? updateData.interes3 : (liquidacion.interes_3 ?? vencimientosAuto.interes3);
+    const obsFinal = updateData.observaciones !== undefined ? updateData.observaciones : liquidacion.observaciones;
+    const numFinal = updateData.numeracion !== undefined ? updateData.numeracion : liquidacion.numeracion;
+
+    await prisma.$executeRaw(Prisma.sql`
+      UPDATE liquidaciones SET
+        total = ${totalFinal},
+        estado_liquidacion_id = ${estadoIdFinal},
+        vencimiento = ${vencFinal},
+        vencimiento_2 = ${venc2Final},
+        vencimiento_3 = ${venc3Final},
+        interes_2 = ${int2Final},
+        interes_3 = ${int3Final},
+        observaciones = ${obsFinal},
+        numeracion = ${numFinal},
+        updated_at = NOW(),
+        updated_by_id = ${usuarioId}
+      WHERE id = ${idNum}
+    `);
+    const updatedLiqRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidaciones WHERE id = ${idNum}`);
+    const updatedItemsRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidacion_items WHERE liquidacion_id = ${idNum} AND activo = true AND deleted_at IS NULL ORDER BY id ASC`);
+    const updatedLiq = Array.isArray(updatedLiqRows) ? updatedLiqRows[0] : updatedLiqRows;
+    const updatedItemsList = Array.isArray(updatedItemsRows) ? updatedItemsRows : [updatedItemsRows].filter(Boolean);
+    const updated = { ...rowToCamel(updatedLiq), items: updatedItemsList.map(rowToCamel) };
 
     res.json(updated);
   } catch (error) {
@@ -488,30 +737,26 @@ export const updateLiquidacion = async (req, res) => {
 
 export const emitirLiquidacion = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseInt(req.params.id, 10);
 
     const ids = await getIds();
     if (!ids.estadoLiquidacionListaId || !ids.estadoLiquidacionEmitidaId) {
       return res.status(500).json({ error: 'Faltan estados de liquidación LISTA o EMITIDA parametrizados' });
     }
 
-    const liquidacion = await prisma.liquidacion.findUnique({
-      where: { id },
-      include: {
-        items: true,
-        estado: { select: { id: true, codigo: true, nombre: true } }
-      }
-    });
-
-    if (!liquidacion) {
+    const liqRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidaciones WHERE id = ${id} AND deleted_at IS NULL`);
+    const liqRow = Array.isArray(liqRows) ? liqRows[0] : liqRows;
+    if (!liqRow) {
       return res.status(404).json({ error: 'Liquidación no encontrada' });
     }
+    const liquidacion = rowToCamel(liqRow);
+    const estadoRows = await prisma.$queryRaw(Prisma.sql`SELECT id, codigo, nombre FROM estados_liquidacion WHERE id = ${liqRow.estado_liquidacion_id}`);
+    liquidacion.estado = estadoRows?.[0] ? rowToCamel(estadoRows[0]) : null;
 
     if (liquidacion.estadoLiquidacionId === ids.estadoLiquidacionEmitidaId) {
       return res.status(400).json({ error: 'La liquidación ya está emitida' });
     }
 
-    // Solo se puede emitir si está en estado "Lista para emitir" (LISTA)
     if (liquidacion.estadoLiquidacionId !== ids.estadoLiquidacionListaId) {
       return res.status(400).json({ 
         error: 'La liquidación no está lista para emitir',
@@ -519,37 +764,236 @@ export const emitirLiquidacion = async (req, res) => {
       });
     }
 
-    // Generar numeración si no existe
     let numeracion = liquidacion.numeracion;
     if (!numeracion) {
       const year = liquidacion.periodo.split('-')[0];
-      const count = await prisma.liquidacion.count({
-        where: {
-          periodo: { startsWith: year },
-          numeracion: { not: null }
-        }
-      });
+      const countRows = await prisma.$queryRaw(Prisma.sql`SELECT COUNT(*)::int as c FROM liquidaciones WHERE periodo LIKE ${year + '%'} AND numeracion IS NOT NULL`);
+      const count = Array.isArray(countRows) ? countRows[0]?.c ?? 0 : countRows?.c ?? 0;
       numeracion = `LIQ-${year}-${String(count + 1).padStart(4, '0')}`;
     }
 
-    const updated = await prisma.liquidacion.update({
+    await prisma.$executeRaw(Prisma.sql`UPDATE liquidaciones SET estado_liquidacion_id = ${ids.estadoLiquidacionEmitidaId}, numeracion = ${numeracion}, emision_at = NOW(), updated_at = NOW() WHERE id = ${id}`);
+    const updatedLiqRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidaciones WHERE id = ${id}`);
+    const updatedItemsRows = await prisma.$queryRaw(Prisma.sql`SELECT * FROM liquidacion_items WHERE liquidacion_id = ${id} AND activo = true AND deleted_at IS NULL ORDER BY id ASC`);
+    const updatedLiq = Array.isArray(updatedLiqRows) ? updatedLiqRows[0] : updatedLiqRows;
+    const updatedItemsList = Array.isArray(updatedItemsRows) ? updatedItemsRows : [updatedItemsRows].filter(Boolean);
+    const updated = {
+      ...rowToCamel(updatedLiq),
+      items: updatedItemsList.map(rowToCamel)
+    };
+
+    let liquidacionPropietario = null;
+
+    // CASO 1: Liquidación CON contrato (tiene inquilino)
+    if (updated.contratoId) {
+      // Actores INQ/PROP para calcular total inquilino (los items vienen de raw sin relaciones)
+      const [actorINQ, actorPROP] = await Promise.all([
+        prisma.actorResponsableContrato.findFirst({ where: { codigo: 'INQ', activo: true }, select: { id: true } }),
+        prisma.actorResponsableContrato.findFirst({ where: { codigo: 'PROP', activo: true }, select: { id: true } })
+      ]);
+      const idINQ = actorINQ?.id ?? null;
+      const idPROP = actorPROP?.id ?? null;
+
+      const totalInquilino = updated.items.reduce((sum, item) => {
+        const importe = parseFloat(item.importe || 0) || 0;
+        if (importe === 0) return sum;
+        if (item.quienSoportaCostoId === idINQ) return sum + Math.abs(importe);
+        if (item.quienSoportaCostoId === idPROP && item.pagadoPorActorId === idINQ) return sum - Math.abs(importe);
+        return sum;
+      }, 0);
+
+      // Registrar DÉBITO en cuenta corriente del inquilino
+      if (totalInquilino !== 0) {
+        try {
+          await registrarDebitoInquilino({
+            contratoId: updated.contratoId,
+            liquidacionId: updated.id,
+            concepto: `Liquidación ${updated.periodo.substring(5)}-${updated.periodo.substring(0, 4)}`,
+            importe: totalInquilino,
+            fecha: new Date(),
+            userId: req.user?.id || null
+          });
+        } catch (ccError) {
+          console.warn('No se pudo registrar débito en cuenta corriente:', ccError.message);
+        }
+      }
+
+      // Generar liquidación al propietario (con contrato): necesitamos contrato y tipos cargo (actores ya tenemos)
+      try {
+        const [contratoRow, tipoAlquiler, tipoHonorarios] = await Promise.all([
+          prisma.contrato.findUnique({
+            where: { id: updated.contratoId },
+            select: { honorariosPropietario: true, propiedadId: true }
+          }),
+          prisma.tipoCargo.findFirst({ where: { codigo: 'ALQUILER', deletedAt: null }, select: { id: true } }),
+          prisma.tipoCargo.findFirst({ where: { codigo: 'HONORARIOS', deletedAt: null }, select: { id: true } })
+        ]);
+        const idAlquiler = tipoAlquiler?.id ?? null;
+        const idHonorarios = tipoHonorarios?.id ?? null;
+
+        const itemAlquiler = idAlquiler ? updated.items.find(item => item.tipoCargoId === idAlquiler) : null;
+        const alquilerBruto = itemAlquiler ? parseFloat(itemAlquiler.importe || 0) : 0;
+
+        const porcentajeHonorarios = contratoRow?.honorariosPropietario != null ? parseFloat(contratoRow.honorariosPropietario) : 0;
+        const honorariosInmob = alquilerBruto * (porcentajeHonorarios / 100);
+
+        const itemsPropietario = updated.items.filter(item => {
+          if (!idPROP || item.quienSoportaCostoId !== idPROP) return false;
+          if (item.tipoCargoId === idAlquiler || item.tipoCargoId === idHonorarios) return false;
+          return (parseFloat(item.importe || 0) || 0) > 0;
+        });
+        const gastosDeducibles = itemsPropietario.reduce((sum, item) => sum + parseFloat(item.importe || 0), 0);
+
+        const propiedadId = updated.propiedadId ?? contratoRow?.propiedadId ?? null;
+
+        if (alquilerBruto > 0 && propiedadId) {
+          liquidacionPropietario = await generarLiquidacionPropietario({
+            contratoId: updated.contratoId,
+            propiedadId,
+            periodo: updated.periodo,
+            alquilerBruto,
+            honorariosInmob,
+            gastosDeducibles,
+            otrasRetenciones: 0,
+            observaciones: `Generada automáticamente al emitir liquidación ${numeracion}`,
+            fecha: new Date(),
+            userId: req.user?.id || null
+          });
+        }
+      } catch (lpError) {
+        console.warn('No se pudo generar liquidación propietario (con contrato):', lpError.message);
+      }
+    } 
+    // CASO 2: Liquidación SIN contrato (propiedad sin inquilino)
+    else if (updated.propiedadId) {
+      try {
+        // Calcular gastos que soporta el propietario (todos los items van al propietario)
+        const itemsPropietario = updated.items.filter(item => {
+          const importe = parseFloat(item.importe || 0);
+          return importe > 0;
+        });
+        
+        const gastosDeducibles = itemsPropietario.reduce((sum, item) => sum + parseFloat(item.importe || 0), 0);
+
+        if (gastosDeducibles > 0) {
+          liquidacionPropietario = await generarLiquidacionPropietarioSinContrato({
+            propiedadId: updated.propiedadId,
+            periodo: updated.periodo,
+            gastosDeducibles,
+            observaciones: `Generada automáticamente al emitir liquidación ${numeracion} (sin contrato)`,
+            fecha: new Date(),
+            userId: req.user?.id || null
+          });
+        }
+      } catch (lpError) {
+        console.warn('No se pudo generar liquidación propietario (sin contrato):', lpError.message);
+      }
+    }
+
+    res.json({ ...updated, liquidacionPropietario });
+  } catch (error) {
+    console.error('Error al emitir liquidación:', error);
+    res.status(500).json({ error: 'Error al emitir liquidación' });
+  }
+};
+
+/**
+ * Marcar liquidación como cobrada (PAGADA) y registrar el CRÉDITO en cuenta corriente del inquilino.
+ * POST /liquidaciones/:id/cobrar
+ * Body: { medioPagoId?: number, nroComprobante?: string }
+ */
+export const cobrarLiquidacion = async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { medioPagoId, nroComprobante } = req.body || {};
+
+    const ids = await getIds();
+    if (!ids.estadoLiquidacionEmitidaId || !ids.estadoLiquidacionPagadaId) {
+      return res.status(500).json({ error: 'Faltan estados de liquidación EMITIDA o SALDADA parametrizados' });
+    }
+
+    const liquidacion = await prisma.liquidacion.findUnique({
       where: { id },
-      data: {
-        estadoLiquidacionId: ids.estadoLiquidacionEmitidaId,
-        numeracion,
-        emisionAt: new Date()
-      },
       include: {
         items: {
-          orderBy: { id: 'asc' }
+          where: { activo: true, deletedAt: null },
+          include: {
+            quienSoportaCosto: true,
+            pagadoPorActor: true
+          }
+        },
+        estado: { select: { id: true, codigo: true, nombre: true } },
+        contrato: { select: { id: true } }
+      }
+    });
+
+    if (!liquidacion) {
+      return res.status(404).json({ error: 'Liquidación no encontrada' });
+    }
+    if (!liquidacion.contratoId) {
+      return res.status(400).json({ error: 'La liquidación no tiene contrato asociado (sin inquilino)' });
+    }
+    if (liquidacion.estadoLiquidacionId !== ids.estadoLiquidacionEmitidaId) {
+      return res.status(400).json({
+        error: 'Solo se puede cobrar una liquidación en estado Emitida',
+        detalles: `Estado actual: ${liquidacion.estado?.nombre || liquidacion.estadoLiquidacionId}`
+      });
+    }
+
+    const totalInquilino = liquidacion.items.reduce((sum, item) => {
+      const importeItem = importeEnBoleta(item);
+      return sum + (importeItem !== null ? importeItem : 0);
+    }, 0);
+
+    if (totalInquilino <= 0) {
+      return res.status(400).json({ error: 'El total a cobrar al inquilino es cero o negativo' });
+    }
+
+    const periodo = liquidacion.periodo || '';
+    const mm = periodo.length >= 7 ? periodo.substring(5, 7) : '';
+    const yyyy = periodo.length >= 4 ? periodo.substring(0, 4) : '';
+    const concepto = `Pago Liquidación Período ${mm}-${yyyy}`;
+
+    await prisma.$transaction(async (tx) => {
+      await tx.liquidacion.update({
+        where: { id },
+        data: { estadoLiquidacionId: ids.estadoLiquidacionPagadaId }
+      });
+      const tipoCredito = await tx.tipoMovimiento.findUnique({
+        where: { codigo: 'CREDITO' },
+        select: { id: true }
+      });
+      if (!tipoCredito) {
+        throw new Error('Tipo movimiento CREDITO no encontrado');
+      }
+      await tx.movimientoCuentaInquilino.create({
+        data: {
+          contratoId: liquidacion.contratoId,
+          liquidacionId: id,
+          tipoMovimientoId: tipoCredito.id,
+          concepto,
+          importe: totalInquilino,
+          medioPagoId: medioPagoId || null,
+          nroComprobante: nroComprobante || null,
+          fecha: new Date(),
+          createdById: req.user?.id || null
         }
+      });
+    });
+
+    const updated = await prisma.liquidacion.findUnique({
+      where: { id },
+      include: {
+        estado: { select: { id: true, codigo: true, nombre: true } },
+        contrato: true,
+        propiedad: true
       }
     });
 
     res.json(updated);
   } catch (error) {
-    console.error('Error al emitir liquidación:', error);
-    res.status(500).json({ error: 'Error al emitir liquidación' });
+    console.error('Error al cobrar liquidación:', error);
+    res.status(500).json({ error: error.message || 'Error al cobrar liquidación' });
   }
 };
 
@@ -1089,6 +1533,9 @@ export const generarLiquidacionesAutomaticas = async (req, res) => {
         const todosCompletados = items.every(item => item.estado === 'completado');
         const estadoInicial = todosCompletados ? 'lista_para_emitir' : 'pendiente_items';
 
+        // Calcular vencimientos automáticos
+        const vencimientosAuto = calcularVencimientosAutomaticos(periodoObjetivo);
+
         // Crear liquidación
         await prisma.liquidacion.create({
           data: {
@@ -1097,6 +1544,11 @@ export const generarLiquidacionesAutomaticas = async (req, res) => {
             periodo: periodoObjetivo,
             estado: estadoInicial,
             total,
+            vencimiento: vencimientosAuto.vencimiento,
+            vencimiento2: vencimientosAuto.vencimiento2,
+            interes2: vencimientosAuto.interes2,
+            vencimiento3: vencimientosAuto.vencimiento3,
+            interes3: vencimientosAuto.interes3,
             autoGenerada: true,
             items: {
               create: items
@@ -1143,6 +1595,149 @@ export const generarLiquidacionesAutomaticas = async (req, res) => {
       error: 'Error al generar liquidaciones automáticas',
       detalles: error.message
     });
+  }
+};
+
+/**
+ * Genera liquidaciones para todos los contratos vigentes de un período específico.
+ * Endpoint: POST /api/liquidaciones/generar-periodo
+ * Body: { periodo: "YYYY-MM" }
+ * Refactor: Bulk loading + loop in-memory + una sola transacción de escritura (evita N+1 y timeouts).
+ */
+export const generarLiquidacionesPeriodo = async (req, res) => {
+  try {
+    const { periodo } = req.body;
+
+    if (!periodo || !/^\d{4}-\d{2}$/.test(periodo)) {
+      return res.status(400).json({ error: 'El período es requerido y debe tener formato YYYY-MM' });
+    }
+
+    const periodoDate = new Date(periodo + '-01');
+    const inicioMes = new Date(periodoDate.getFullYear(), periodoDate.getMonth(), 1);
+    const finMes = new Date(periodoDate.getFullYear(), periodoDate.getMonth() + 1, 0);
+
+    // ----- PASO 1: Cargas masivas (máximo 3–4 queries) -----
+    const ids = await getIds();
+    const estadoBorradorId = ids.estadoLiquidacionBorradorId;
+    const estadoListaId = ids.estadoLiquidacionListaId;
+    const tipoCargoAlquilerId = ids.tipoCargoAlquilerId;
+    const quienPagaInquilinoId = ids.actorINQId;
+    const estadoItemCompletadoId = ids.estadoItemCompletadoId;
+
+    if (!estadoBorradorId || !estadoListaId) {
+      return res.status(500).json({ error: 'Faltan parámetros de estado de liquidación (BORRADOR/LISTA)' });
+    }
+
+    const contratosVigentes = await prisma.contrato.findMany({
+      where: {
+        deletedAt: null,
+        estado: { codigo: { in: ['vigente', 'prorrogado'] } },
+        fechaInicio: { lte: finMes },
+        OR: [
+          { fechaFin: null },
+          { fechaFin: { gte: inicioMes } }
+        ]
+      },
+      include: {
+        responsabilidades: { where: { activo: true, deletedAt: null }, include: { tipoCargo: true } },
+        propiedad: true,
+        inquilino: true
+      }
+    });
+
+    const contratoIds = contratosVigentes.map((c) => c.id);
+    if (contratoIds.length === 0) {
+      return res.json({
+        success: true,
+        periodo,
+        cantidad: 0,
+        omitidas: 0,
+        mensaje: 'No hay contratos vigentes en el período.'
+      });
+    }
+
+    const liquidacionesExistentes = await prisma.liquidacion.findMany({
+      where: {
+        contratoId: { in: contratoIds },
+        periodo,
+        deletedAt: null
+      },
+      select: { contratoId: true }
+    });
+    const contratoIdsConLiquidacion = new Set(liquidacionesExistentes.map((l) => l.contratoId));
+
+    const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+
+    // ----- PASO 2: Bucle 100% en memoria (sin más SELECTs) -----
+    const liquidacionesAGuardar = [];
+
+    for (const contrato of contratosVigentes) {
+      if (contratoIdsConLiquidacion.has(contrato.id)) continue;
+
+      const items = [];
+
+      const alquilerResp = contrato.responsabilidades?.find((r) => r.tipoCargoId === tipoCargoAlquilerId || r.tipoCargo?.codigo === 'ALQUILER');
+      const montoAlquiler = alquilerResp ? parseFloat(contrato.montoActual ?? contrato.montoInicial ?? 0) : 0;
+      if (montoAlquiler > 0 && tipoCargoAlquilerId && estadoItemCompletadoId) {
+        items.push({
+          tipoCargoId: tipoCargoAlquilerId,
+          importe: montoAlquiler,
+          quienSoportaCostoId: quienPagaInquilinoId,
+          estadoItemId: estadoItemCompletadoId,
+          observaciones: 'Alquiler del período'
+        });
+      }
+
+      if (items.length === 0) continue;
+
+      const total = items.reduce((sum, item) => sum + (parseFloat(item.importe) || 0), 0);
+      const estadoInicial = items.length > 0 && items[0].importe > 0 ? estadoListaId : estadoBorradorId;
+
+      liquidacionesAGuardar.push({
+        liquidacionData: {
+          contratoId: contrato.id,
+          propiedadId: contrato.propiedadId,
+          periodo,
+          estadoLiquidacionId: estadoInicial,
+          total,
+          vencimiento: vencimientosAuto.vencimiento,
+          vencimiento2: vencimientosAuto.vencimiento2,
+          interes2: vencimientosAuto.interes2,
+          vencimiento3: vencimientosAuto.vencimiento3,
+          interes3: vencimientosAuto.interes3
+        },
+        items
+      });
+    }
+
+    const omitidas = contratoIds.length - liquidacionesAGuardar.length;
+    const errores = [];
+
+    // ----- PASO 3: Una sola transacción con N creates (cada uno con items anidados) -----
+    if (liquidacionesAGuardar.length > 0) {
+      await prisma.$transaction(
+        liquidacionesAGuardar.map(({ liquidacionData, items }) =>
+          prisma.liquidacion.create({
+            data: {
+              ...liquidacionData,
+              items: { create: items }
+            }
+          })
+        )
+      );
+    }
+
+    res.json({
+      success: true,
+      periodo,
+      cantidad: liquidacionesAGuardar.length,
+      omitidas,
+      errores: errores.length > 0 ? errores : undefined,
+      mensaje: `Se generaron ${liquidacionesAGuardar.length} liquidaciones para el período ${periodo}. ${omitidas} omitidas (ya existían).`
+    });
+  } catch (error) {
+    console.error('Error al generar liquidaciones del período:', error);
+    res.status(500).json({ error: error.message || 'Error al generar liquidaciones' });
   }
 };
 
@@ -1307,164 +1902,49 @@ export const getPendientesItems = async (req, res) => {
 
 /**
  * Completa un item de liquidación
- * Endpoint: POST /api/liquidaciones/items/:id/completar
- * Si todos los ítems quedan completados, la liquidación pasa a estado "Lista para emitir" (LISTA).
+ * POST /api/liquidaciones/items/:id/completar
  */
 export const completarItem = async (req, res) => {
   try {
     const { id } = req.params;
     const { importe, observaciones } = req.body;
-
-    // Validar importe
-    const importeNum = parseFloat(importe);
-    if (isNaN(importeNum) || importeNum < 0) {
-      return res.status(400).json({ error: 'El importe debe ser un número mayor o igual a 0' });
-    }
-
     const ids = await getIds();
     if (!ids.estadoItemPendienteId || !ids.estadoItemCompletadoId || !ids.estadoLiquidacionBorradorId || !ids.estadoLiquidacionListaId) {
       return res.status(500).json({ error: 'Faltan estados parametrizados (PENDIENTE, COMPLETADO, BORRADOR, LISTA)' });
     }
-
-    // Obtener el item
-    const item = await prisma.liquidacionItem.findUnique({
-      where: { id },
-      include: {
-        liquidacion: { include: { items: true } }
-      }
-    });
-
-    if (!item) {
-      return res.status(404).json({ error: 'Item no encontrado' });
-    }
-
-    // Validar que el item esté pendiente (por estadoItemId)
-    if (item.estadoItemId !== ids.estadoItemPendienteId) {
-      return res.status(400).json({ 
-        error: 'El item ya está completado o no aplica',
-        estadoActual: item.estadoItemId
-      });
-    }
-
-    const usuarioId = req.user?.id ?? null;
-
-    // Actualizar el item a completado
-    const itemActualizado = await prisma.liquidacionItem.update({
-      where: { id },
-      data: {
-        importe: importeNum,
-        estadoItemId: ids.estadoItemCompletadoId,
-        completadoAt: new Date(),
-        completadoById: usuarioId,
-        observaciones: observaciones || item.observaciones
-      }
-    });
-
-    // Recalcular total y ver si todos los ítems están completados
-    const todosItems = await prisma.liquidacionItem.findMany({
-      where: { liquidacionId: item.liquidacionId }
-    });
-
-    const nuevoTotal = todosItems.reduce((sum, it) => {
-      return sum + (it.importe ? parseFloat(it.importe) : 0);
-    }, 0);
-
-    const todosCompletados = todosItems.every(it => it.estadoItemId === ids.estadoItemCompletadoId);
-
-    // Pasar liquidación a "Lista para emitir" (LISTA) si todos completados; si no, mantener BORRADOR
-    const nuevoEstadoLiquidacionId = todosCompletados ? ids.estadoLiquidacionListaId : ids.estadoLiquidacionBorradorId;
-
-    await prisma.liquidacion.update({
-      where: { id: item.liquidacionId },
-      data: {
-        total: nuevoTotal,
-        estadoLiquidacionId: nuevoEstadoLiquidacionId
-      }
-    });
-
-    res.json({ 
-      ok: true,
-      item: itemActualizado,
-      liquidacionEstado: todosCompletados ? 'LISTA' : 'BORRADOR'
-    });
-
+    const result = await completarItemService(
+      parseInt(id, 10),
+      { importe, observaciones },
+      ids,
+      req.user?.id ?? null
+    );
+    return res.json({ ok: true, ...result });
   } catch (error) {
     console.error('Error al completar item:', error);
-    res.status(500).json({ error: 'Error al completar item' });
+    if (error.code === 'NOT_FOUND') return res.status(404).json({ error: error.message });
+    if (error.code === 'VALIDATION') return res.status(400).json({ error: error.message, estadoActual: error.estadoActual });
+    return res.status(500).json({ error: 'Error al completar item' });
   }
 };
 
 /**
- * Reabre un item completado (opcional)
- * Endpoint: POST /api/liquidaciones/items/:id/reabrir
+ * Reabre un item completado
+ * POST /api/liquidaciones/items/:id/reabrir
  */
 export const reabrirItem = async (req, res) => {
   try {
     const { id } = req.params;
-
     const ids = await getIds();
     if (!ids.estadoItemPendienteId || !ids.estadoItemCompletadoId || !ids.estadoLiquidacionBorradorId || !ids.estadoLiquidacionEmitidaId) {
       return res.status(500).json({ error: 'Faltan estados parametrizados' });
     }
-
-    const item = await prisma.liquidacionItem.findUnique({
-      where: { id },
-      include: {
-        liquidacion: { include: { items: true } }
-      }
-    });
-
-    if (!item) {
-      return res.status(404).json({ error: 'Item no encontrado' });
-    }
-
-    if (item.estadoItemId !== ids.estadoItemCompletadoId) {
-      return res.status(400).json({ 
-        error: 'Solo se pueden reabrir items completados',
-        estadoActual: item.estadoItemId
-      });
-    }
-
-    if (item.liquidacion.estadoLiquidacionId === ids.estadoLiquidacionEmitidaId) {
-      return res.status(400).json({ error: 'No se puede reabrir un item de una liquidación ya emitida' });
-    }
-
-    const itemActualizado = await prisma.liquidacionItem.update({
-      where: { id },
-      data: {
-        estadoItemId: ids.estadoItemPendienteId,
-        importe: null,
-        completadoAt: null,
-        completadoById: null
-      }
-    });
-
-    // Recalcular total de la liquidación
-    const todosItems = await prisma.liquidacionItem.findMany({
-      where: { liquidacionId: item.liquidacionId }
-    });
-
-    const nuevoTotal = todosItems.reduce((sum, it) => {
-      return sum + (it.importe ? parseFloat(it.importe) : 0);
-    }, 0);
-
-    // Al reabrir un ítem, la liquidación vuelve a BORRADOR
-    await prisma.liquidacion.update({
-      where: { id: item.liquidacionId },
-      data: {
-        total: nuevoTotal,
-        estadoLiquidacionId: ids.estadoLiquidacionBorradorId
-      }
-    });
-
-    res.json({ 
-      ok: true,
-      item: itemActualizado
-    });
-
+    const result = await reabrirItemService(parseInt(id, 10), ids);
+    return res.json({ ok: true, ...result });
   } catch (error) {
     console.error('Error al reabrir item:', error);
-    res.status(500).json({ error: 'Error al reabrir item' });
+    if (error.code === 'NOT_FOUND') return res.status(404).json({ error: error.message });
+    if (error.code === 'VALIDATION') return res.status(400).json({ error: error.message, estadoActual: error.estadoActual });
+    return res.status(500).json({ error: 'Error al reabrir item' });
   }
 };
 
@@ -1473,135 +1953,96 @@ export const reabrirItem = async (req, res) => {
 // ============================================
 
 /**
- * Determina si un período corresponde según la periodicidad del impuesto
- * @param {string} codigoPeriodicidad - Código de la periodicidad (MENSUAL, BIMESTRAL, ANUAL, etc.)
- * @param {string} periodo - Período en formato "YYYY-MM"
- * @returns {boolean} - true si corresponde generar el impuesto en ese período
+ * Validación fail-fast: todos los ajustes de alquiler que debían realizarse ANTES del período a liquidar
+ * deben estar registrados en ContratoAjuste. El ajuste del propio mes a liquidar no bloquea: ese mes se
+ * liquida con el monto actual; el monto nuevo aplica al mes siguiente (ej. ajuste 30/03 no bloquea generar marzo).
+ * @returns {{ ok: true } | { ok: false, contratosBloqueantes: Array<{ contratoId: number, mensaje?: string, fechasPendientes?: string[] }> }}
  */
-function correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo) {
-  if (!codigoPeriodicidad || !periodo) return false;
-
+async function validarAjustesFailFast(periodo) {
+  if (!/^\d{4}-\d{2}$/.test(periodo)) {
+    return { ok: false, contratosBloqueantes: [], error: 'Período inválido' };
+  }
   const [anio, mes] = periodo.split('-').map(Number);
-  const mesNumero = mes;
+  const startOfPeriod = new Date(anio, mes - 1, 1);
+  startOfPeriod.setHours(0, 0, 0, 0);
+  const endOfPeriod = new Date(anio, mes, 0);
+  endOfPeriod.setHours(23, 59, 59, 999);
+  // Solo exigir ajustes cargados hasta el mes ANTERIOR al que se liquida (el ajuste del mes actual no bloquea)
+  const endOfPeriodAnterior = new Date(anio, mes - 1, 0);
+  endOfPeriodAnterior.setHours(23, 59, 59, 999);
 
-  switch (codigoPeriodicidad.toUpperCase()) {
-    case 'MENSUAL':
-      return true; // Siempre se genera
+  const estadoVigente = await prisma.estadoContrato.findFirst({
+    where: { codigo: 'VIGENTE', deletedAt: null },
+    select: { id: true }
+  });
+  if (!estadoVigente) return { ok: true };
 
-    case 'BIMESTRAL':
-      // Generar solo en meses pares (feb, abr, jun, ago, oct, dic)
-      // O alternativamente en meses impares (ene, mar, may, jul, sep, nov)
-      // Usamos meses pares como estrategia por defecto
-      return mesNumero % 2 === 0;
+  const contratosVigentesEnPeriodo = await prisma.contrato.findMany({
+    where: {
+      estadoContratoId: estadoVigente.id,
+      frecuenciaAjusteMeses: { not: null },
+      activo: true,
+      deletedAt: null,
+      fechaInicio: { lte: endOfPeriod },
+      OR: [{ fechaFin: null }, { fechaFin: { gte: startOfPeriod } }]
+    },
+    select: { id: true, fechaInicio: true, frecuenciaAjusteMeses: true }
+  });
 
-    case 'TRIMESTRAL':
-      // Generar en marzo, junio, septiembre, diciembre (meses múltiplos de 3)
-      return mesNumero % 3 === 0;
+  const ajustesCargadosPorContrato = await prisma.contratoAjuste.findMany({
+    where: {
+      contratoId: { in: contratosVigentesEnPeriodo.map((c) => c.id) },
+      activo: true,
+      deletedAt: null,
+      fechaAjuste: { lte: endOfPeriod }
+    },
+    select: { contratoId: true, fechaAjuste: true }
+  });
 
-    case 'CUATRIMESTRAL':
-      // Generar en abril, agosto, diciembre (meses múltiplos de 4)
-      return mesNumero % 4 === 0;
-
-    case 'SEMESTRAL':
-      // Generar en junio y diciembre
-      return mesNumero === 6 || mesNumero === 12;
-
-    case 'ANUAL':
-      // Generar solo en enero
-      return mesNumero === 1;
-
-    default:
-      console.warn(`Periodicidad desconocida: ${codigoPeriodicidad}, asumiendo MENSUAL`);
-      return true;
+  const mesesCargadosPorContrato = new Map();
+  for (const a of ajustesCargadosPorContrato) {
+    const d = new Date(a.fechaAjuste);
+    // Usar UTC para evitar desfase: fechaAjuste "01/12/2024" en BD (UTC) no debe verse como noviembre en servidor Argentina
+    const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+    if (!mesesCargadosPorContrato.has(a.contratoId)) mesesCargadosPorContrato.set(a.contratoId, new Set());
+    mesesCargadosPorContrato.get(a.contratoId).add(key);
   }
+
+  const periodoYm = `${anio}-${String(mes).padStart(2, '0')}`;
+  const contratosBloqueantes = [];
+  for (const c of contratosVigentesEnPeriodo) {
+    const mesesDebidos = mesesConAjusteDebido(c.fechaInicio, c.frecuenciaAjusteMeses, endOfPeriodAnterior);
+    const mesesCargados = mesesCargadosPorContrato.get(c.id) || new Set();
+    let mesesPendientes = [...mesesDebidos].filter((m) => !mesesCargados.has(m)).sort();
+    // Nunca bloquear por el mes que se está liquidando: ese mes se liquida con monto actual
+    mesesPendientes = mesesPendientes.filter((m) => m !== periodoYm);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[validarAjustesFailFast] Contrato', c.id, 'fechaInicio', c.fechaInicio, 'frecuencia', c.frecuenciaAjusteMeses, 'mesesDebidos', [...mesesDebidos], 'mesesCargados', [...mesesCargados], 'mesesPendientes', mesesPendientes);
+    }
+    if (mesesPendientes.length > 0) {
+      const fechasPendientes = mesesPendientes.map((ym) => {
+        const [y, mo] = ym.split('-').map(Number);
+        return `01/${String(mo).padStart(2, '0')}/${y}`;
+      });
+      contratosBloqueantes.push({
+        contratoId: c.id,
+        mensaje: `El contrato #${c.id} tiene ajuste(s) de alquiler pendientes de registrar (ej. ${fechasPendientes[0]}). No se puede generar el lote hasta cargar todos los ajustes debidos.`,
+        fechasPendientes
+      });
+    }
+  }
+  if (contratosBloqueantes.length > 0) {
+    return { ok: false, contratosBloqueantes };
+  }
+  return { ok: true };
 }
 
 /**
- * Determina si un item debe incluirse en la boleta del inquilino según las reglas A-F
- * @param {Object} item - Item de liquidación con pagadoPorActor y quienSoportaCosto
- * @returns {boolean} - true si el item debe incluirse en la boleta
- */
-function aplicaEnBoletaInquilino(item) {
-  // Si no tiene pagadoPorActorId, no incluir (regla de datos incompletos)
-  if (!item.pagadoPorActorId || !item.pagadoPorActor) {
-    return false;
-  }
-
-  // Si no tiene quienSoportaCostoId, no incluir
-  if (!item.quienSoportaCostoId || !item.quienSoportaCosto) {
-    return false;
-  }
-
-  const pagadoPorCodigo = item.pagadoPorActor.codigo;
-  const soportaCostoCodigo = item.quienSoportaCosto.codigo;
-
-  // Regla A: ADMIN pagó y INQ soporta → SÍ incluir
-  if (pagadoPorCodigo === 'ADMIN' && soportaCostoCodigo === 'INQ') {
-    return true;
-  }
-
-  // Regla B: INQ pagó y PROP soporta → SÍ incluir (crédito)
-  if (pagadoPorCodigo === 'INQ' && soportaCostoCodigo === 'PROP') {
-    return true;
-  }
-
-  // Regla C: INQ pagó y INQ soporta → NO incluir
-  if (pagadoPorCodigo === 'INQ' && soportaCostoCodigo === 'INQ') {
-    return false;
-  }
-
-  // Regla D: PROP pagó y PROP soporta → NO incluir
-  if (pagadoPorCodigo === 'PROP' && soportaCostoCodigo === 'PROP') {
-    return false;
-  }
-
-  // Regla E: PROP pagó y INQ soporta → SÍ incluir
-  if (pagadoPorCodigo === 'PROP' && soportaCostoCodigo === 'INQ') {
-    return true;
-  }
-
-  // Regla F: ADMIN pagó y PROP soporta → NO incluir
-  if (pagadoPorCodigo === 'ADMIN' && soportaCostoCodigo === 'PROP') {
-    return false;
-  }
-
-  // Por defecto, no incluir si no cumple ninguna regla
-  return false;
-}
-
-/**
- * Calcula el importe que debe aparecer en la boleta del inquilino para un item
- * @param {Object} item - Item de liquidación con pagadoPorActor, quienSoportaCosto e importe
- * @returns {number|null} - Importe con signo correcto (positivo = cargo, negativo = crédito), o null si no aplica
- */
-function importeEnBoleta(item) {
-  // Si no aplica en boleta, retornar null
-  if (!aplicaEnBoletaInquilino(item)) {
-    return null;
-  }
-
-  const importe = item.importe ? parseFloat(item.importe) : 0;
-  if (isNaN(importe) || importe === 0) {
-    return null;
-  }
-
-  const pagadoPorCodigo = item.pagadoPorActor.codigo;
-  const soportaCostoCodigo = item.quienSoportaCosto.codigo;
-
-  // Regla B: INQ pagó y PROP soporta → importe NEGATIVO (crédito/reintegro)
-  if (pagadoPorCodigo === 'INQ' && soportaCostoCodigo === 'PROP') {
-    return -Math.abs(importe);
-  }
-
-  // Reglas A y E: ADMIN/PROP pagó y INQ soporta → importe POSITIVO (cargo)
-  return Math.abs(importe);
-}
-
-/**
- * Genera liquidaciones e items de impuestos para un período específico
+ * Genera liquidaciones e items de impuestos para un período específico.
+ * Ejecuta todo el lote dentro de una única transacción (all-or-nothing).
  * @param {string} periodo - Período en formato "YYYY-MM"
  * @param {number} usuarioId - ID del usuario que ejecuta la generación
- * @returns {Promise<{creadas: number, itemsCreados: number, errores: number}>}
+ * @returns {Promise<{creadas: number, itemsCreados: number}>}
  */
 async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
   // Validar formato de período
@@ -1730,18 +2171,23 @@ async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
 
   console.log(`[LIQUIDACION-IMPUESTOS] Encontradas ${propiedadesConImpuestos.length} propiedades con impuestos o expensas activos`);
 
-  let liquidacionesCreadas = 0;
-  let itemsCreados = 0;
-  let errores = 0;
-  const erroresDetalle = [];
+  // Tipos de expensa (ORD/EXT) para items de EXPENSAS
+  const tiposExpensa = await prisma.tipoExpensa.findMany({
+    where: { activo: true, deletedAt: null }
+  });
 
-  // Procesar cada propiedad
-  for (const propiedad of propiedadesConImpuestos) {
-    const propiedadId = propiedad.id;
+  // Una única transacción para todo el lote: all-or-nothing
+  const resultado = await prisma.$transaction(async (tx) => {
+    let liquidacionesCreadas = 0;
+    let itemsCreados = 0;
 
-    try {
-      // Buscar contratos vigentes para esta propiedad (opcional)
-      const contratosVigentes = await prisma.contrato.findMany({
+    for (const propiedad of propiedadesConImpuestos) {
+      const propiedadId = propiedad.id;
+      let itemsCreadosEnPropiedad = 0;
+      let liquidacionCreada = false;
+
+      // Buscar contratos en rango para esta propiedad (solo para determinar si hay uno VIGENTE)
+      const contratosEnRango = await tx.contrato.findMany({
         where: {
           propiedadId: propiedadId,
           activo: true,
@@ -1759,619 +2205,127 @@ async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
               deletedAt: null
             }
           },
-          inquilino: true
+          inquilino: true,
+          gastosIniciales: {
+            where: {
+              activo: true,
+              deletedAt: null
+            },
+            include: {
+              tipoGastoInicial: true,
+              quienPaga: true
+            }
+          },
+          garantias: {
+            where: {
+              activo: true,
+              deletedAt: null
+            }
+          }
         },
         orderBy: {
           fechaInicio: 'desc'
         }
       });
 
-      const contratoPrincipal = contratosVigentes.length > 0 ? contratosVigentes[0] : null;
+      // Contrato principal: solo si existe uno con estado VIGENTE en el período (regla de negocio)
+      const contratoPrincipal =
+        ids.estadoContratoVigenteId != null
+          ? (contratosEnRango.find((c) => c.estadoContratoId === ids.estadoContratoVigenteId) ?? null)
+          : null;
+      const esContratoVigente = !!contratoPrincipal;
 
-      // Crear o reutilizar liquidación para esta propiedad y período
-      const liquidacion = await prisma.liquidacion.upsert({
-        where: {
-          unique_propiedad_periodo: {
-            propiedadId: propiedadId,
-            periodo: periodo
-          }
-        },
-        create: {
-          propiedadId: propiedadId,
-          contratoId: contratoPrincipal?.id || null,
-          periodo: periodo,
-          estadoLiquidacionId: ids.estadoLiquidacionBorradorId,
-          total: 0,
-          autoGenerada: true,
-          createdById: usuarioId
-        },
-        update: contratoPrincipal
-          ? { contratoId: contratoPrincipal.id }
-          : {},
-        include: {
-          items: {
-            where: {
-              activo: true,
-              deletedAt: null
-            }
-          }
-        }
-      });
+      /*
+       * REGLAS DE NEGOCIO — Dos escenarios mutuamente excluyentes:
+       *
+       * ESCENARIO A — Propiedad SIN contrato vigente:
+       *   - Liquidación directa al Propietario.
+       *   - Items: TODOS los impuestos y cargos (PropiedadImpuesto, PropiedadCargo).
+       *   - Responsable: 100% Propietario (quienSoportaCostoId = PROP).
+       *   - Restricción: NO generar Alquiler, Gastos Administrativos, Honorarios ni Gastos Iniciales.
+       *
+       * ESCENARIO B — Propiedad CON contrato vigente (estadoContrato === VIGENTE):
+       *   - Liquidación según contrato y tabla ContratoResponsabilidad.
+       *   - Fijos: Alquiler (montoActual), Gastos Administrativos, Honorarios del Propietario.
+       *   - Variables: Impuestos/Cargos solo si tienen fila en ContratoResponsabilidad (quién paga qué).
+       *   - Gastos Iniciales: solo si es la primera liquidación del contrato y gastos_iniciales_liquidados === false;
+       *     al generar, se hace update del contrato a gastos_iniciales_liquidados = true en la misma transacción.
+       */
 
-      if (liquidacion.items.length === 0) {
-        liquidacionesCreadas++;
-      }
+      const totalCostoAveriguacion = contratoPrincipal?.garantias?.reduce(
+        (total, g) => total + (parseFloat(g.costoAveriguacion) || 0), 0
+      ) || 0;
 
-      // Procesar cada impuesto activo de la propiedad
-      for (const impuesto of propiedad.impuestos) {
-        try {
-          // Determinar periodicidad (prioridad: impuesto.periodicidad > tipoImpuesto.periodicidad)
-          const periodicidad = impuesto.periodicidad || impuesto.tipoImpuesto?.periodicidad;
-          let codigoPeriodicidad = periodicidad?.codigo || 'MENSUAL';
-          
-          // Normalizar código de periodicidad (extraer solo la parte después del guion bajo si existe)
-          // Ej: "1_MENSUAL" -> "MENSUAL", "2_BIMESTRAL" -> "BIMESTRAL"
-          if (codigoPeriodicidad.includes('_')) {
-            codigoPeriodicidad = codigoPeriodicidad.split('_').slice(1).join('_');
-          }
+      const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+      const contratoIdParaLiq = esContratoVigente && contratoPrincipal ? contratoPrincipal.id : null;
 
-          // Verificar si corresponde generar según periodicidad
-          if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo)) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Saltando ${impuesto.tipoImpuesto?.codigo} por periodicidad ${codigoPeriodicidad} en período ${periodo}`);
-            continue;
-          }
-
-          // Verificar si ya existe un item para este impuesto en este período
-          // Buscar con periodoRef específico o sin periodoRef (para compatibilidad)
-          const itemExistente = await prisma.liquidacionItem.findFirst({
-            where: {
-              liquidacionId: liquidacion.id,
-              propiedadImpuestoId: impuesto.id,
-              activo: true,
-              deletedAt: null,
-              OR: [
-                { periodoRef: periodo },
-                { periodoRef: null }
-              ]
-            },
-            orderBy: [
-              { periodoRef: 'desc' } // Priorizar items con periodoRef
-            ]
-          });
-
-          if (itemExistente) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Item ya existe para impuesto ${impuesto.tipoImpuesto?.codigo} en período ${periodo}`);
-            continue;
-          }
-
-          // Importe anterior: solo del período inmediatamente anterior (ej. 01-2026 si actual es 02-2026)
-          // Así no se muestra valor si no hay liquidación completada el mes pasado
-          const [anioActual, mesActual] = periodo.split('-').map(Number);
-          const mesAnterior = mesActual === 1 ? 12 : mesActual - 1;
-          const anioAnterior = mesActual === 1 ? anioActual - 1 : anioActual;
-          const periodoAnterior = `${String(mesAnterior).padStart(2, '0')}-${anioAnterior}`;
-
-          const ultimoItemCompletado = await prisma.liquidacionItem.findFirst({
-            where: {
-              propiedadImpuestoId: impuesto.id,
-              activo: true,
-              deletedAt: null,
-              importe: { not: null },
-              estadoItemId: ids.estadoItemCompletadoId,
-              liquidacion: {
-                propiedadId: propiedadId,
-                periodo: periodoAnterior
-              }
-            }
-          });
-
-          const importeAnterior = ultimoItemCompletado && ultimoItemCompletado.importe 
-            ? parseFloat(ultimoItemCompletado.importe) 
-            : null;
-
-          // Buscar responsabilidad del contrato para este impuesto (si existe contrato)
-          const responsabilidad = contratoPrincipal?.responsabilidades?.find(
-            r => r.tipoImpuestoId === impuesto.tipoImpuestoId
-          ) || null;
-          
-          if (contratoPrincipal && !responsabilidad) {
-            console.log(`[LIQUIDACION-IMPUESTOS] No se encontró responsabilidad para impuesto ${impuesto.tipoImpuesto?.codigo} (tipoImpuestoId: ${impuesto.tipoImpuestoId}) en contrato ${contratoPrincipal.id}. Responsabilidades disponibles:`, 
-              contratoPrincipal.responsabilidades.map(r => ({ 
-                tipoImpuestoId: r.tipoImpuestoId, 
-                tipoCargoId: r.tipoCargoId 
-              }))
-            );
-          }
-
-          // Determinar actores según responsabilidad
-          let actorFacturadoId = null;
-          let quienSoportaCostoId = null;
-          let pagadoPorActorId = null;
-          let afectaSaldoInquilino = false;
-          let visibleEnBoletaInquilino = false;
-
-          if (responsabilidad) {
-            // Si hay contrato: usar valores de la responsabilidad
-            actorFacturadoId = null; // No se usa por el momento
-            quienSoportaCostoId = responsabilidad.quienSoportaCostoId;
-            // pagado_por_actor_id = quien_paga_proveedor_id (según contrato)
-            pagadoPorActorId = responsabilidad.quienPagaProveedorId;
-
-            afectaSaldoInquilino = ids.actorINQId != null && quienSoportaCostoId === ids.actorINQId;
-            visibleEnBoletaInquilino = afectaSaldoInquilino; // Solo visible si afecta saldo inquilino
-          } else {
-            // Si no hay contrato vigente: defaults operativos (administración pura)
-            // pagado_por_actor_id = INM, quien_soporta_costo_id = PROP
-            actorFacturadoId = null; // No se usa por el momento
-            quienSoportaCostoId = ids.actorPROPId || null;
-            pagadoPorActorId = ids.actorINMId || null;
-            afectaSaldoInquilino = false; // No hay inquilino, no afecta saldo
-            visibleEnBoletaInquilino = false; // No hay inquilino, no visible en boleta
-          }
-
-          // No generar ítem si inquilino es quien paga y quien soporta (no aporta a la liquidación)
-          if (ids.actorINQId != null && pagadoPorActorId === ids.actorINQId && quienSoportaCostoId === ids.actorINQId) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Omitido impuesto ${impuesto.tipoImpuesto?.codigo}: inquilino paga y soporta`);
-            continue;
-          }
-
-          // Crear item de liquidación
-          await prisma.liquidacionItem.create({
-            data: {
-              liquidacionId: liquidacion.id,
-              propiedadImpuestoId: impuesto.id,
-              periodoRef: periodo,
-              importe: null, // Sin importe inicial
-              importeAnterior: importeAnterior, // Importe del período anterior
-              estadoItemId: ids.estadoItemPendienteId,
-              actorFacturadoId: actorFacturadoId,
-              quienSoportaCostoId: quienSoportaCostoId,
-              pagadoPorActorId: pagadoPorActorId,
-              visibleEnBoletaInquilino: visibleEnBoletaInquilino,
-              afectaSaldoInquilino: afectaSaldoInquilino,
-              createdById: usuarioId
-            }
-          });
-
-          itemsCreados++;
-          console.log(`[LIQUIDACION-IMPUESTOS] Creado item para impuesto ${impuesto.tipoImpuesto?.codigo} en propiedad ${propiedadId}`);
-
-        } catch (error) {
-          errores++;
-          erroresDetalle.push({
-            propiedadId: propiedadId,
-            impuestoId: impuesto.id,
-            error: error.message
-          });
-          console.error(`[LIQUIDACION-IMPUESTOS] Error al crear item para impuesto ${impuesto.tipoImpuesto?.codigo}:`, error);
-        }
-      }
-
-      // Procesar otros cargos (SEGURO, etc.) - excluyendo EXPENSAS que se procesan aparte
-      for (const propiedadCargo of propiedad.cargos || []) {
-        const codigoCargo = propiedadCargo.tipoCargo?.codigo;
-        
-        // Saltar EXPENSAS (ya se procesan en otro bloque)
-        if (codigoCargo === 'EXPENSAS') {
-          continue;
-        }
-
-        try {
-          console.log(`[LIQUIDACION-IMPUESTOS] Procesando cargo ${codigoCargo} (tipoCargoId: ${propiedadCargo.tipoCargoId}) para propiedad ${propiedadId}`);
-          
-          // Determinar periodicidad (prioridad: propiedadCargo.periodicidad > tipoCargo.periodicidad)
-          const periodicidadCargo = propiedadCargo.periodicidad || propiedadCargo.tipoCargo?.periodicidad;
-          let codigoPeriodicidadCargo = periodicidadCargo?.codigo || 'MENSUAL';
-          
-          // Normalizar código de periodicidad (extraer solo la parte después del guion bajo si existe)
-          // Ej: "1_MENSUAL" -> "MENSUAL", "2_BIMESTRAL" -> "BIMESTRAL"
-          if (codigoPeriodicidadCargo.includes('_')) {
-            codigoPeriodicidadCargo = codigoPeriodicidadCargo.split('_').slice(1).join('_');
-          }
-          
-          console.log(`[LIQUIDACION-IMPUESTOS] Periodicidad del cargo ${codigoCargo}: ${codigoPeriodicidadCargo} (periodicidadId: ${propiedadCargo.periodicidadId || 'null'})`);
-
-          // Verificar si corresponde generar según periodicidad
-          if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidadCargo, periodo)) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Saltando ${codigoCargo} por periodicidad ${codigoPeriodicidadCargo} en período ${periodo}`);
-            continue;
-          }
-
-          // Verificar si ya existe un item para este cargo en este período
-          // Buscar con periodoRef específico primero, luego sin periodoRef (para compatibilidad)
-          const itemExistente = await prisma.liquidacionItem.findFirst({
-            where: {
-              liquidacionId: liquidacion.id,
-              tipoCargoId: propiedadCargo.tipoCargoId,
-              activo: true,
-              deletedAt: null,
-              OR: [
-                { periodoRef: periodo },
-                { periodoRef: null }
-              ]
-            },
-            orderBy: [
-              { periodoRef: 'desc' } // Priorizar items con periodoRef
-            ]
-          });
-
-          if (itemExistente) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Item ya existe para cargo ${codigoCargo} (id: ${itemExistente.id}, periodoRef: ${itemExistente.periodoRef}) en período ${periodo}`);
-            continue;
-          }
-          
-          console.log(`[LIQUIDACION-IMPUESTOS] No se encontró item existente para cargo ${codigoCargo}, creando nuevo item...`);
-
-          // Buscar el último item completado de este cargo/propiedad para obtener importeAnterior
-          const ultimoItemCompletadoCargo = await prisma.liquidacionItem.findFirst({
-            where: {
-              tipoCargoId: propiedadCargo.tipoCargoId,
-              activo: true,
-              deletedAt: null,
-              importe: { not: null },
-              estadoItemId: ids.estadoItemCompletadoId,
-              liquidacion: {
-                propiedadId: propiedadId,
-                periodo: { lt: periodo } // Período anterior al actual
-              }
-            },
-            include: {
-              liquidacion: {
-                select: {
-                  periodo: true
-                }
-              }
-            },
-            orderBy: [
-              { liquidacion: { periodo: 'desc' } }, // Más reciente primero
-              { createdAt: 'desc' }
-            ]
-          });
-
-          const importeAnteriorCargo = ultimoItemCompletadoCargo && ultimoItemCompletadoCargo.importe 
-            ? parseFloat(ultimoItemCompletadoCargo.importe) 
-            : null;
-
-          // Buscar responsabilidad del contrato para este cargo (si existe contrato)
-          const responsabilidadCargo = contratoPrincipal?.responsabilidades?.find(
-            r => r.tipoCargoId === propiedadCargo.tipoCargoId
-          ) || null;
-          
-          if (contratoPrincipal && !responsabilidadCargo) {
-            console.log(`[LIQUIDACION-IMPUESTOS] No se encontró responsabilidad para cargo ${codigoCargo} (tipoCargoId: ${propiedadCargo.tipoCargoId}) en contrato ${contratoPrincipal.id}. Responsabilidades disponibles:`, 
-              contratoPrincipal.responsabilidades.map(r => ({ 
-                tipoImpuestoId: r.tipoImpuestoId, 
-                tipoCargoId: r.tipoCargoId 
-              }))
-            );
-          }
-
-          // Determinar actores según responsabilidad
-          let actorFacturadoIdCargo = null;
-          let quienSoportaCostoIdCargo = null;
-          let pagadoPorActorIdCargo = null;
-          let afectaSaldoInquilinoCargo = false;
-          let visibleEnBoletaInquilinoCargo = false;
-
-          if (responsabilidadCargo) {
-            // Si hay contrato: usar valores de la responsabilidad
-            actorFacturadoIdCargo = null; // No se usa por el momento
-            quienSoportaCostoIdCargo = responsabilidadCargo.quienSoportaCostoId;
-            // pagado_por_actor_id = quien_paga_proveedor_id (según contrato)
-            pagadoPorActorIdCargo = responsabilidadCargo.quienPagaProveedorId;
-
-            afectaSaldoInquilinoCargo = ids.actorINQId != null && quienSoportaCostoIdCargo === ids.actorINQId;
-            visibleEnBoletaInquilinoCargo = afectaSaldoInquilinoCargo; // Solo visible si afecta saldo inquilino
-          } else {
-            // Si no hay contrato vigente: defaults operativos (administración pura)
-            actorFacturadoIdCargo = null; // No se usa por el momento
-            quienSoportaCostoIdCargo = ids.actorPROPId || null;
-            pagadoPorActorIdCargo = ids.actorINMId || null;
-            afectaSaldoInquilinoCargo = false; // No hay inquilino, no afecta saldo
-            visibleEnBoletaInquilinoCargo = false; // No hay inquilino, no visible en boleta
-          }
-
-          // No generar ítem si inquilino es quien paga y quien soporta
-          if (ids.actorINQId != null && pagadoPorActorIdCargo === ids.actorINQId && quienSoportaCostoIdCargo === ids.actorINQId) {
-            console.log(`[LIQUIDACION-IMPUESTOS] Omitido cargo ${codigoCargo}: inquilino paga y soporta`);
-            continue;
-          }
-
-          // Crear item de liquidación para el cargo
-          await prisma.liquidacionItem.create({
-            data: {
-              liquidacionId: liquidacion.id,
-              tipoCargoId: propiedadCargo.tipoCargoId,
-              periodoRef: periodo,
-              importe: null, // Sin importe inicial
-              importeAnterior: importeAnteriorCargo, // Importe del período anterior
-              estadoItemId: ids.estadoItemPendienteId,
-              actorFacturadoId: actorFacturadoIdCargo,
-              quienSoportaCostoId: quienSoportaCostoIdCargo,
-              pagadoPorActorId: pagadoPorActorIdCargo,
-              visibleEnBoletaInquilino: visibleEnBoletaInquilinoCargo,
-              afectaSaldoInquilino: afectaSaldoInquilinoCargo,
-              createdById: usuarioId
-            }
-          });
-
-          itemsCreados++;
-          console.log(`[LIQUIDACION-IMPUESTOS] Creado item para cargo ${codigoCargo} en propiedad ${propiedadId}`);
-
-        } catch (error) {
-          errores++;
-          erroresDetalle.push({
-            propiedadId: propiedadId,
-            tipoCargoId: propiedadCargo.tipoCargoId,
-            error: error.message
-          });
-          console.error(`[LIQUIDACION-IMPUESTOS] Error al crear item para cargo ${propiedadCargo.tipoCargo?.codigo}:`, error);
-        }
-      }
-
-      // Procesar expensas para esta propiedad
-      const propiedadCargoExpensas = propiedad.cargos?.find(c => c.tipoCargo?.codigo === 'EXPENSAS');
-      
-      if (propiedadCargoExpensas) {
-        // Obtener tipos de expensa (ORD y EXT)
-        const tiposExpensa = await prisma.tipoExpensa.findMany({
-          where: {
-            activo: true,
-            deletedAt: null
-          }
-        });
-
-        // Determinar periodicidad de expensas (prioridad: propiedadCargo.periodicidad > tipoCargo.periodicidad)
-        const periodicidadExpensas = propiedadCargoExpensas.tipoCargo?.periodicidad;
-        let codigoPeriodicidadExpensas = periodicidadExpensas?.codigo || 'MENSUAL';
-        
-        // Normalizar código de periodicidad (extraer solo la parte después del guion bajo si existe)
-        // Ej: "1_MENSUAL" -> "MENSUAL", "2_BIMESTRAL" -> "BIMESTRAL"
-        if (codigoPeriodicidadExpensas.includes('_')) {
-          codigoPeriodicidadExpensas = codigoPeriodicidadExpensas.split('_').slice(1).join('_');
-        }
-
-        // Verificar si corresponde generar según periodicidad
-        if (correspondeGenerarPorPeriodicidad(codigoPeriodicidadExpensas, periodo)) {
-          // Crear items para cada tipo de expensa (ORD y EXT); cada uno puede tener su responsabilidad
-          for (const tipoExpensa of tiposExpensa) {
-            // Buscar responsabilidad del contrato para este tipo de expensa (ORD o EXT)
-            const respPorTipo = contratoPrincipal?.responsabilidades?.find(
-              r => r.tipoCargoId === propiedadCargoExpensas.tipoCargoId && r.tipoExpensaId === tipoExpensa.id
-            );
-            const respSinTipo = contratoPrincipal?.responsabilidades?.find(
-              r => r.tipoCargoId === propiedadCargoExpensas.tipoCargoId && !r.tipoExpensaId
-            );
-            const responsabilidadExpensas = respPorTipo ?? respSinTipo ?? null;
-
-            // Determinar actores según responsabilidad (por tipo de expensa)
-            let actorFacturadoIdExpensas = null;
-            let quienSoportaCostoIdExpensas = null;
-            let pagadoPorActorIdExpensas = null;
-            let afectaSaldoInquilinoExpensas = false;
-            let visibleEnBoletaInquilinoExpensas = false;
-
-            if (responsabilidadExpensas) {
-              actorFacturadoIdExpensas = null;
-              quienSoportaCostoIdExpensas = responsabilidadExpensas.quienSoportaCostoId;
-              pagadoPorActorIdExpensas = responsabilidadExpensas.quienPagaProveedorId;
-              afectaSaldoInquilinoExpensas = ids.actorINQId != null && quienSoportaCostoIdExpensas === ids.actorINQId;
-              visibleEnBoletaInquilinoExpensas = afectaSaldoInquilinoExpensas;
-            } else {
-              // Default por tipo: EXT por defecto Inquilino paga, Propietario soporta
-              if (tipoExpensa.codigo === 'EXT') {
-                quienSoportaCostoIdExpensas = ids.actorPROPId || null;
-                pagadoPorActorIdExpensas = ids.actorINQId || null;
-              } else {
-                quienSoportaCostoIdExpensas = ids.actorPROPId || null;
-                pagadoPorActorIdExpensas = ids.actorINMId || null;
-              }
-              afectaSaldoInquilinoExpensas = ids.actorINQId != null && quienSoportaCostoIdExpensas === ids.actorINQId;
-              visibleEnBoletaInquilinoExpensas = afectaSaldoInquilinoExpensas;
-            }
-
-            // No generar ítem si inquilino es quien paga y quien soporta
-            if (ids.actorINQId != null && pagadoPorActorIdExpensas === ids.actorINQId && quienSoportaCostoIdExpensas === ids.actorINQId) {
-              console.log(`[LIQUIDACION-IMPUESTOS] Omitida expensa ${tipoExpensa.codigo}: inquilino paga y soporta`);
-              continue;
-            }
-
-            try {
-              // Verificar si ya existe un item para este tipo de expensa en este período
-              const itemExistente = await prisma.liquidacionItem.findFirst({
-                where: {
-                  liquidacionId: liquidacion.id,
-                  tipoCargoId: propiedadCargoExpensas.tipoCargoId,
-                  tipoExpensaId: tipoExpensa.id,
-                  periodoRef: periodo,
-                  activo: true,
-                  deletedAt: null
-                }
-              });
-
-              if (itemExistente) {
-                console.log(`[LIQUIDACION-IMPUESTOS] Item ya existe para expensa ${tipoExpensa.codigo} en período ${periodo}`);
-                continue;
-              }
-
-              // Buscar el último item completado del mismo tipo de expensa (ORD o EXT) para esta propiedad
-              const ultimoItemCompletadoExpensa = await prisma.liquidacionItem.findFirst({
-                where: {
-                  tipoCargoId: propiedadCargoExpensas.tipoCargoId,
-                  tipoExpensaId: tipoExpensa.id, // Filtrar por tipo de expensa específico
-                  activo: true,
-                  deletedAt: null,
-                  importe: { not: null },
-                  estadoItemId: ids.estadoItemCompletadoId,
-                  liquidacion: {
-                    propiedadId: propiedadId,
-                    periodo: { lt: periodo } // Período anterior al actual
-                  }
-                },
-                include: {
-                  liquidacion: {
-                    select: {
-                      periodo: true
-                    }
-                  }
-                },
-                orderBy: [
-                  { liquidacion: { periodo: 'desc' } }, // Más reciente primero
-                  { createdAt: 'desc' }
-                ]
-              });
-
-              const importeAnteriorExpensa = ultimoItemCompletadoExpensa && ultimoItemCompletadoExpensa.importe 
-                ? parseFloat(ultimoItemCompletadoExpensa.importe) 
-                : null;
-
-              // Crear item de liquidación para expensa
-              await prisma.liquidacionItem.create({
-                data: {
-                  liquidacionId: liquidacion.id,
-                  tipoCargoId: propiedadCargoExpensas.tipoCargoId,
-                  tipoExpensaId: tipoExpensa.id,
-                  periodoRef: periodo,
-                  importe: null, // Sin importe inicial
-                  importeAnterior: importeAnteriorExpensa, // Importe del período anterior
-                  estadoItemId: ids.estadoItemPendienteId,
-                  actorFacturadoId: actorFacturadoIdExpensas,
-                  quienSoportaCostoId: quienSoportaCostoIdExpensas,
-                  pagadoPorActorId: pagadoPorActorIdExpensas,
-                  visibleEnBoletaInquilino: visibleEnBoletaInquilinoExpensas,
-                  afectaSaldoInquilino: afectaSaldoInquilinoExpensas,
-                  createdById: usuarioId
-                }
-              });
-
-              itemsCreados++;
-              console.log(`[LIQUIDACION-IMPUESTOS] Creado item para expensa ${tipoExpensa.codigo} en propiedad ${propiedadId}`);
-
-            } catch (error) {
-              errores++;
-              erroresDetalle.push({
-                propiedadId: propiedadId,
-                tipoExpensaId: tipoExpensa.id,
-                error: error.message
-              });
-              console.error(`[LIQUIDACION-IMPUESTOS] Error al crear item para expensa ${tipoExpensa.codigo}:`, error);
-            }
+      {
+        const existingLiq = await tx.$queryRaw(Prisma.sql`
+          SELECT * FROM liquidaciones WHERE propiedad_id = ${propiedadId} AND periodo = ${periodo} AND deleted_at IS NULL LIMIT 1
+        `);
+        const existingRow = Array.isArray(existingLiq) ? existingLiq[0] : existingLiq;
+        let liquidacionRow;
+        if (existingRow) {
+          liquidacionRow = existingRow;
+          if (contratoIdParaLiq != null) {
+            await tx.$executeRaw(Prisma.sql`
+              UPDATE liquidaciones SET contrato_id = ${contratoIdParaLiq}, updated_at = NOW() WHERE id = ${existingRow.id}
+            `);
           }
         } else {
-          console.log(`[LIQUIDACION-IMPUESTOS] Saltando expensas por periodicidad ${codigoPeriodicidadExpensas} en período ${periodo}`);
+          liquidacionCreada = true;
+          const inserted = await tx.$queryRaw(Prisma.sql`
+            INSERT INTO liquidaciones (propiedad_id, contrato_id, periodo, estado_liquidacion_id, total, vencimiento, auto_generada, created_at, updated_at, created_by_id)
+            VALUES (${propiedadId}, ${contratoIdParaLiq}, ${periodo}, ${ids.estadoLiquidacionBorradorId}, 0, ${vencimientosAuto.vencimiento}, true, NOW(), NOW(), ${usuarioId})
+            RETURNING *
+          `);
+          liquidacionRow = Array.isArray(inserted) ? inserted[0] : inserted;
         }
-      }
+        const liquidacionId = liquidacionRow.id;
 
-      // Ítems por contrato vigente: Alquiler, Gastos Administrativos, Honorarios (no se muestran en módulo Impuestos)
-      if (contratoPrincipal && tipoCargoAlquilerId) {
-        const montoAlquiler = parseFloat(contratoPrincipal.montoActual ?? contratoPrincipal.montoInicial ?? 0);
-        const responsabilidadAlquiler = contratoPrincipal.responsabilidades?.find(
-          r => r.tipoCargoId === tipoCargoAlquilerId
-        ) || null;
-
-        // Alquiler: crear o actualizar con monto vigente (por si hubo ajuste después de crear la liquidación)
-        const itemAlquilerExiste = await prisma.liquidacionItem.findFirst({
-          where: {
-            liquidacionId: liquidacion.id,
-            tipoCargoId: tipoCargoAlquilerId,
-            activo: true,
-            deletedAt: null
-          }
-        });
-        if (itemAlquilerExiste) {
-          await prisma.liquidacionItem.update({
-            where: { id: itemAlquilerExiste.id },
-            data: {
-              importe: montoAlquiler,
-              quienSoportaCostoId: responsabilidadAlquiler?.quienSoportaCostoId ?? ids.actorINQId,
-              pagadoPorActorId: responsabilidadAlquiler?.quienPagaProveedorId ?? ids.actorINMId
-            }
-          });
-          itemsCreados++;
-          console.log(`[LIQUIDACION-IMPUESTOS] Actualizado item Alquiler con monto ${montoAlquiler} para propiedad ${propiedadId}`);
-        } else {
-          await prisma.liquidacionItem.create({
-            data: {
-              liquidacionId: liquidacion.id,
-              tipoCargoId: tipoCargoAlquilerId,
-              periodoRef: periodo,
-              importe: montoAlquiler,
-              estadoItemId: ids.estadoItemCompletadoId,
-              quienSoportaCostoId: responsabilidadAlquiler?.quienSoportaCostoId ?? ids.actorINQId,
-              pagadoPorActorId: responsabilidadAlquiler?.quienPagaProveedorId ?? ids.actorINMId,
-              visibleEnBoletaInquilino: true,
-              afectaSaldoInquilino: true,
-              createdById: usuarioId
-            }
-          });
-          itemsCreados++;
-          console.log(`[LIQUIDACION-IMPUESTOS] Creado item Alquiler para propiedad ${propiedadId}`);
-        }
-
-        // Gastos Administrativos (% del alquiler, cobrado al inquilino)
-        const pctGastosAdmin = contratoPrincipal.gastosAdministrativos != null ? parseFloat(contratoPrincipal.gastosAdministrativos) : null;
-        if (tipoCargoGastosAdministrativosId && pctGastosAdmin != null && pctGastosAdmin > 0) {
-          const importeGastosAdmin = Math.round((montoAlquiler * pctGastosAdmin / 100) * 100) / 100;
-          const itemGastosAdminExiste = await prisma.liquidacionItem.findFirst({
-            where: {
-              liquidacionId: liquidacion.id,
-              tipoCargoId: tipoCargoGastosAdministrativosId,
-              activo: true,
-              deletedAt: null
-            }
-          });
-          if (itemGastosAdminExiste) {
-            await prisma.liquidacionItem.update({
-              where: { id: itemGastosAdminExiste.id },
-              data: { importe: importeGastosAdmin }
-            });
-            itemsCreados++;
-          } else {
-            await prisma.liquidacionItem.create({
-              data: {
-                liquidacionId: liquidacion.id,
-                tipoCargoId: tipoCargoGastosAdministrativosId,
-                periodoRef: periodo,
-                importe: importeGastosAdmin,
-                estadoItemId: ids.estadoItemCompletadoId,
-                quienSoportaCostoId: ids.actorINQId,
-                pagadoPorActorId: ids.actorINMId,
-                visibleEnBoletaInquilino: true,
-                afectaSaldoInquilino: true,
-                createdById: usuarioId
+        if (!esContratoVigente) {
+          // ========== ESCENARIO A: Propiedad SIN contrato vigente ==========
+          // Liquidación directa al Propietario. Items: TODOS los impuestos y cargos de la propiedad.
+          // Responsable de pago: 100% Propietario (quienSoportaCostoId = PROP, pagadoPorActorId = INM).
+          // Restricción estricta: NO generar Alquiler, Gastos Administrativos, Honorarios ni Gastos Iniciales.
+          for (const impuesto of propiedad.impuestos) {
+            const periodicidad = impuesto.periodicidad || impuesto.tipoImpuesto?.periodicidad;
+            let codigoPeriodicidad = periodicidad?.codigo || 'MENSUAL';
+            if (codigoPeriodicidad.includes('_')) codigoPeriodicidad = codigoPeriodicidad.split('_').slice(1).join('_');
+            if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo)) continue;
+            const itemExistente = await tx.liquidacionItem.findFirst({
+              where: {
+                liquidacionId,
+                propiedadImpuestoId: impuesto.id,
+                activo: true,
+                deletedAt: null,
+                OR: [{ periodoRef: periodo }, { periodoRef: null }]
               }
             });
-            itemsCreados++;
-            console.log(`[LIQUIDACION-IMPUESTOS] Creado item Gastos Administrativos para propiedad ${propiedadId}`);
-          }
-        }
-
-        // Honorarios (% del alquiler, cobrado al propietario)
-        const pctHonorarios = contratoPrincipal.honorariosPropietario != null ? parseFloat(contratoPrincipal.honorariosPropietario) : null;
-        if (tipoCargoHonorariosId && pctHonorarios != null && pctHonorarios > 0) {
-          const importeHonorarios = Math.round((montoAlquiler * pctHonorarios / 100) * 100) / 100;
-          const itemHonorariosExiste = await prisma.liquidacionItem.findFirst({
-            where: {
-              liquidacionId: liquidacion.id,
-              tipoCargoId: tipoCargoHonorariosId,
-              activo: true,
-              deletedAt: null
-            }
-          });
-          if (itemHonorariosExiste) {
-            await prisma.liquidacionItem.update({
-              where: { id: itemHonorariosExiste.id },
-              data: { importe: importeHonorarios }
-            });
-            itemsCreados++;
-          } else {
-            await prisma.liquidacionItem.create({
-              data: {
-                liquidacionId: liquidacion.id,
-                tipoCargoId: tipoCargoHonorariosId,
-                periodoRef: periodo,
-                importe: importeHonorarios,
+            if (itemExistente) continue;
+            const [anioActual, mesActual] = periodo.split('-').map(Number);
+            const mesAnterior = mesActual === 1 ? 12 : mesActual - 1;
+            const anioAnterior = mesActual === 1 ? anioActual - 1 : anioActual;
+            const periodoAnterior = `${String(mesAnterior).padStart(2, '0')}-${anioAnterior}`;
+            const ultimoItemCompletado = await tx.liquidacionItem.findFirst({
+              where: {
+                propiedadImpuestoId: impuesto.id,
+                activo: true,
+                deletedAt: null,
+                importe: { not: null },
                 estadoItemId: ids.estadoItemCompletadoId,
+                liquidacion: { propiedadId: propiedadId, periodo: periodoAnterior }
+              }
+            });
+            const importeAnterior = ultimoItemCompletado?.importe ? parseFloat(ultimoItemCompletado.importe) : null;
+            await tx.liquidacionItem.create({
+              data: {
+                liquidacionId,
+                propiedadImpuestoId: impuesto.id,
+                periodoRef: periodo,
+                importe: null,
+                importeAnterior,
+                estadoItemId: ids.estadoItemPendienteId,
                 quienSoportaCostoId: ids.actorPROPId,
                 pagadoPorActorId: ids.actorINMId,
                 visibleEnBoletaInquilino: false,
@@ -2379,49 +2333,379 @@ async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
                 createdById: usuarioId
               }
             });
-            itemsCreados++;
-            console.log(`[LIQUIDACION-IMPUESTOS] Creado item Honorarios para propiedad ${propiedadId}`);
+            itemsCreadosEnPropiedad++;
+          }
+          for (const propiedadCargo of propiedad.cargos || []) {
+            const codigoCargo = propiedadCargo.tipoCargo?.codigo;
+            // Restricción estricta Escenario A: nunca Alquiler, Gastos Admin ni Honorarios
+            if (['ALQUILER', 'GASTOS_ADMINISTRATIVOS', 'HONORARIOS'].includes(codigoCargo)) continue;
+            if (codigoCargo === 'EXPENSAS') {
+              const periodicidadExp = propiedadCargo.periodicidad || propiedadCargo.tipoCargo?.periodicidad;
+              let codigoPeriodicidadExp = periodicidadExp?.codigo || 'MENSUAL';
+              if (codigoPeriodicidadExp.includes('_')) codigoPeriodicidadExp = codigoPeriodicidadExp.split('_').slice(1).join('_');
+              if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidadExp, periodo)) continue;
+              for (const tipoExpensa of tiposExpensa) {
+                const itemExistente = await tx.liquidacionItem.findFirst({
+                  where: {
+                    liquidacionId,
+                    tipoCargoId: propiedadCargo.tipoCargoId,
+                    tipoExpensaId: tipoExpensa.id,
+                    periodoRef: periodo,
+                    activo: true,
+                    deletedAt: null
+                  }
+                });
+                if (itemExistente) continue;
+                await tx.liquidacionItem.create({
+                  data: {
+                    liquidacionId,
+                    tipoCargoId: propiedadCargo.tipoCargoId,
+                    tipoExpensaId: tipoExpensa.id,
+                    periodoRef: periodo,
+                    importe: null,
+                    estadoItemId: ids.estadoItemPendienteId,
+                    quienSoportaCostoId: ids.actorPROPId,
+                    pagadoPorActorId: ids.actorINMId,
+                    visibleEnBoletaInquilino: false,
+                    afectaSaldoInquilino: false,
+                    createdById: usuarioId
+                  }
+                });
+                itemsCreadosEnPropiedad++;
+              }
+              continue;
+            }
+            const periodicidadCargo = propiedadCargo.periodicidad || propiedadCargo.tipoCargo?.periodicidad;
+            let codigoPeriodicidadCargo = periodicidadCargo?.codigo || 'MENSUAL';
+            if (codigoPeriodicidadCargo.includes('_')) codigoPeriodicidadCargo = codigoPeriodicidadCargo.split('_').slice(1).join('_');
+            if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidadCargo, periodo)) continue;
+            const itemExistente = await tx.liquidacionItem.findFirst({
+              where: {
+                liquidacionId,
+                tipoCargoId: propiedadCargo.tipoCargoId,
+                activo: true,
+                deletedAt: null,
+                OR: [{ periodoRef: periodo }, { periodoRef: null }]
+              }
+            });
+            if (itemExistente) continue;
+            await tx.liquidacionItem.create({
+              data: {
+                liquidacionId,
+                tipoCargoId: propiedadCargo.tipoCargoId,
+                periodoRef: periodo,
+                importe: null,
+                estadoItemId: ids.estadoItemPendienteId,
+                quienSoportaCostoId: ids.actorPROPId,
+                pagadoPorActorId: ids.actorINMId,
+                visibleEnBoletaInquilino: false,
+                afectaSaldoInquilino: false,
+                createdById: usuarioId
+              }
+            });
+            itemsCreadosEnPropiedad++;
+          }
+        } else {
+          // ========== ESCENARIO B: Propiedad CON contrato vigente ==========
+          // Liquidación según términos del contrato. Fijos: Alquiler (montoActual), Gastos Admin, Honorarios Propietario.
+          // Variables: Impuestos y Cargos solo si tienen fila en ContratoResponsabilidad (motor de quién paga qué).
+          // Gastos Iniciales: solo si es la primera liquidación del contrato Y gastos_iniciales_liquidados === false;
+          // al generar los ítems se hace update del contrato a gastos_iniciales_liquidados = true en esta misma transacción.
+          const montoAlquiler = parseFloat(contratoPrincipal.montoActual ?? contratoPrincipal.montoInicial ?? 0);
+          if (tipoCargoAlquilerId) {
+            const responsabilidadAlquiler = contratoPrincipal.responsabilidades?.find(r => r.tipoCargoId === tipoCargoAlquilerId) || null;
+            const itemAlq = await tx.liquidacionItem.findFirst({
+              where: { liquidacionId, tipoCargoId: tipoCargoAlquilerId, activo: true, deletedAt: null }
+            });
+            if (itemAlq) {
+              await tx.liquidacionItem.update({
+                where: { id: itemAlq.id },
+                data: {
+                  importe: montoAlquiler,
+                  quienSoportaCostoId: responsabilidadAlquiler?.quienSoportaCostoId ?? ids.actorINQId,
+                  pagadoPorActorId: responsabilidadAlquiler?.quienPagaProveedorId ?? ids.actorINMId
+                }
+              });
+            } else {
+              await tx.liquidacionItem.create({
+                data: {
+                  liquidacionId,
+                  tipoCargoId: tipoCargoAlquilerId,
+                  periodoRef: periodo,
+                  importe: montoAlquiler,
+                  estadoItemId: ids.estadoItemCompletadoId,
+                  quienSoportaCostoId: responsabilidadAlquiler?.quienSoportaCostoId ?? ids.actorINQId,
+                  pagadoPorActorId: responsabilidadAlquiler?.quienPagaProveedorId ?? ids.actorINMId,
+                  visibleEnBoletaInquilino: true,
+                  afectaSaldoInquilino: true,
+                  createdById: usuarioId
+                }
+              });
+            }
+            itemsCreadosEnPropiedad++;
+          }
+          if (tipoCargoGastosAdministrativosId) {
+            const pctGastosAdmin = contratoPrincipal.gastosAdministrativos != null ? parseFloat(contratoPrincipal.gastosAdministrativos) : null;
+            if (pctGastosAdmin != null && pctGastosAdmin > 0) {
+              const importeGastosAdmin = Math.round((montoAlquiler * pctGastosAdmin / 100) * 100) / 100;
+              const itemGA = await tx.liquidacionItem.findFirst({
+                where: { liquidacionId, tipoCargoId: tipoCargoGastosAdministrativosId, activo: true, deletedAt: null }
+              });
+              if (!itemGA) {
+                await tx.liquidacionItem.create({
+                  data: {
+                    liquidacionId,
+                    tipoCargoId: tipoCargoGastosAdministrativosId,
+                    periodoRef: periodo,
+                    importe: importeGastosAdmin,
+                    estadoItemId: ids.estadoItemCompletadoId,
+                    quienSoportaCostoId: ids.actorINQId,
+                    pagadoPorActorId: ids.actorINMId,
+                    visibleEnBoletaInquilino: true,
+                    afectaSaldoInquilino: true,
+                    createdById: usuarioId
+                  }
+                });
+                itemsCreadosEnPropiedad++;
+              }
+            }
+          }
+          if (tipoCargoHonorariosId) {
+            const pctHonorarios = contratoPrincipal.honorariosPropietario != null ? parseFloat(contratoPrincipal.honorariosPropietario) : null;
+            if (pctHonorarios != null && pctHonorarios > 0) {
+              const importeHonorarios = Math.round((montoAlquiler * pctHonorarios / 100) * 100) / 100;
+              const itemHon = await tx.liquidacionItem.findFirst({
+                where: { liquidacionId, tipoCargoId: tipoCargoHonorariosId, activo: true, deletedAt: null }
+              });
+              if (!itemHon) {
+                await tx.liquidacionItem.create({
+                  data: {
+                    liquidacionId,
+                    tipoCargoId: tipoCargoHonorariosId,
+                    periodoRef: periodo,
+                    importe: importeHonorarios,
+                    estadoItemId: ids.estadoItemCompletadoId,
+                    quienSoportaCostoId: ids.actorPROPId,
+                    pagadoPorActorId: ids.actorINMId,
+                    visibleEnBoletaInquilino: false,
+                    afectaSaldoInquilino: false,
+                    createdById: usuarioId
+                  }
+                });
+                itemsCreadosEnPropiedad++;
+              }
+            }
+          }
+          // Variables: impuestos solo si existe fila en ContratoResponsabilidad (regla estricta)
+          for (const impuesto of propiedad.impuestos) {
+            const responsabilidad = contratoPrincipal.responsabilidades?.find((r) => r.tipoImpuestoId === impuesto.tipoImpuestoId) ?? null;
+            if (!responsabilidad) continue;
+            const periodicidad = impuesto.periodicidad || impuesto.tipoImpuesto?.periodicidad;
+            let codigoPeriodicidad = periodicidad?.codigo || 'MENSUAL';
+            if (codigoPeriodicidad.includes('_')) codigoPeriodicidad = codigoPeriodicidad.split('_').slice(1).join('_');
+            if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidad, periodo)) continue;
+            const itemExistente = await tx.liquidacionItem.findFirst({
+              where: {
+                liquidacionId,
+                propiedadImpuestoId: impuesto.id,
+                activo: true,
+                deletedAt: null,
+                OR: [{ periodoRef: periodo }, { periodoRef: null }]
+              }
+            });
+            if (itemExistente) continue;
+            if (ids.actorINQId != null && responsabilidad.quienPagaProveedorId === ids.actorINQId && responsabilidad.quienSoportaCostoId === ids.actorINQId) continue;
+            const [anioActual, mesActual] = periodo.split('-').map(Number);
+            const mesAnterior = mesActual === 1 ? 12 : mesActual - 1;
+            const anioAnterior = mesActual === 1 ? anioActual - 1 : anioActual;
+            const periodoAnterior = `${String(mesAnterior).padStart(2, '0')}-${anioAnterior}`;
+            const ultimoItemCompletado = await tx.liquidacionItem.findFirst({
+              where: {
+                propiedadImpuestoId: impuesto.id,
+                activo: true,
+                deletedAt: null,
+                importe: { not: null },
+                estadoItemId: ids.estadoItemCompletadoId,
+                liquidacion: { propiedadId: propiedadId, periodo: periodoAnterior }
+              }
+            });
+            const importeAnterior = ultimoItemCompletado?.importe ? parseFloat(ultimoItemCompletado.importe) : null;
+            await tx.liquidacionItem.create({
+              data: {
+                liquidacionId,
+                propiedadImpuestoId: impuesto.id,
+                periodoRef: periodo,
+                importe: null,
+                importeAnterior,
+                estadoItemId: ids.estadoItemPendienteId,
+                quienSoportaCostoId: responsabilidad.quienSoportaCostoId,
+                pagadoPorActorId: responsabilidad.quienPagaProveedorId,
+                visibleEnBoletaInquilino: ids.actorINQId != null && responsabilidad.quienSoportaCostoId === ids.actorINQId,
+                afectaSaldoInquilino: ids.actorINQId != null && responsabilidad.quienSoportaCostoId === ids.actorINQId,
+                createdById: usuarioId
+              }
+            });
+            itemsCreadosEnPropiedad++;
+          }
+          // Variables: cargos (excepto ALQ, GA, HON) y EXPENSAS solo si existe fila en ContratoResponsabilidad
+          for (const propiedadCargo of propiedad.cargos || []) {
+            const codigoCargo = propiedadCargo.tipoCargo?.codigo;
+            if (['ALQUILER', 'GASTOS_ADMINISTRATIVOS', 'HONORARIOS'].includes(codigoCargo)) continue;
+            if (codigoCargo === 'EXPENSAS') {
+              const periodicidadExpB = propiedadCargo.periodicidad || propiedadCargo.tipoCargo?.periodicidad;
+              let codigoPeriodicidadExpB = periodicidadExpB?.codigo || 'MENSUAL';
+              if (codigoPeriodicidadExpB.includes('_')) codigoPeriodicidadExpB = codigoPeriodicidadExpB.split('_').slice(1).join('_');
+              if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidadExpB, periodo)) continue;
+              for (const tipoExpensa of tiposExpensa) {
+                const resp = contratoPrincipal.responsabilidades?.find(
+                  r => r.tipoCargoId === propiedadCargo.tipoCargoId && (r.tipoExpensaId === tipoExpensa.id || !r.tipoExpensaId)
+                ) || null;
+                if (!resp) continue;
+                const itemExistente = await tx.liquidacionItem.findFirst({
+                  where: {
+                    liquidacionId,
+                    tipoCargoId: propiedadCargo.tipoCargoId,
+                    tipoExpensaId: tipoExpensa.id,
+                    periodoRef: periodo,
+                    activo: true,
+                    deletedAt: null
+                  }
+                });
+                if (itemExistente) continue;
+                if (ids.actorINQId != null && resp.quienPagaProveedorId === ids.actorINQId && resp.quienSoportaCostoId === ids.actorINQId) continue;
+                await tx.liquidacionItem.create({
+                  data: {
+                    liquidacionId,
+                    tipoCargoId: propiedadCargo.tipoCargoId,
+                    tipoExpensaId: tipoExpensa.id,
+                    periodoRef: periodo,
+                    importe: null,
+                    estadoItemId: ids.estadoItemPendienteId,
+                    quienSoportaCostoId: resp.quienSoportaCostoId,
+                    pagadoPorActorId: resp.quienPagaProveedorId,
+                    visibleEnBoletaInquilino: ids.actorINQId != null && resp.quienSoportaCostoId === ids.actorINQId,
+                    afectaSaldoInquilino: ids.actorINQId != null && resp.quienSoportaCostoId === ids.actorINQId,
+                    createdById: usuarioId
+                  }
+                });
+                itemsCreadosEnPropiedad++;
+              }
+              continue;
+            }
+            const resp = contratoPrincipal.responsabilidades?.find(
+              r => r.tipoCargoId === propiedadCargo.tipoCargoId && !r.tipoExpensaId
+            ) || null;
+            if (!resp) continue;
+            const periodicidadCargo = propiedadCargo.periodicidad || propiedadCargo.tipoCargo?.periodicidad;
+            let codigoPeriodicidadCargo = periodicidadCargo?.codigo || 'MENSUAL';
+            if (codigoPeriodicidadCargo.includes('_')) codigoPeriodicidadCargo = codigoPeriodicidadCargo.split('_').slice(1).join('_');
+            if (!correspondeGenerarPorPeriodicidad(codigoPeriodicidadCargo, periodo)) continue;
+            const itemExistente = await tx.liquidacionItem.findFirst({
+              where: {
+                liquidacionId,
+                tipoCargoId: propiedadCargo.tipoCargoId,
+                activo: true,
+                deletedAt: null,
+                OR: [{ periodoRef: periodo }, { periodoRef: null }]
+              }
+            });
+            if (itemExistente) continue;
+            if (ids.actorINQId != null && resp.quienPagaProveedorId === ids.actorINQId && resp.quienSoportaCostoId === ids.actorINQId) continue;
+            await tx.liquidacionItem.create({
+              data: {
+                liquidacionId,
+                tipoCargoId: propiedadCargo.tipoCargoId,
+                periodoRef: periodo,
+                importe: null,
+                estadoItemId: ids.estadoItemPendienteId,
+                quienSoportaCostoId: resp.quienSoportaCostoId,
+                pagadoPorActorId: resp.quienPagaProveedorId,
+                visibleEnBoletaInquilino: ids.actorINQId != null && resp.quienSoportaCostoId === ids.actorINQId,
+                afectaSaldoInquilino: ids.actorINQId != null && resp.quienSoportaCostoId === ids.actorINQId,
+                createdById: usuarioId
+              }
+            });
+            itemsCreadosEnPropiedad++;
+          }
+          // Gastos Iniciales (one-off): solo si es la primera liquidación del contrato Y gastos_iniciales_liquidados === false
+          if (
+            contratoPrincipal.gastosIniciales?.length > 0 &&
+            contratoPrincipal.gastosInicialesLiquidados === false
+          ) {
+            const liquidacionesAnterioresCount = await tx.liquidacion.count({
+              where: {
+                contratoId: contratoPrincipal.id,
+                activo: true,
+                deletedAt: null,
+                periodo: { lt: periodo }
+              }
+            });
+            const esPrimeraLiquidacion = liquidacionesAnterioresCount === 0;
+            if (esPrimeraLiquidacion) {
+              for (const gastoInicial of contratoPrincipal.gastosIniciales) {
+                const codigoTipo = gastoInicial.tipoGastoInicial?.codigo?.toLowerCase() || '';
+                const esAveriguacion = codigoTipo.includes('averig') || codigoTipo === 'averiguacion' || codigoTipo === 'averiguacion_garantias';
+                const importeGasto = esAveriguacion ? totalCostoAveriguacion : (gastoInicial.importe ? parseFloat(gastoInicial.importe) : 0);
+                if (importeGasto <= 0) continue;
+                const itemGastoExiste = await tx.liquidacionItem.findFirst({
+                  where: {
+                    liquidacionId,
+                    contratoGastoInicialId: gastoInicial.id,
+                    activo: true,
+                    deletedAt: null
+                  }
+                });
+                if (itemGastoExiste) continue;
+                const quienSoportaCostoId = gastoInicial.quienPagaId || ids.actorINQId;
+                const esInquilino = quienSoportaCostoId === ids.actorINQId;
+                await tx.liquidacionItem.create({
+                  data: {
+                    liquidacionId,
+                    contratoGastoInicialId: gastoInicial.id,
+                    periodoRef: periodo,
+                    importe: importeGasto,
+                    estadoItemId: ids.estadoItemCompletadoId,
+                    quienSoportaCostoId,
+                    pagadoPorActorId: ids.actorINMId,
+                    visibleEnBoletaInquilino: esInquilino,
+                    afectaSaldoInquilino: esInquilino,
+                    observaciones: `Gasto inicial: ${gastoInicial.tipoGastoInicial?.nombre || 'Sin nombre'}`,
+                    createdById: usuarioId
+                  }
+                });
+                itemsCreadosEnPropiedad++;
+              }
+              // Marcar gastos iniciales como liquidados en la misma transacción (atómico)
+              await tx.contrato.update({
+                where: { id: contratoPrincipal.id },
+                data: { gastosInicialesLiquidados: true }
+              });
+            }
           }
         }
+
+        const itemsRows = await tx.$queryRaw(Prisma.sql`
+          SELECT importe FROM liquidacion_items WHERE liquidacion_id = ${liquidacionId} AND activo = true AND deleted_at IS NULL
+        `);
+        const itemsList = Array.isArray(itemsRows) ? itemsRows : [itemsRows].filter(Boolean);
+        const nuevoTotal = itemsList.reduce((sum, it) => sum + (it.importe ? parseFloat(it.importe) : 0), 0);
+        await tx.$executeRaw(Prisma.sql`UPDATE liquidaciones SET total = ${nuevoTotal} WHERE id = ${liquidacionId}`);
       }
 
-      // Recalcular total de la liquidación después de crear todos los items
-      if (liquidacion) {
-        const itemsActivos = await prisma.liquidacionItem.findMany({
-          where: {
-            liquidacionId: liquidacion.id,
-            activo: true,
-            deletedAt: null
-          }
-        });
-
-        const nuevoTotal = itemsActivos.reduce((sum, it) => {
-          return sum + (it.importe ? parseFloat(it.importe) : 0);
-        }, 0);
-
-        await prisma.liquidacion.update({
-          where: { id: liquidacion.id },
-          data: { total: nuevoTotal }
-        });
-      }
-
-    } catch (error) {
-      errores++;
-      erroresDetalle.push({
-        propiedadId: propiedadId,
-        error: error.message
-      });
-      console.error(`[LIQUIDACION-IMPUESTOS] Error al procesar propiedad ${propiedadId}:`, error);
+      liquidacionesCreadas += liquidacionCreada ? 1 : 0;
+      itemsCreados += itemsCreadosEnPropiedad;
     }
-  }
 
-  console.log(`[LIQUIDACION-IMPUESTOS] Finalizada generación: ${liquidacionesCreadas} liquidaciones, ${itemsCreados} items, ${errores} errores`);
+    return { creadas: liquidacionesCreadas, itemsCreados };
+  });
+
+  console.log(`[LIQUIDACION-IMPUESTOS] Finalizada generación: ${resultado.creadas} liquidaciones, ${resultado.itemsCreados} items`);
 
   return {
-    creadas: liquidacionesCreadas,
-    itemsCreados: itemsCreados,
-    errores: errores,
-    erroresDetalle: errores > 0 ? erroresDetalle : undefined
+    creadas: resultado.creadas,
+    itemsCreados: resultado.itemsCreados,
+    errores: 0,
+    erroresDetalle: undefined
   };
 }
 
@@ -2432,10 +2716,74 @@ async function generarLiquidacionesImpuestos(periodo, usuarioId = null) {
 export const generarImpuestos = async (req, res) => {
   try {
     const { periodo } = req.body;
-    const usuarioId = req.user?.id || null;
+    const usuarioId = req.user?.id ?? null;
 
     if (!periodo) {
       return res.status(400).json({ error: 'El período es requerido (formato: YYYY-MM)' });
+    }
+    if (!/^\d{4}-\d{2}$/.test(periodo)) {
+      return res.status(400).json({ error: 'El período debe tener el formato YYYY-MM' });
+    }
+
+    const [anio, mes] = periodo.split('-').map(Number);
+    const startOfPeriod = new Date(anio, mes - 1, 1);
+    startOfPeriod.setHours(0, 0, 0, 0);
+
+    // Validación fail-fast: si a algún contrato vigente le "toca" ajuste en el mes y no tiene ContratoAjuste, abortar todo el lote
+    const skipValidacionAjustes = process.env.SKIP_VALIDACION_AJUSTES_IMPUESTOS === 'true' || process.env.SKIP_VALIDACION_AJUSTES_IMPUESTOS === '1';
+    if (!skipValidacionAjustes) {
+      const validacionAjustes = await validarAjustesFailFast(periodo);
+      if (!validacionAjustes.ok) {
+        const bloqueantes = validacionAjustes.contratosBloqueantes || [];
+        const detalleFechas = bloqueantes.map((b) => `Contrato #${b.contratoId}: ${(b.fechasPendientes || []).join(', ')}`).join('; ');
+        const mensaje = 'Hay al menos un contrato con ajuste de alquiler pendiente. No se pueden generar liquidaciones hasta cargar todos los ajustes debidos.';
+        console.warn('[generarImpuestos] Bloqueado por validación de ajustes:', detalleFechas);
+        return res.status(400).json({
+          error: mensaje,
+          detalles: detalleFechas || mensaje,
+          contratosBloqueantes: bloqueantes
+        });
+      }
+    } else {
+      console.warn('[generarImpuestos] Validación de ajustes omitida (SKIP_VALIDACION_AJUSTES_IMPUESTOS=true)');
+    }
+
+    // Validar que no haya ajustes de contrato vencidos sin cargar el importe actualizado (montoActual != montoNuevo)
+    const ajustesAntesDelPeriodo = await prisma.contratoAjuste.findMany({
+      where: {
+        fechaAjuste: { lt: startOfPeriod },
+        activo: true,
+        deletedAt: null
+      },
+      include: { contrato: { select: { id: true, montoActual: true, propiedadId: true } } },
+      orderBy: { fechaAjuste: 'desc' }
+    });
+    const porContrato = new Map();
+    for (const a of ajustesAntesDelPeriodo) {
+      if (!porContrato.has(a.contratoId)) porContrato.set(a.contratoId, a);
+    }
+    const ajustesVencidosSinCargar = [];
+    for (const a of porContrato.values()) {
+      const montoActual = parseFloat(a.contrato?.montoActual ?? 0);
+      const montoNuevo = parseFloat(a.montoNuevo ?? 0);
+      if (Math.abs(montoActual - montoNuevo) > 0.01) {
+        ajustesVencidosSinCargar.push({
+          contratoId: a.contratoId,
+          fechaAjuste: a.fechaAjuste,
+          montoNuevo: a.montoNuevo,
+          montoActual: a.contrato?.montoActual
+        });
+      }
+    }
+    if (ajustesVencidosSinCargar.length > 0) {
+      const mensaje = ajustesVencidosSinCargar.length === 1
+        ? `Hay un ajuste de contrato vencido (fecha de ajuste anterior al período ${periodo}) sin cargar el importe actualizado. Actualice el monto del contrato antes de generar liquidaciones.`
+        : `Hay ${ajustesVencidosSinCargar.length} ajustes de contrato vencidos (fechas de ajuste anteriores al período ${periodo}) sin cargar el importe actualizado. Actualice los montos de los contratos antes de generar liquidaciones.`;
+      return res.status(400).json({
+        error: mensaje,
+        detalles: mensaje,
+        ajustesVencidos: ajustesVencidosSinCargar
+      });
     }
 
     const resultado = await generarLiquidacionesImpuestos(periodo, usuarioId);
@@ -2456,8 +2804,9 @@ export const generarImpuestos = async (req, res) => {
 };
 
 /**
- * Endpoint: GET /liquidaciones/impuestos-pendientes
- * Lista todos los impuestos pendientes de liquidar, agrupados por tipo
+ * GET /liquidaciones/impuestos-pendientes
+ * Lista impuestos y expensas pendientes (o completados si verCompletados), agrupados.
+ * Usa Prisma liquidacionItem.findMany + include (sin $queryRaw para la carga principal).
  */
 export const getImpuestosPendientes = async (req, res) => {
   try {
@@ -2469,111 +2818,65 @@ export const getImpuestosPendientes = async (req, res) => {
       return res.status(500).json({ error: 'No se encontró el estado PENDIENTE' });
     }
 
-    // Determinar qué estados buscar (por id; código es editable por el usuario)
     const estadosBuscar = mostrarCompletados && ids.estadoItemCompletadoId
       ? [ids.estadoItemPendienteId, ids.estadoItemCompletadoId]
       : [ids.estadoItemPendienteId];
 
-    // Construir filtro de período
-    const wherePeriodo = periodo ? {
-      OR: [
-        { liquidacion: { periodo: periodo } },
-        { periodoRef: periodo }
-      ]
-    } : {};
-
-    // Impuestos y cargos visibles en el módulo; se excluyen Alquiler, Gastos Administrativos y Honorarios (solo en detalle de liquidación)
-    const whereClause = {
+    const where = {
       activo: true,
       deletedAt: null,
       estadoItemId: { in: estadosBuscar },
+      contratoGastoInicialId: null,
+      liquidacion: { deletedAt: null },
       OR: [
-        { propiedadImpuestoId: { not: null } }, // Impuestos
-        {
-          tipoCargoId: { not: null },
-          tipoCargo: {
-            codigo: { notIn: ['ALQUILER', 'GASTOS_ADMINISTRATIVOS', 'HONORARIOS'] }
-          }
-        }
+        { propiedadImpuestoId: { not: null } },
+        { tipoCargoId: { not: null }, tipoCargo: { codigo: { notIn: ['ALQUILER', 'GASTOS_ADMINISTRATIVOS', 'HONORARIOS'] } } }
       ]
     };
-
-    // Agregar filtro de período si existe
     if (periodo) {
-      whereClause.AND = [
-        {
-          OR: [
-            { liquidacion: { periodo: periodo } },
-            { periodoRef: periodo }
-          ]
-        }
+      where.AND = [
+        { OR: [ { liquidacion: { periodo } }, { periodoRef: periodo } ] }
       ];
     }
 
-    // Obtener todos los items pendientes: impuestos Y cargos (incluyendo EXPENSAS)
-    const items = await prisma.liquidacionItem.findMany({
-      where: whereClause,
-      include: {
-        liquidacion: {
-          include: {
-            propiedad: {
-              include: {
-                localidad: {
-                  include: {
-                    provincia: true
-                  }
-                },
-                provincia: true
-              }
-            },
-            contrato: {
-              include: {
-                inquilino: true
-              }
-            }
-          }
-        },
-        propiedadImpuesto: {
-          include: {
-            tipoImpuesto: {
-              include: {
-                campos: {
-                  where: {
-                    activo: true,
-                    deletedAt: null
-                  },
-                  orderBy: {
-                    orden: 'asc'
-                  }
-                }
-              }
-            },
-            campos: {
-              where: {
-                deletedAt: null
-              },
-              include: {
-                tipoCampo: true
-              },
-              orderBy: {
-                tipoCampo: {
-                  orden: 'asc'
-                }
-              }
-            }
-          }
-        },
-        tipoCargo: true,
-        tipoExpensa: true,
-        actorFacturado: true,
-        quienSoportaCosto: true,
-        pagadoPorActor: true,
-        estadoItem: true
-      },
-      orderBy: [
-        { liquidacion: { propiedad: { dirCalle: 'asc' } } }
-      ]
+    let itemsList = await prisma.liquidacionItem.findMany({
+      where,
+      include: includeImpuestosPendientesItems
     });
+    itemsList = itemsList.sort((a, b) => {
+      const dirA = a.liquidacion?.propiedad?.dirCalle ?? '';
+      const dirB = b.liquidacion?.propiedad?.dirCalle ?? '';
+      return dirA.localeCompare(dirB);
+    });
+
+    if (itemsList.length === 0) {
+      return res.json({ impuestos: [], expensas: [], periodo: periodo || null });
+    }
+
+    const items = itemsList.map((i) => ({
+      ...i,
+      importe: i.importe != null ? Number(i.importe) : null,
+      importeAnterior: i.importeAnterior != null ? Number(i.importeAnterior) : null,
+      liquidacion: i.liquidacion ? {
+        ...i.liquidacion,
+        propiedad: i.liquidacion.propiedad || null,
+        contrato: i.liquidacion.contrato || null
+      } : null,
+      propiedadImpuesto: i.propiedadImpuesto ? {
+        ...i.propiedadImpuesto,
+        tipoImpuesto: i.propiedadImpuesto.tipoImpuesto || null,
+        campos: (i.propiedadImpuesto.campos || []).map((c) => ({
+          ...c,
+          tipoCampo: c.tipoCampo || null
+        }))
+      } : null,
+      tipoCargo: i.tipoCargo || null,
+      tipoExpensa: i.tipoExpensa || null,
+      actorFacturado: i.actorFacturado || null,
+      quienSoportaCosto: i.quienSoportaCosto || null,
+      pagadoPorActor: i.pagadoPorActor || null,
+      estadoItem: i.estadoItem || null
+    }));
 
     // Separar items en impuestos y expensas
     const impuestosItems = [];
@@ -2600,27 +2903,24 @@ export const getImpuestosPendientes = async (req, res) => {
       const [anioActual, mesActual] = String(periodoActual).split('-').map(Number);
       const mesAnterior = mesActual === 1 ? 12 : mesActual - 1;
       const anioAnterior = mesActual === 1 ? anioActual - 1 : anioActual;
-      const periodoAnterior = `${String(mesAnterior).padStart(2, '0')}-${anioAnterior}`;
+      const periodoAnterior = `${anioAnterior}-${String(mesAnterior).padStart(2, '0')}`;
       const impuestosConPropiedad = impuestosItems
         .filter(i => i.propiedadImpuestoId && i.liquidacion?.propiedadId)
         .map(i => ({ propiedadImpuestoId: i.propiedadImpuestoId, propiedadId: i.liquidacion.propiedadId }));
       const unicos = Array.from(new Map(impuestosConPropiedad.map(o => [`${o.propiedadImpuestoId}-${o.propiedadId}`, o])).values());
       if (unicos.length > 0) {
-        const itemsAnteriores = await prisma.liquidacionItem.findMany({
-          where: {
-            estadoItemId: ids.estadoItemCompletadoId,
-            activo: true,
-            deletedAt: null,
-            importe: { not: null },
-            OR: unicos.map(({ propiedadImpuestoId, propiedadId }) => ({
-              propiedadImpuestoId,
-              liquidacion: { propiedadId, periodo: periodoAnterior }
-            }))
-          },
-          select: { propiedadImpuestoId: true, liquidacion: { select: { propiedadId: true } }, importe: true }
-        });
-        for (const it of itemsAnteriores) {
-          const key = `${it.propiedadImpuestoId}-${it.liquidacion.propiedadId}`;
+        const orConditions = unicos.map(({ propiedadImpuestoId, propiedadId }) =>
+          Prisma.sql`(li.propiedad_impuesto_id = ${propiedadImpuestoId} AND l.propiedad_id = ${propiedadId})`
+        );
+        const itemsAnteriores = await prisma.$queryRaw(Prisma.sql`
+          SELECT li.propiedad_impuesto_id, l.propiedad_id, li.importe FROM liquidacion_items li
+          INNER JOIN liquidaciones l ON l.id = li.liquidacion_id AND l.deleted_at IS NULL
+          WHERE li.estado_item_id = ${ids.estadoItemCompletadoId} AND li.activo = true AND li.deleted_at IS NULL AND li.importe IS NOT NULL
+          AND l.periodo = ${periodoAnterior} AND (${Prisma.join(orConditions, ' OR ')})
+        `);
+        const antList = Array.isArray(itemsAnteriores) ? itemsAnteriores : [itemsAnteriores].filter(Boolean);
+        for (const it of antList) {
+          const key = `${it.propiedad_impuesto_id}-${it.propiedad_id}`;
           importeAnteriorPorImpuesto.set(key, parseFloat(it.importe));
         }
       }
@@ -2632,25 +2932,22 @@ export const getImpuestosPendientes = async (req, res) => {
       const [anioE, mesE] = String(periodo).split('-').map(Number);
       const mesAntE = mesE === 1 ? 12 : mesE - 1;
       const anioAntE = mesE === 1 ? anioE - 1 : anioE;
-      const periodoAntE = `${String(mesAntE).padStart(2, '0')}-${anioAntE}`;
-      const itemsExpAnt = await prisma.liquidacionItem.findMany({
-        where: {
-          estadoItemId: ids.estadoItemCompletadoId,
-          activo: true,
-          deletedAt: null,
-          importe: { not: null },
-          tipoCargo: { codigo: 'EXPENSAS' },
-          tipoExpensaId: { not: null },
-          liquidacion: {
-            periodo: periodoAntE,
-            propiedadId: { in: [...new Set(expensasItems.map(e => e.liquidacion?.propiedadId).filter(Boolean))] }
-          }
-        },
-        select: { liquidacion: { select: { propiedadId: true } }, tipoExpensa: { select: { codigo: true } }, importe: true }
-      });
-      for (const it of itemsExpAnt) {
-        const cod = it.tipoExpensa?.codigo;
-        if (cod && it.liquidacion?.propiedadId) importeAnteriorPorExpensa.set(`${it.liquidacion.propiedadId}-${cod}`, parseFloat(it.importe));
+      const periodoAntE = `${anioAntE}-${String(mesAntE).padStart(2, '0')}`;
+      const propIdsExp = [...new Set(expensasItems.map(e => e.liquidacion?.propiedadId).filter(Boolean))];
+      if (propIdsExp.length > 0) {
+        const itemsExpAnt = await prisma.$queryRaw(Prisma.sql`
+          SELECT l.propiedad_id, te.codigo, li.importe FROM liquidacion_items li
+          INNER JOIN liquidaciones l ON l.id = li.liquidacion_id AND l.deleted_at IS NULL
+          INNER JOIN tipos_cargo tc ON tc.id = li.tipo_cargo_id AND tc.codigo = 'EXPENSAS'
+          LEFT JOIN tipos_expensa te ON te.id = li.tipo_expensa_id
+          WHERE li.estado_item_id = ${ids.estadoItemCompletadoId} AND li.activo = true AND li.deleted_at IS NULL AND li.importe IS NOT NULL
+          AND li.tipo_expensa_id IS NOT NULL AND l.periodo = ${periodoAntE} AND l.propiedad_id IN (${Prisma.join(propIdsExp)})
+        `);
+        const expAntList = Array.isArray(itemsExpAnt) ? itemsExpAnt : [itemsExpAnt].filter(Boolean);
+        for (const it of expAntList) {
+          const cod = it.codigo;
+          if (cod && it.propiedad_id) importeAnteriorPorExpensa.set(`${it.propiedad_id}-${cod}`, parseFloat(it.importe));
+        }
       }
     }
 
@@ -2712,11 +3009,13 @@ export const getImpuestosPendientes = async (req, res) => {
       const datosImpuesto = [];
       if (item.propiedadImpuesto?.campos) {
         for (const campo of item.propiedadImpuesto.campos) {
-          datosImpuesto.push({
-            codigo: campo.tipoCampo.codigo,
-            nombre: campo.tipoCampo.nombre,
-            valor: campo.valor
-          });
+          if (campo.tipoCampo) {
+            datosImpuesto.push({
+              codigo: campo.tipoCampo.codigo,
+              nombre: campo.tipoCampo.nombre,
+              valor: campo.valor
+            });
+          }
         }
       }
 
@@ -2901,27 +3200,20 @@ export const completarImporteItem = async (req, res) => {
     // Asegurar que 0 explícito (número o string) se trate como valor válido
     if (importe === 0 || importe === '0') importeNum = 0;
 
-    // Obtener el item
-    const item = await prisma.liquidacionItem.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        liquidacion: {
-          include: {
-            items: {
-              where: {
-                activo: true,
-                deletedAt: null
-              }
-            }
-          }
-        },
-        estadoItem: true
-      }
-    });
+    const itemIdNum = parseInt(id);
+    if (isNaN(itemIdNum)) {
+      return res.status(400).json({ error: 'ID de item inválido' });
+    }
 
-    if (!item) {
+    // Obtener el item con raw para evitar P2022 (columna 'existe' no existe en la BD)
+    const itemRows = await prisma.$queryRaw(Prisma.sql`
+      SELECT * FROM liquidacion_items WHERE id = ${itemIdNum} AND deleted_at IS NULL
+    `);
+    const itemRow = Array.isArray(itemRows) ? itemRows[0] : itemRows;
+    if (!itemRow) {
       return res.status(404).json({ error: 'Item no encontrado' });
     }
+    const item = rowToCamel(itemRow);
 
     if (!item.activo || item.deletedAt) {
       return res.status(400).json({ error: 'El item no está activo' });
@@ -2939,10 +3231,9 @@ export const completarImporteItem = async (req, res) => {
 
     // Si se proporciona importe, actualizar importe y estado si corresponde
     if (importeNum !== null) {
-      // Guardar importe anterior solo si el item ya tenía un importe diferente
-      if (item.importe !== null && parseFloat(item.importe) !== importeNum) {
-        updateData.importeAnterior = parseFloat(item.importe);
-      }
+      // Nota: No modificamos importeAnterior aquí porque ese campo representa
+      // el importe del mismo item en el período anterior, no el valor previo a la edición.
+      // El importeAnterior se calcula al crear el item o al consultar los datos.
 
       updateData.importe = importeNum;
       
@@ -3007,28 +3298,13 @@ export const completarImporteItem = async (req, res) => {
       }
     });
 
-    // Recalcular total de la liquidación
-    // Sumar TODOS los items activos de la liquidación
-    const itemsActivos = await prisma.liquidacionItem.findMany({
-      where: {
-        liquidacionId: item.liquidacionId,
-        activo: true,
-        deletedAt: null
-      }
-    });
+    // Recalcular total de la liquidación (raw evita P2022)
+    const itemsActivosRows = await prisma.$queryRaw(Prisma.sql`SELECT importe FROM liquidacion_items WHERE liquidacion_id = ${item.liquidacionId} AND activo = true AND deleted_at IS NULL`);
+    const itemsActivosList = Array.isArray(itemsActivosRows) ? itemsActivosRows : [itemsActivosRows].filter(Boolean);
+    const nuevoTotal = itemsActivosList.reduce((sum, it) => sum + (it.importe ? parseFloat(it.importe) : 0), 0);
 
-    const nuevoTotal = itemsActivos.reduce((sum, it) => {
-      return sum + (it.importe ? parseFloat(it.importe) : 0);
-    }, 0);
-
-    // Actualizar total de la liquidación
-    await prisma.liquidacion.update({
-      where: { id: item.liquidacionId },
-      data: {
-        total: nuevoTotal,
-        updatedById: usuarioId
-      }
-    });
+    // Actualizar total de la liquidación (raw evita P2022)
+    await prisma.$executeRaw(Prisma.sql`UPDATE liquidaciones SET total = ${nuevoTotal}, updated_at = NOW(), updated_by_id = ${usuarioId} WHERE id = ${item.liquidacionId}`);
 
     res.json({
       ok: true,
@@ -3036,7 +3312,7 @@ export const completarImporteItem = async (req, res) => {
         id: itemActualizado.id,
         importe: itemActualizado.importe ? parseFloat(itemActualizado.importe) : null,
         importeAnterior: itemActualizado.importeAnterior ? parseFloat(itemActualizado.importeAnterior) : null,
-        estadoItem: itemActualizado.estadoItem?.codigo || item.estadoItem.codigo,
+        estadoItem: itemActualizado.estadoItem?.codigo ?? null,
         completadoAt: itemActualizado.completadoAt
       },
       liquidacion: {
@@ -3049,6 +3325,92 @@ export const completarImporteItem = async (req, res) => {
     console.error('Error al completar importe del item:', error);
     res.status(500).json({
       error: 'Error al completar importe del item',
+      detalles: error.message
+    });
+  }
+};
+
+/**
+ * Endpoint: POST /items/batch-completar
+ * Completa importes de múltiples items en una sola transacción ACID.
+ * Body: { items: [{ itemId, importe?, actorFacturadoId?, quienSoportaCostoId?, pagadoPorActorId?, vencimiento? }] }
+ */
+export const completarImportesBatch = async (req, res) => {
+  try {
+    const { items: itemsPayload } = req.body || {};
+    const usuarioId = req.user?.id ?? null;
+
+    if (!Array.isArray(itemsPayload) || itemsPayload.length === 0) {
+      return res.status(400).json({ error: 'Se requiere un array "items" con al menos un elemento' });
+    }
+
+    const ids = await getIds();
+    if (!ids.estadoItemCompletadoId || !ids.estadoItemPendienteId) {
+      return res.status(500).json({ error: 'No se encontraron estados COMPLETADO/PENDIENTE' });
+    }
+
+    const itemIds = itemsPayload
+      .map((p) => (p.itemId != null ? parseInt(p.itemId, 10) : NaN))
+      .filter((id) => !isNaN(id));
+    if (itemIds.length === 0) {
+      return res.status(400).json({ error: 'Todos los itemId son inválidos' });
+    }
+
+    const itemsDb = await prisma.liquidacionItem.findMany({
+      where: { id: { in: itemIds }, activo: true, deletedAt: null },
+      select: {
+        id: true,
+        liquidacionId: true,
+        estadoItemId: true,
+        completadoAt: true
+      }
+    });
+    const itemMap = new Map(itemsDb.map((i) => [i.id, i]));
+
+    const transacciones = [];
+    const liquidacionIds = new Set();
+
+    for (const p of itemsPayload) {
+      const itemId = p.itemId != null ? parseInt(p.itemId, 10) : NaN;
+      if (isNaN(itemId)) continue;
+
+      const item = itemMap.get(itemId);
+      if (!item) continue;
+
+      const updateData = buildUpdateDataForItem(item, p, ids, usuarioId);
+      if (!updateData || Object.keys(updateData).length <= 1) continue;
+
+      transacciones.push(
+        prisma.liquidacionItem.update({
+          where: { id: itemId },
+          data: updateData
+        })
+      );
+      liquidacionIds.add(item.liquidacionId);
+    }
+
+    if (transacciones.length === 0) {
+      return res.json({ ok: true, actualizados: 0, mensaje: 'Ningún item válido para actualizar' });
+    }
+
+    await prisma.$transaction(transacciones);
+
+    for (const lid of liquidacionIds) {
+      const itemsActivosRows = await prisma.$queryRaw(Prisma.sql`
+        SELECT importe FROM liquidacion_items WHERE liquidacion_id = ${lid} AND activo = true AND deleted_at IS NULL
+      `);
+      const list = Array.isArray(itemsActivosRows) ? itemsActivosRows : [itemsActivosRows].filter(Boolean);
+      const total = list.reduce((sum, it) => sum + (it.importe ? parseFloat(it.importe) : 0), 0);
+      await prisma.$executeRaw(Prisma.sql`
+        UPDATE liquidaciones SET total = ${total}, updated_at = NOW(), updated_by_id = ${usuarioId} WHERE id = ${lid}
+      `);
+    }
+
+    res.json({ ok: true, actualizados: transacciones.length });
+  } catch (error) {
+    console.error('Error en completarImportesBatch:', error);
+    res.status(500).json({
+      error: 'Error al completar importes en lote',
       detalles: error.message
     });
   }
@@ -3155,6 +3517,9 @@ export const crearIncidencia = async (req, res) => {
       }
     }
 
+    // Calcular vencimientos automáticos
+    const vencimientosAuto = calcularVencimientosAutomaticos(periodo);
+
     const liquidacion = await prisma.liquidacion.upsert({
       where: {
         unique_propiedad_periodo: {
@@ -3167,6 +3532,11 @@ export const crearIncidencia = async (req, res) => {
         periodo,
         estadoLiquidacionId: ids.estadoLiquidacionBorradorId,
         total: importeNum,
+        vencimiento: vencimientosAuto.vencimiento,
+        vencimiento2: vencimientosAuto.vencimiento2,
+        interes2: vencimientosAuto.interes2,
+        vencimiento3: vencimientosAuto.vencimiento3,
+        interes3: vencimientosAuto.interes3,
         autoGenerada: false,
         createdById: usuarioId
       },
@@ -3205,14 +3575,10 @@ export const crearIncidencia = async (req, res) => {
       data: itemData
     });
 
-    const itemsActivos = await prisma.liquidacionItem.findMany({
-      where: { liquidacionId: liquidacion.id, activo: true, deletedAt: null }
-    });
-    const nuevoTotal = itemsActivos.reduce((sum, it) => sum + (it.importe ? parseFloat(it.importe) : 0), 0);
-    await prisma.liquidacion.update({
-      where: { id: liquidacion.id },
-      data: { total: nuevoTotal, updatedById: usuarioId }
-    });
+    const itemsActivosRows = await prisma.$queryRaw(Prisma.sql`SELECT importe FROM liquidacion_items WHERE liquidacion_id = ${liquidacion.id} AND activo = true AND deleted_at IS NULL`);
+    const itemsActivosList = Array.isArray(itemsActivosRows) ? itemsActivosRows : [itemsActivosRows].filter(Boolean);
+    const nuevoTotal = itemsActivosList.reduce((sum, it) => sum + (it.importe ? parseFloat(it.importe) : 0), 0);
+    await prisma.$executeRaw(Prisma.sql`UPDATE liquidaciones SET total = ${nuevoTotal}, updated_at = NOW(), updated_by_id = ${usuarioId} WHERE id = ${liquidacion.id}`);
 
     res.status(201).json({
       ok: true,
@@ -3331,6 +3697,21 @@ export const getBoletaInquilino = async (req, res) => {
     const contrato = liquidacion?.contrato;
     const propiedad = liquidacion?.propiedad;
     const inquilino = contrato?.inquilino;
+
+    // Si hay contrato pero no está VIGENTE, no generar boleta al inquilino (propiedad no alquilada aún)
+    const ids = await getIds();
+    if (contrato && ids.estadoContratoVigenteId != null && contrato.estadoContratoId !== ids.estadoContratoVigenteId) {
+      return res.json({
+        periodo,
+        contratoId: contratoId ? parseInt(contratoId) : null,
+        propiedadId: propiedadId ? parseInt(propiedadId) : null,
+        items: [],
+        total: 0,
+        totalCargos: 0,
+        totalCreditos: 0,
+        advertencias: ['La boleta al inquilino no aplica: el contrato no está vigente (solo se genera para contratos en estado VIGENTE).']
+      });
+    }
 
     // Procesar items aplicando reglas A-F
     const itemsBoleta = [];

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Container,
   Paper,
@@ -25,6 +25,10 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Obtener la ruta original a la que el usuario quería ir
+  const from = location.state?.from?.pathname || '/';
 
   const handleClickShowPassword = () => {
     setShowPassword(!showPassword);
@@ -41,7 +45,8 @@ export default function Login() {
 
     try {
       await login(email, password);
-      navigate('/');
+      // Redirigir a la ruta original o al dashboard
+      navigate(from, { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || 'Error al iniciar sesión');
     } finally {

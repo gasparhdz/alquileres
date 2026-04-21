@@ -1,7 +1,19 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import { PrismaClient } from '@prisma/client';
+import prisma from './db/prisma.js';
+import logger from './utils/logger.js';
+
+const isProduction = process.env.NODE_ENV === 'production';
+
+// Limitador global para /api (en desarrollo mucho más alto para evitar 429 con HMR, pruebas, etc.)
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isProduction ? 1000 : 50000,
+  message: { error: 'Demasiadas peticiones. Intente de nuevo más tarde.' }
+});
 
 // Importar rutas
 import authRoutes from './routes/auth.routes.js';
@@ -25,11 +37,17 @@ import tipoImpuestoPropiedadCampoRoutes from './routes/tipoImpuestoPropiedadCamp
 import propiedadImpuestoCampoRoutes from './routes/propiedadImpuestoCampo.routes.js';
 import tipoCargoCampoRoutes from './routes/tipoCargoCampo.routes.js';
 import propiedadCargoCampoRoutes from './routes/propiedadCargoCampo.routes.js';
+import cuentaCorrienteRoutes from './routes/cuentaCorriente.routes.js';
+import searchRoutes from './routes/search.routes.js';
+import clienteRoutes from './routes/cliente.routes.js';
+import usuarioRoutes from './routes/usuario.routes.js';
+import rolRoutes from './routes/rol.routes.js';
+import permisoRoutes from './routes/permiso.routes.js';
+import consorcioRoutes from './routes/consorcio.routes.js';
 
 dotenv.config();
 
 const app = express();
-const prisma = new PrismaClient();
 
 // Middlewares
 app.use(cors({
@@ -58,10 +76,18 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true // Necesario para cookies HttpOnly
 }));
+app.use(cookieParser()); // Parsear cookies HttpOnly
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use('/api/', generalLimiter);
+
+// Ruta de salud (antes de rutas que montan en /api para no ser capturada por cuentaCorriente)
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Sistema de Alquileres API' });
+});
 
 // Rutas
 app.use('/api/auth', authRoutes);
@@ -85,30 +111,33 @@ app.use('/api/tipos-impuesto-propiedad-campos', tipoImpuestoPropiedadCampoRoutes
 app.use('/api/propiedad-impuesto-campos', propiedadImpuestoCampoRoutes);
 app.use('/api/tipos-cargo-campos', tipoCargoCampoRoutes);
 app.use('/api/propiedad-cargo-campos', propiedadCargoCampoRoutes);
+app.use('/api', cuentaCorrienteRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/clientes', clienteRoutes);
+app.use('/api/usuarios', usuarioRoutes);
+app.use('/api/roles', rolRoutes);
+app.use('/api/permisos', permisoRoutes);
+app.use('/api/consorcios', consorcioRoutes);
 
-// Ruta de salud
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Sistema de Alquileres API' });
-});
-
-// Manejo de errores
+// Global Error Handler (último app.use: persiste excepciones y responde genérico)
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
-    error: err.message || 'Error interno del servidor',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
+  logger.error(err.message, { stack: err.stack, path: req.path, method: req.method });
+  if (!res.headersSent) {
+    res.status(err.status || 500).json({
+      error: 'Ocurrió un error interno en el servidor.'
+    });
+  }
 });
 
-// Iniciar servidor
+// Iniciar servidor (no arrancar en test para que supertest use solo la app)
 const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, HOST, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
-  //console.log(`🌐 Accesible desde la red en: http://[TU_IP_LOCAL]:${PORT}`);
-  //console.log(`   Ejecuta 'ipconfig' (Windows) o 'ifconfig' (Linux/Mac) para ver tu IP local`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, HOST, () => {
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  });
+}
 
 // Manejo de cierre graceful
 process.on('SIGTERM', async () => {

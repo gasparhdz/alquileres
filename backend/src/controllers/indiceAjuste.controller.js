@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { syncIPCSeries } from '../services/ipc.service.js';
-
-const prisma = new PrismaClient();
 
 const parseDecimalInput = (value) => {
   if (value === undefined || value === null || value === '') {

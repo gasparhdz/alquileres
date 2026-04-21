@@ -5,14 +5,15 @@ import {
   deleteDocumento
 } from '../controllers/propiedadDocumento.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
+import { requirePermission } from '../middlewares/rbac.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticateToken);
 
-router.get('/propiedad/:propiedadId', getDocumentosByPropiedad);
-router.post('/propiedad/:propiedadId', upsertDocumentosPropiedad);
-router.delete('/:id', deleteDocumento);
+router.get('/propiedad/:propiedadId', requirePermission('propiedad.documentos.ver'), getDocumentosByPropiedad);
+router.post('/propiedad/:propiedadId', requirePermission('propiedad.documentos.crear'), upsertDocumentosPropiedad);
+router.delete('/:id', requirePermission('propiedad.documentos.eliminar'), deleteDocumento);
 
 export default router;
 

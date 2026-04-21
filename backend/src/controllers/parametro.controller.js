@@ -1,16 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-// Singleton pattern para asegurar que prisma siempre esté inicializado
-let prismaInstance = null;
-
-const getPrisma = () => {
-  if (!prismaInstance) {
-    prismaInstance = new PrismaClient();
-  }
-  return prismaInstance;
-};
-
-const prisma = getPrisma();
+import prisma from '../db/prisma.js';
 
 export const getAllCategorias = async (req, res) => {
   try {

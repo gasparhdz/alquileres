@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { scrapeAssaFacturas } from '../services/assaScraper.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Autocompletar importes y vencimientos desde ASSA
@@ -156,13 +154,10 @@ export const autocompletarAssa = async (req, res) => {
       });
     }
 
-    // 5. Aplicar regla de selección por período y hacer matching
-    const actualizados = [];
     const sinFacturaEnPeriodo = [];
     const sinMatchPunto = [];
     const errores = [];
 
-    // Agrupar facturas por punto
     const facturasPorPunto = new Map();
     for (const factura of facturasAssa) {
       if (!facturasPorPunto.has(factura.punto)) {
@@ -171,11 +166,8 @@ export const autocompletarAssa = async (req, res) => {
       facturasPorPunto.get(factura.punto).push(factura);
     }
 
-    // Obtener estado COMPLETADO
     const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
-      where: {
-        codigo: 'COMPLETADO'
-      }
+      where: { codigo: 'COMPLETADO' }
     });
 
     if (!estadoCompletado) {
@@ -184,57 +176,50 @@ export const autocompletarAssa = async (req, res) => {
       });
     }
 
-    // Procesar cada punto del mapa
+    const completadoAt = new Date();
+    const completadoById = req.user?.id || null;
+    const transacciones = [];
+
     for (const [puntoSuministro, item] of puntoToItemMap.entries()) {
-      try {
-        const facturasPunto = facturasPorPunto.get(puntoSuministro) || [];
-        
-        // Filtrar facturas válidas del período
-        const facturasValidas = facturasPunto.filter(factura => {
-          if (!factura.vencimiento) return false;
-          
-          const fechaVenc = new Date(factura.vencimiento);
-          return fechaVenc >= inicioPeriodo && fechaVenc < finPeriodo;
-        });
+      const facturasPunto = facturasPorPunto.get(puntoSuministro) || [];
+      const facturasValidas = facturasPunto.filter(factura => {
+        if (!factura.vencimiento) return false;
+        const fechaVenc = new Date(factura.vencimiento);
+        return fechaVenc >= inicioPeriodo && fechaVenc < finPeriodo;
+      });
 
-        if (facturasValidas.length === 0) {
-          sinFacturaEnPeriodo.push(puntoSuministro);
-          continue;
-        }
+      if (facturasValidas.length === 0) {
+        sinFacturaEnPeriodo.push(puntoSuministro);
+        continue;
+      }
 
-        // Tomar la factura con menor vencimiento
-        facturasValidas.sort((a, b) => {
-          const fechaA = new Date(a.vencimiento);
-          const fechaB = new Date(b.vencimiento);
-          return fechaA - fechaB;
-        });
+      facturasValidas.sort((a, b) => {
+        const fechaA = new Date(a.vencimiento);
+        const fechaB = new Date(b.vencimiento);
+        return fechaA - fechaB;
+      });
+      const facturaSeleccionada = facturasValidas[0];
 
-        const facturaSeleccionada = facturasValidas[0];
-
-        // Actualizar LiquidacionItem
-        const importeActual = item.importe ? parseFloat(item.importe) : null;
-        const importeNuevo = facturaSeleccionada.importe;
-
-        await prisma.liquidacionItem.update({
+      transacciones.push(
+        prisma.liquidacionItem.update({
           where: { id: item.id },
           data: {
-            importeAnterior: importeActual && importeActual !== importeNuevo ? importeActual : item.importeAnterior,
-            importe: importeNuevo,
+            importe: facturaSeleccionada.importe,
             vencimiento: facturaSeleccionada.vencimiento,
             refExterna: facturaSeleccionada.referencia || item.refExterna,
             estadoItemId: estadoCompletado.id,
-            completadoAt: new Date(),
-            completadoById: req.user?.id || null
+            completadoAt,
+            completadoById
           }
-        });
+        })
+      );
+    }
 
-        actualizados.push(item.id);
-        console.log(`[ASSA] Item ${item.id} actualizado con importe ${importeNuevo} y vencimiento ${facturaSeleccionada.vencimiento}`);
-
-      } catch (error) {
-        console.error(`[ASSA] Error al procesar punto ${puntoSuministro}:`, error);
-        errores.push(`Error al procesar punto ${puntoSuministro}: ${error.message}`);
-      }
+    let actualizados = 0;
+    if (transacciones.length > 0) {
+      await prisma.$transaction(transacciones);
+      actualizados = transacciones.length;
+      console.log(`[ASSA] ${actualizados} items actualizados en transacción.`);
     }
 
     // Puntos en ASSA pero no en sistema
@@ -244,10 +229,9 @@ export const autocompletarAssa = async (req, res) => {
       }
     }
 
-    // 6. Devolver resultado
     res.json({
       periodo,
-      actualizados: actualizados.length,
+      actualizados,
       sinFacturaEnPeriodo,
       sinMatchPunto,
       warnings,

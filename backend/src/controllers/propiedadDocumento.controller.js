@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 // Obtener todos los documentos de una propiedad
 export const getDocumentosByPropiedad = async (req, res) => {

@@ -27,17 +27,31 @@ import {
   Select,
   FormControl,
   InputLabel,
-  FormHelperText
+  FormHelperText,
+  InputAdornment,
+  TableSortLabel,
+  TablePagination
 } from '@mui/material';
+import DomicilioClienteFormSection from '../components/DomicilioClienteFormSection';
+import SearchIcon from '@mui/icons-material/Search';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import PhoneIcon from '@mui/icons-material/Phone';
 import EmailIcon from '@mui/icons-material/Email';
 import BadgeIcon from '@mui/icons-material/Badge';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import WhatsAppIcon from '@mui/icons-material/WhatsApp';
 import api from '../api';
+import ConfirmDialog from '../components/ConfirmDialog';
+import ClientePerfilDialog from '../components/ClientePerfilDialog';
+import RequirePermission from '../components/RequirePermission';
+import { isValidCuit } from '../utils/cuit';
+import { sanitizeTelefonoInput, validateTelefonoCliente, formatWhatsAppNumber } from '../utils/telefono';
+import { formatApellidoNombrePF } from '../utils/formatClienteNombre';
+import { useDebounce } from '../hooks/useDebounce';
 
-export default function Inquilinos() {
+export default function Inquilinos({ abrirPerfilId, onPerfilAbierto }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [formData, setFormData] = useState({
@@ -55,6 +69,9 @@ export default function Inquilinos() {
     dirDepto: '',
     provinciaId: '',
     localidadId: '',
+    paisCodigo: 'AR',
+    provinciaExtranjera: '',
+    localidadExtranjera: '',
     condicionIvaId: ''
   });
   const [errors, setErrors] = useState({});
@@ -62,15 +79,56 @@ export default function Inquilinos() {
   const [errorMessage, setErrorMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
+  const [inquilinoAEliminar, setInquilinoAEliminar] = useState(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [orderBy, setOrderBy] = useState('nombre');
+  const [order, setOrder] = useState('asc');
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [perfilOpen, setPerfilOpen] = useState(false);
+  const [perfilCliente, setPerfilCliente] = useState(null);
   const queryClient = useQueryClient();
+  const searchDebounced = useDebounce(searchTerm, 400);
+
+  const handleVerPerfil = (inquilino) => {
+    setPerfilCliente(inquilino);
+    setPerfilOpen(true);
+  };
 
   const { data, isLoading } = useQuery({
-    queryKey: ['inquilinos'],
+    queryKey: ['inquilinos', { page: page + 1, limit: rowsPerPage, search: searchDebounced, orderBy, order }],
     queryFn: async () => {
-      const response = await api.get('/inquilinos');
-      return response.data;
-    }
+      const resp = await api.get('/inquilinos', {
+        params: {
+          page: page + 1,
+          limit: rowsPerPage,
+          search: searchDebounced.trim() || undefined,
+          orderBy,
+          order,
+        },
+      });
+      return resp.data;
+    },
   });
+
+  const listaPagina = data?.data ?? [];
+  const totalRegistros = data?.pagination?.total ?? 0;
+
+  // Abrir perfil desde búsqueda global (por ID; el diálogo puede cargar el cliente por id)
+  useEffect(() => {
+    if (abrirPerfilId) {
+      setPerfilCliente({ id: abrirPerfilId });
+      setPerfilOpen(true);
+      onPerfilAbierto?.();
+    }
+  }, [abrirPerfilId, onPerfilAbierto]);
+
+  const handleSort = (column) => {
+    const isAsc = orderBy === column && order === 'asc';
+    setOrder(isAsc ? 'desc' : 'asc');
+    setOrderBy(column);
+    setPage(0);
+  };
 
   // Obtener catálogos
   const { data: tiposPersona } = useQuery({
@@ -120,7 +178,7 @@ export default function Inquilinos() {
   const createMutation = useMutation({
     mutationFn: (data) => api.post('/inquilinos', data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['inquilinos']);
+      queryClient.invalidateQueries({ queryKey: ['inquilinos'] });
       setOpen(false);
       resetForm();
       setSuccessMessage('Inquilino creado exitosamente');
@@ -137,7 +195,7 @@ export default function Inquilinos() {
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => api.put(`/inquilinos/${id}`, data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['inquilinos']);
+      queryClient.invalidateQueries({ queryKey: ['inquilinos'] });
       setOpen(false);
       resetForm();
       setSuccessMessage('Inquilino actualizado exitosamente');
@@ -154,7 +212,8 @@ export default function Inquilinos() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.delete(`/inquilinos/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries(['inquilinos']);
+      setInquilinoAEliminar(null);
+      queryClient.invalidateQueries({ queryKey: ['inquilinos'] });
       setSuccessMessage('Inquilino eliminado exitosamente');
       setSnackbarSeverity('success');
       setSnackbarOpen(true);
@@ -183,6 +242,9 @@ export default function Inquilinos() {
       dirDepto: '',
       provinciaId: '',
       localidadId: '',
+      paisCodigo: 'AR',
+      provinciaExtranjera: '',
+      localidadExtranjera: '',
       condicionIvaId: ''
     });
     setErrors({});
@@ -191,35 +253,21 @@ export default function Inquilinos() {
 
   const checkDniCuitExists = async (dni, cuit) => {
     try {
-      // Obtener todos los inquilinos para verificar duplicados
-      const response = await api.get('/inquilinos?limit=1000');
-      const inquilinos = response.data?.data || [];
-
-      // Buscar por DNI si existe
-      if (dni) {
-        const existeDni = inquilinos.find(
-          (inq) => inq.dni === dni && (!editing || inq.id !== editing.id)
-        );
-        if (existeDni) {
-          return { field: 'dni', message: 'Este DNI ya está registrado en el sistema' };
-        }
+      const response = await api.get('/clientes/check-documento', {
+        params: {
+          dni: dni || undefined,
+          cuit: cuit || undefined,
+          ignorarId: editing?.id || undefined,
+        },
+      });
+      const { exists, field } = response.data || {};
+      if (exists && field) {
+        const message =
+          field === 'dni'
+            ? 'Este DNI ya está registrado en el sistema'
+            : 'Este CUIT ya está registrado en el sistema';
+        return { field, message };
       }
-
-      // Buscar por CUIT si existe
-      if (cuit) {
-        const cuitSinGuiones = cuit.replace(/\D/g, '');
-        const existeCuit = inquilinos.find((inq) => {
-          const inqCuitSinGuiones = inq.cuit?.replace(/\D/g, '') || '';
-          return (
-            inqCuitSinGuiones === cuitSinGuiones &&
-            (!editing || inq.id !== editing.id)
-          );
-        });
-        if (existeCuit) {
-          return { field: 'cuit', message: 'Este CUIT ya está registrado en el sistema' };
-        }
-      }
-
       return null;
     } catch (error) {
       console.error('Error al verificar DNI/CUIT:', error);
@@ -267,12 +315,8 @@ export default function Inquilinos() {
     if (cuitSinGuiones) {
       if (cuitSinGuiones.length !== 11) {
         newErrors.cuit = 'El CUIT debe tener 11 dígitos (formato: XX-XXXXXXXX-X)';
-      } else {
-        // Validar formato CUIT: XX-XXXXXXXX-X
-        const cuitFormato = /^\d{2}-\d{8}-\d{1}$/;
-        if (!cuitFormato.test(formData.cuit)) {
-          newErrors.cuit = 'Formato de CUIT inválido. Use: XX-XXXXXXXX-X';
-        }
+      } else if (!isValidCuit(cuitSinGuiones)) {
+        newErrors.cuit = 'CUIT/CUIL inválido';
       }
     }
 
@@ -284,11 +328,16 @@ export default function Inquilinos() {
       }
     }
 
-    // Validar teléfono solo números (si se ingresa)
-    if (formData.telefono && formData.telefono.trim() !== '') {
-      const telefonoRegex = /^\d+$/;
-      if (!telefonoRegex.test(formData.telefono)) {
-        newErrors.telefono = 'El teléfono solo debe contener números';
+    const telefonoErr = validateTelefonoCliente(formData.telefono);
+    if (telefonoErr) newErrors.telefono = telefonoErr;
+
+    if (formData.paisCodigo && formData.paisCodigo !== 'AR') {
+      const pc = String(formData.paisCodigo).trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(pc)) {
+        newErrors.paisCodigo = 'Seleccione un país';
+      }
+      if (!formData.localidadExtranjera || !formData.localidadExtranjera.trim()) {
+        newErrors.localidadExtranjera = 'Indique ciudad o localidad';
       }
     }
 
@@ -336,6 +385,9 @@ export default function Inquilinos() {
       dirDepto: inquilino.dirDepto || '',
       provinciaId: inquilino.provinciaId || '',
       localidadId: inquilino.localidadId || '',
+      paisCodigo: inquilino.paisCodigo || 'AR',
+      provinciaExtranjera: inquilino.provinciaExtranjera || '',
+      localidadExtranjera: inquilino.localidadExtranjera || '',
       condicionIvaId: inquilino.condicionIvaId || ''
     });
     setOpen(true);
@@ -366,6 +418,10 @@ export default function Inquilinos() {
       dirDepto: formData.dirDepto?.trim() || null,
       provinciaId: formData.provinciaId ? parseInt(formData.provinciaId) : null,
       localidadId: formData.localidadId ? parseInt(formData.localidadId) : null,
+      domicilioExtranjero: !!(formData.paisCodigo && formData.paisCodigo !== 'AR'),
+      paisCodigo: formData.paisCodigo?.trim() || null,
+      provinciaExtranjera: formData.provinciaExtranjera?.trim() || null,
+      localidadExtranjera: formData.localidadExtranjera?.trim() || null,
       condicionIvaId: formData.condicionIvaId ? parseInt(formData.condicionIvaId) : null
     };
 
@@ -378,86 +434,225 @@ export default function Inquilinos() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
-        <Typography variant="h4">Inquilinos</Typography>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpen}>
-          Nuevo Inquilino
-        </Button>
+      <ConfirmDialog
+        open={!!inquilinoAEliminar}
+        onClose={() => setInquilinoAEliminar(null)}
+        title="Eliminar inquilino"
+        message="¿Está seguro de eliminar este inquilino?"
+        confirmLabel="Eliminar"
+        confirmColor="error"
+        loading={deleteMutation.isPending}
+        onConfirm={() => inquilinoAEliminar && deleteMutation.mutate(inquilinoAEliminar.id)}
+      />
+      <Box sx={{ 
+        display: 'flex', 
+        flexDirection: { xs: 'column', sm: 'row' },
+        justifyContent: 'space-between', 
+        alignItems: { xs: 'stretch', sm: 'center' }, 
+        mb: 2, 
+        gap: 2 
+      }}>
+        <TextField
+          size="small"
+          placeholder="Buscar por nombre, apellido, DNI o CUIT..."
+          value={searchTerm}
+          onChange={(e) => { setSearchTerm(e.target.value); setPage(0); }}
+          sx={{ width: { xs: '100%', sm: 280 } }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" />
+              </InputAdornment>
+            )
+          }}
+        />
+        <RequirePermission codigo="inquilinos.crear">
+          <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpen} sx={{ height: 36, py: 0, px: 1.5, fontSize: '0.875rem', '& .MuiButton-startIcon': { marginRight: 0.5 }, width: { xs: '100%', sm: 'auto' } }}>
+            Nuevo Inquilino
+          </Button>
+        </RequirePermission>
       </Box>
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1 } }}>
+        <Table size="small" sx={{
+          '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' },
+          '& .MuiTableCell-head': { py: 0.5, px: 1 },
+          '& .MuiTableSortLabel-root': { fontSize: '0.875rem' }
+        }}>
           <TableHead>
             <TableRow>
-              <TableCell>Nombre/Apellido</TableCell>
-              <TableCell>DNI</TableCell>
-              <TableCell>CUIT</TableCell>
-              <TableCell>Email</TableCell>
-              <TableCell>Teléfono</TableCell>
+              <TableCell sortDirection={orderBy === 'nombre' ? order : false}>
+                <TableSortLabel active={orderBy === 'nombre'} direction={orderBy === 'nombre' ? order : 'asc'} onClick={() => handleSort('nombre')}>
+                  Apellido y nombre
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={orderBy === 'dni' ? order : false}>
+                <TableSortLabel active={orderBy === 'dni'} direction={orderBy === 'dni' ? order : 'asc'} onClick={() => handleSort('dni')}>
+                  DNI
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={orderBy === 'cuit' ? order : false}>
+                <TableSortLabel active={orderBy === 'cuit'} direction={orderBy === 'cuit' ? order : 'asc'} onClick={() => handleSort('cuit')}>
+                  CUIT
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={orderBy === 'mail' ? order : false}>
+                <TableSortLabel active={orderBy === 'mail'} direction={orderBy === 'mail' ? order : 'asc'} onClick={() => handleSort('mail')}>
+                  Email
+                </TableSortLabel>
+              </TableCell>
+              <TableCell sortDirection={orderBy === 'telefono' ? order : false}>
+                <TableSortLabel active={orderBy === 'telefono'} direction={orderBy === 'telefono' ? order : 'asc'} onClick={() => handleSort('telefono')}>
+                  Teléfono
+                </TableSortLabel>
+              </TableCell>
               <TableCell>Acciones</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {data?.data?.map((inquilino) => (
-              <TableRow key={inquilino.id}>
-                <TableCell>
-                  {inquilino.razonSocial || `${inquilino.nombre || ''} ${inquilino.apellido || ''}`.trim() || '-'}
-                </TableCell>
-                <TableCell>{inquilino.dni || '-'}</TableCell>
-                <TableCell>{inquilino.cuit || '-'}</TableCell>
-                <TableCell>{inquilino.mail || '-'}</TableCell>
-                <TableCell>{inquilino.telefono || '-'}</TableCell>
-                <TableCell>
-                  <IconButton size="small" onClick={() => handleEdit(inquilino)}>
-                    <EditIcon />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => {
-                      if (window.confirm('¿Está seguro de eliminar este inquilino?')) {
-                        deleteMutation.mutate(inquilino.id);
-                      }
-                    }}
-                  >
-                    <DeleteIcon />
-                  </IconButton>
+            {listaPagina.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} align="center" sx={{ py: 3 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    {searchDebounced.trim() ? 'No se encontraron inquilinos con ese criterio.' : 'No hay inquilinos cargados.'}
+                  </Typography>
                 </TableCell>
               </TableRow>
-            ))}
+            ) : (
+              listaPagina.map((inquilino) => (
+                <TableRow key={inquilino.id}>
+                  <TableCell>
+                    {inquilino.razonSocial || formatApellidoNombrePF(inquilino.nombre, inquilino.apellido) || '-'}
+                  </TableCell>
+                  <TableCell>{inquilino.dni || '-'}</TableCell>
+                  <TableCell>{inquilino.cuit || '-'}</TableCell>
+                  <TableCell>
+                    {inquilino.mail ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <a 
+                          href={`mailto:${inquilino.mail}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                          title="Enviar email"
+                        >
+                          {inquilino.mail}
+                        </a>
+                        <IconButton 
+                          size="small"
+                          component="a"
+                          href={`mailto:${inquilino.mail}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ padding: '2px', color: 'primary.main' }}
+                          title="Enviar email"
+                        >
+                          <EmailIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Box>
+                    ) : '-'}
+                  </TableCell>
+                  <TableCell>
+                    {inquilino.telefono ? (
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                        <a 
+                          href={`https://wa.me/${formatWhatsAppNumber(inquilino.telefono)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'inherit', textDecoration: 'none' }}
+                          title="Abrir WhatsApp"
+                        >
+                          {inquilino.telefono}
+                        </a>
+                        <IconButton 
+                          size="small" 
+                          component="a"
+                          href={`https://wa.me/${formatWhatsAppNumber(inquilino.telefono)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ padding: '2px', color: '#25D366' }}
+                          title="Abrir WhatsApp"
+                        >
+                          <WhatsAppIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </Box>
+                    ) : '-'}
+                  </TableCell>
+                  <TableCell>
+                    <IconButton size="small" onClick={() => handleVerPerfil(inquilino)} sx={{ padding: '4px' }} title="Ver perfil">
+                      <VisibilityIcon fontSize="small" />
+                    </IconButton>
+                    <RequirePermission codigo="inquilinos.editar">
+                      <IconButton size="small" onClick={() => handleEdit(inquilino)} sx={{ padding: '4px' }} title="Editar">
+                        <EditIcon fontSize="small" />
+                      </IconButton>
+                    </RequirePermission>
+                    <RequirePermission codigo="inquilinos.eliminar">
+                      <IconButton size="small" color="error" onClick={() => setInquilinoAEliminar(inquilino)} sx={{ padding: '4px' }} title="Eliminar">
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </RequirePermission>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={totalRegistros}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[5, 10, 25, 50]}
+          labelRowsPerPage="Filas:"
+          sx={{
+            '& .MuiTablePagination-toolbar': { minHeight: 36 },
+            '& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows': { fontSize: '0.875rem' },
+            '& .MuiTablePagination-select': { fontSize: '0.875rem', py: 0.25 }
+          }}
+        />
       </TableContainer>
 
       {/* Vista de cards para mobile */}
       <Box sx={{ display: { xs: 'block', md: 'none' } }}>
+        {listaPagina.length === 0 ? (
+          <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 3 }}>
+            {searchDebounced.trim() ? 'No se encontraron inquilinos con ese criterio.' : 'No hay inquilinos cargados.'}
+          </Typography>
+        ) : (
         <Grid container spacing={2}>
-          {data?.data?.map((inquilino) => (
+          {listaPagina.map((inquilino) => (
             <Grid item xs={12} key={inquilino.id}>
               <Card>
                 <CardContent>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 2 }}>
                     <Box>
                       <Typography variant="h6" fontWeight={600}>
-                        {inquilino.razonSocial || `${inquilino.nombre || ''} ${inquilino.apellido || ''}`.trim() || 'Sin nombre'}
+                        {inquilino.razonSocial || formatApellidoNombrePF(inquilino.nombre, inquilino.apellido) || 'Sin nombre'}
                       </Typography>
                     </Box>
                     <Box>
-                      <IconButton size="small" onClick={() => handleEdit(inquilino)} sx={{ mr: 0.5 }}>
-                        <EditIcon />
+                      <IconButton size="small" onClick={() => handleVerPerfil(inquilino)} sx={{ mr: 0.5 }} title="Ver perfil">
+                        <VisibilityIcon />
                       </IconButton>
-                      <IconButton
-                        size="small"
-                        color="error"
-                        onClick={() => {
-                          if (window.confirm('¿Está seguro de eliminar este inquilino?')) {
-                            deleteMutation.mutate(inquilino.id);
-                          }
-                        }}
-                      >
-                        <DeleteIcon />
-                      </IconButton>
+                      <RequirePermission codigo="inquilinos.editar">
+                        <IconButton size="small" onClick={() => handleEdit(inquilino)} sx={{ mr: 0.5 }} title="Editar">
+                          <EditIcon />
+                        </IconButton>
+                      </RequirePermission>
+                      <RequirePermission codigo="inquilinos.eliminar">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setInquilinoAEliminar(inquilino)}
+                          title="Eliminar"
+                        >
+                          <DeleteIcon />
+                        </IconButton>
+                      </RequirePermission>
                     </Box>
                   </Box>
                   <Divider sx={{ my: 1.5 }} />
@@ -480,17 +675,44 @@ export default function Inquilinos() {
                     )}
                     {inquilino.mail && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <EmailIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
+                        <IconButton 
+                          size="small"
+                          component="a"
+                          href={`mailto:${inquilino.mail}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ padding: 0, minWidth: 0, color: 'primary.main' }}
+                        >
+                          <EmailIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
                         <Typography variant="body2">
-                          <strong>Email:</strong> {inquilino.mail}
+                          <a href={`mailto:${inquilino.mail}`} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit' }}>
+                            {inquilino.mail}
+                          </a>
                         </Typography>
                       </Box>
                     )}
                     {inquilino.telefono && (
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <PhoneIcon sx={{ fontSize: 18, color: 'text.secondary' }} />
-                        <Typography variant="body2">
-                          <strong>Teléfono:</strong> {inquilino.telefono}
+                        <IconButton 
+                          size="small" 
+                          component="a"
+                          href={`https://wa.me/${formatWhatsAppNumber(inquilino.telefono)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ padding: 0, minWidth: 0, color: '#25D366' }}
+                        >
+                          <WhatsAppIcon sx={{ fontSize: 18 }} />
+                        </IconButton>
+                        <Typography 
+                          variant="body2" 
+                          component="a"
+                          href={`https://wa.me/${formatWhatsAppNumber(inquilino.telefono)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          sx={{ color: 'inherit', textDecoration: 'none', '&:hover': { textDecoration: 'underline' } }}
+                        >
+                          {inquilino.telefono}
                         </Typography>
                       </Box>
                     )}
@@ -500,6 +722,22 @@ export default function Inquilinos() {
             </Grid>
           ))}
         </Grid>
+        )}
+        <TablePagination
+          component="div"
+          count={totalRegistros}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(e) => { setRowsPerPage(parseInt(e.target.value, 10)); setPage(0); }}
+          rowsPerPageOptions={[5, 10, 25, 50]}
+          labelRowsPerPage="Filas:"
+          sx={{
+            '& .MuiTablePagination-toolbar': { minHeight: 36 },
+            '& .MuiTablePagination-selectLabel, & .MuiTablePagination-displayedRows': { fontSize: '0.875rem' },
+            '& .MuiTablePagination-select': { fontSize: '0.875rem', py: 0.25 }
+          }}
+        />
       </Box>
 
       <Dialog open={open} onClose={() => setOpen(false)} maxWidth="md" fullWidth>
@@ -531,7 +769,7 @@ export default function Inquilinos() {
                           <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
                             <InputLabel>Tipo de Persona *</InputLabel>
                             <Select
-                              value={formData.tipoPersonaId}
+                              value={tiposPersona?.some((t) => t.id == formData.tipoPersonaId) ? formData.tipoPersonaId : ''}
                               label="Tipo de Persona *"
                               onChange={(e) => {
                                 const nuevoTipoId = e.target.value;
@@ -552,6 +790,9 @@ export default function Inquilinos() {
                                   dirDepto: '',
                                   provinciaId: '',
                                   localidadId: '',
+                                  paisCodigo: 'AR',
+                                  provinciaExtranjera: '',
+                                  localidadExtranjera: '',
                                   condicionIvaId: ''
                                 });
                                 
@@ -600,7 +841,7 @@ export default function Inquilinos() {
                             type="text"
                             fullWidth
                             size="small"
-                            value={formData.dni}
+                            value={formData.dni ? formData.dni.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : ''}
                             onChange={(e) => {
                               const value = e.target.value.replace(/\D/g, '').substring(0, 8);
                               setFormData({ ...formData, dni: value });
@@ -611,10 +852,10 @@ export default function Inquilinos() {
                                 setErrors(newErrors);
                               }
                             }}
-                            inputProps={{ maxLength: 8 }}
+                            inputProps={{ maxLength: 10 }}
                             error={!!errors.dni || !!errors.dniCuit}
                             helperText={errors.dni || (errors.dniCuit && !formData.cuit ? errors.dniCuit : '')}
-                            placeholder="Al menos DNI o CUIT requerido"
+                            placeholder="XX.XXX.XXX"
                           />
                         </Grid>
                         <Grid item xs={12} sm={3}>
@@ -635,6 +876,12 @@ export default function Inquilinos() {
                                 delete newErrors.cuit;
                                 delete newErrors.dniCuit;
                                 setErrors(newErrors);
+                              }
+                            }}
+                            onBlur={() => {
+                              const cuitLimpio = formData.cuit?.replace(/\D/g, '') || '';
+                              if (cuitLimpio.length === 11 && !isValidCuit(cuitLimpio)) {
+                                setErrors({ ...errors, cuit: 'CUIT/CUIL inválido' });
                               }
                             }}
                             placeholder="XX-XXXXXXXX-X"
@@ -668,13 +915,13 @@ export default function Inquilinos() {
                             size="small"
                             value={formData.telefono}
                             onChange={(e) => {
-                              const value = e.target.value.replace(/\D/g, '');
+                              const value = sanitizeTelefonoInput(e.target.value);
                               setFormData({ ...formData, telefono: value });
                               if (errors.telefono) {
                                 setErrors({ ...errors, telefono: '' });
                               }
                             }}
-                            placeholder="Solo números"
+                            placeholder="Ej.: +54 9 11 2345-6789"
                             error={!!errors.telefono}
                             helperText={errors.telefono || ''}
                           />
@@ -690,7 +937,7 @@ export default function Inquilinos() {
                           <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
                             <InputLabel>Tipo de Persona *</InputLabel>
                             <Select
-                              value={formData.tipoPersonaId}
+                              value={tiposPersona?.some((t) => t.id == formData.tipoPersonaId) ? formData.tipoPersonaId : ''}
                               label="Tipo de Persona *"
                               onChange={(e) => {
                                 const nuevoTipoId = e.target.value;
@@ -711,6 +958,9 @@ export default function Inquilinos() {
                                   dirDepto: '',
                                   provinciaId: '',
                                   localidadId: '',
+                                  paisCodigo: 'AR',
+                                  provinciaExtranjera: '',
+                                  localidadExtranjera: '',
                                   condicionIvaId: ''
                                 });
                                 
@@ -764,6 +1014,12 @@ export default function Inquilinos() {
                                 setErrors(newErrors);
                               }
                             }}
+                            onBlur={() => {
+                              const cuitLimpio = formData.cuit?.replace(/\D/g, '') || '';
+                              if (cuitLimpio.length === 11 && !isValidCuit(cuitLimpio)) {
+                                setErrors({ ...errors, cuit: 'CUIT/CUIL inválido' });
+                              }
+                            }}
                             placeholder="XX-XXXXXXXX-X"
                             error={!!errors.cuit || !!errors.dniCuit}
                             helperText={errors.cuit || errors.dniCuit || ''}
@@ -795,13 +1051,13 @@ export default function Inquilinos() {
                             size="small"
                             value={formData.telefono}
                             onChange={(e) => {
-                              const value = e.target.value.replace(/\D/g, '');
+                              const value = sanitizeTelefonoInput(e.target.value);
                               setFormData({ ...formData, telefono: value });
                               if (errors.telefono) {
                                 setErrors({ ...errors, telefono: '' });
                               }
                             }}
-                            placeholder="Solo números"
+                            placeholder="Ej.: +54 9 11 2345-6789"
                             error={!!errors.telefono}
                             helperText={errors.telefono || ''}
                           />
@@ -815,7 +1071,7 @@ export default function Inquilinos() {
                         <FormControl fullWidth error={!!errors.tipoPersonaId} size="small">
                           <InputLabel>Tipo de Persona *</InputLabel>
                           <Select
-                            value={formData.tipoPersonaId}
+                            value={tiposPersona?.some((t) => t.id == formData.tipoPersonaId) ? formData.tipoPersonaId : ''}
                             label="Tipo de Persona *"
                             onChange={(e) => {
                               setFormData({ ...formData, tipoPersonaId: e.target.value, localidadId: '' });
@@ -847,84 +1103,45 @@ export default function Inquilinos() {
                     onChange={(e) => setFormData({ ...formData, dirCalle: e.target.value })}
                   />
                 </Grid>
-                <Grid item xs={12} sm={2}>
+                <Grid item xs={4} sm={2}>
                   <TextField
                     label="Nro"
                     fullWidth
                     size="small"
                     value={formData.dirNro}
                     onChange={(e) => setFormData({ ...formData, dirNro: e.target.value })}
+                    inputProps={{ style: { textAlign: 'center' } }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={2}>
+                <Grid item xs={4} sm={2}>
                   <TextField
                     label="Piso"
                     fullWidth
                     size="small"
                     value={formData.dirPiso}
                     onChange={(e) => setFormData({ ...formData, dirPiso: e.target.value })}
+                    inputProps={{ style: { textAlign: 'center' } }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={2}>
+                <Grid item xs={4} sm={2}>
                   <TextField
                     label="Depto"
                     fullWidth
                     size="small"
                     value={formData.dirDepto}
                     onChange={(e) => setFormData({ ...formData, dirDepto: e.target.value })}
+                    inputProps={{ style: { textAlign: 'center' } }}
                   />
                 </Grid>
-                <Grid item xs={12} sm={4}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Provincia</InputLabel>
-                    <Select
-                      value={formData.provinciaId}
-                      label="Provincia"
-                      onChange={(e) => {
-                        setFormData({ ...formData, provinciaId: e.target.value, localidadId: '' });
-                      }}
-                    >
-                      {provincias?.map((prov) => (
-                        <MenuItem key={prov.id} value={prov.id}>
-                          {prov.nombre}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Localidad</InputLabel>
-                    <Select
-                      value={formData.localidadId}
-                      label="Localidad"
-                      onChange={(e) => setFormData({ ...formData, localidadId: e.target.value })}
-                      disabled={!formData.provinciaId}
-                    >
-                      {localidades?.map((loc) => (
-                        <MenuItem key={loc.id} value={loc.id}>
-                          {loc.nombre}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid item xs={12} sm={4}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel>Condición IVA</InputLabel>
-                    <Select
-                      value={formData.condicionIvaId}
-                      label="Condición IVA"
-                      onChange={(e) => setFormData({ ...formData, condicionIvaId: e.target.value })}
-                    >
-                      {condicionesIva?.map((cond) => (
-                        <MenuItem key={cond.id} value={cond.id}>
-                          {cond.nombre}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
+                <DomicilioClienteFormSection
+                  formData={formData}
+                  setFormData={setFormData}
+                  errors={errors}
+                  setErrors={setErrors}
+                  provincias={provincias}
+                  localidades={localidades}
+                  condicionesIva={condicionesIva}
+                />
               </Grid>
             </Box>
           </DialogContent>
@@ -936,6 +1153,15 @@ export default function Inquilinos() {
           </DialogActions>
         </form>
       </Dialog>
+
+      {/* Dialog Ver Perfil - Usando el nuevo componente */}
+      <ClientePerfilDialog
+        open={perfilOpen}
+        onClose={() => setPerfilOpen(false)}
+        clienteId={perfilCliente?.id}
+        tipo="inquilino"
+        onEdit={(cliente) => handleEdit(cliente)}
+      />
 
       <Snackbar
         open={snackbarOpen}

@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { scrapeLitoralgasFacturas } from '../services/litoralgasScraper.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Normaliza un número de cliente para matching (solo dígitos)
@@ -123,25 +121,30 @@ export const autocompletarLitoralgas = async (req, res) => {
       }
 
       const nroClienteNormalizado = normalizarNroCliente(nroClienteCampo.valor);
-      console.log(`[Litoralgas] N° de cliente encontrado para item ${item.id}: ${nroClienteCampo.valor} -> normalizado: ${nroClienteNormalizado}`);
+      const nroClienteRaw = (nroClienteCampo.valor || '').toString().trim();
+      console.log(`[Litoralgas] N° de cliente encontrado para item ${item.id}: ${nroClienteRaw} -> normalizado: ${nroClienteNormalizado}`);
       nroClienteToItemMap.set(nroClienteNormalizado, item);
     }
 
-    // 4. Preparar lista de números de cliente a filtrar (solo procesar los que están en la BD)
-    const nroClientesAFiltrar = Array.from(nroClienteToItemMap.keys());
-    console.log(`[Litoralgas] Filtrando suministros: solo procesar ${nroClientesAFiltrar.length} suministros de la base de datos`);
-    
+    // 4. Lista de clientes a consultar: { normalizado, raw } para que el scraper pruebe ambos formatos en la API
+    const clientesParaScraper = Array.from(nroClienteToItemMap.entries()).map(([normalizado, item]) => {
+      const campo = item.propiedadImpuesto?.campos?.find(c =>
+        c.tipoCampo?.codigo === 'NRO_CLI' || c.tipoCampo?.codigo === 'NRO_CLIENTE' || c.tipoCampo?.nombre?.toLowerCase().includes('cliente')
+      );
+      return { normalizado, raw: (campo?.valor || '').toString().trim() || normalizado };
+    });
+    console.log(`[Litoralgas] Filtrando suministros: solo procesar ${clientesParaScraper.length} suministros de la base de datos`);
+
     // 5. Ejecutar scraper Litoralgas
     console.log('[Litoralgas] Iniciando scraping...');
     let facturasLitoralgas = [];
-    
     try {
       facturasLitoralgas = await scrapeLitoralgasFacturas(
         tipoImpuestoGas.usuario,
         tipoImpuestoGas.password,
         inicioPeriodo,
         finPeriodo,
-        nroClientesAFiltrar
+        clientesParaScraper
       );
       console.log(`[Litoralgas] Scraping completado. ${facturasLitoralgas.length} facturas obtenidas.`);
     } catch (error) {
@@ -157,17 +160,13 @@ export const autocompletarLitoralgas = async (req, res) => {
       });
     }
 
-    // 6. Hacer matching y actualizar items
-    const actualizados = [];
+    // 6. Hacer matching y construir operaciones (guardado atómico)
     const sinFacturaEnPeriodo = [];
     const sinMatchNroCli = [];
     const errores = [];
 
-    // Obtener estado COMPLETADO
     const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
-      where: {
-        codigo: 'COMPLETADO'
-      }
+      where: { codigo: 'COMPLETADO' }
     });
 
     if (!estadoCompletado) {
@@ -176,55 +175,49 @@ export const autocompletarLitoralgas = async (req, res) => {
       });
     }
 
-    // Procesar cada factura obtenida de Litoralgas
+    const completadoAt = new Date();
+    const completadoById = req.user?.id || null;
+    const transacciones = [];
+
     for (const factura of facturasLitoralgas) {
-      try {
-        const nroClienteNormalizado = normalizarNroCliente(factura.nroCliente);
-        const item = nroClienteToItemMap.get(nroClienteNormalizado);
-        
-        if (!item) {
-          sinMatchNroCli.push(factura.nroCliente);
-          continue;
-        }
-
-        // Actualizar LiquidacionItem
-        const importeActual = item.importe ? parseFloat(item.importe) : null;
-        const importeNuevo = factura.importe;
-
-        await prisma.liquidacionItem.update({
+      const nroClienteNormalizado = normalizarNroCliente(factura.nroCliente);
+      const item = nroClienteToItemMap.get(nroClienteNormalizado);
+      if (!item) {
+        sinMatchNroCli.push(factura.nroCliente);
+        continue;
+      }
+      transacciones.push(
+        prisma.liquidacionItem.update({
           where: { id: item.id },
           data: {
-            importeAnterior: importeActual && importeActual !== importeNuevo ? importeActual : item.importeAnterior,
-            importe: importeNuevo,
+            importe: factura.importe,
             vencimiento: factura.vencimiento,
             refExterna: factura.refExterna || item.refExterna,
             estadoItemId: estadoCompletado.id,
-            completadoAt: new Date(),
-            completadoById: req.user?.id || null
+            completadoAt,
+            completadoById
           }
-        });
-
-        actualizados.push(item.id);
-        console.log(`[Litoralgas] Item ${item.id} actualizado con importe ${importeNuevo} y vencimiento ${factura.vencimiento}`);
-
-      } catch (error) {
-        console.error(`[Litoralgas] Error al procesar factura para cliente ${factura.nroCliente}:`, error);
-        errores.push(`Error al procesar cliente ${factura.nroCliente}: ${error.message}`);
-      }
+        })
+      );
     }
 
-    // Identificar items que tienen N° de cliente pero no se encontró factura en el período
-    for (const [nroClienteNormalizado, item] of nroClienteToItemMap.entries()) {
+    let actualizados = 0;
+    if (transacciones.length > 0) {
+      await prisma.$transaction(transacciones);
+      actualizados = transacciones.length;
+      console.log(`[Litoralgas] ${actualizados} items actualizados en transacción.`);
+    }
+
+    for (const [nroClienteNormalizado] of nroClienteToItemMap.entries()) {
       const tieneFactura = facturasLitoralgas.some(f => normalizarNroCliente(f.nroCliente) === nroClienteNormalizado);
-      if (!tieneFactura && !actualizados.includes(item.id)) {
+      if (!tieneFactura) {
         sinFacturaEnPeriodo.push(nroClienteNormalizado);
       }
     }
 
-    // 7. Devolver resultado
     res.json({
       periodo,
-      actualizados: actualizados.length,
+      actualizados,
       sinFacturaEnPeriodo,
       sinMatchNroCli,
       warnings,

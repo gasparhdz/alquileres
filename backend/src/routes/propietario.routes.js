@@ -9,18 +9,19 @@ import {
   desasociarPropiedad
 } from '../controllers/propietario.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
+import { requirePermission } from '../middlewares/rbac.middleware.js';
 
 const router = express.Router();
 
 router.use(authenticateToken);
 
-router.get('/', getAllPropietarios);
-router.get('/:id', getPropietarioById);
-router.post('/', createPropietario);
-router.put('/:id', updatePropietario);
-router.delete('/:id', deletePropietario);
-router.post('/:id/propiedades', asociarPropiedades);
-router.delete('/:id/propiedades/:propiedadId', desasociarPropiedad);
+router.get('/', requirePermission('propietarios.ver'), getAllPropietarios);
+router.get('/:id', requirePermission('propietarios.ver'), getPropietarioById);
+router.post('/', requirePermission('propietarios.crear'), createPropietario);
+router.put('/:id', requirePermission('propietarios.editar'), updatePropietario);
+router.delete('/:id', requirePermission('propietarios.eliminar'), deletePropietario);
+router.post('/:id/propiedades', requirePermission('propietarios.editar'), asociarPropiedades);
+router.delete('/:id/propiedades/:propiedadId', requirePermission('propietarios.editar'), desasociarPropiedad);
 
 export default router;
 

@@ -260,11 +260,17 @@ export async function scrapeLitoralgasFacturas(usuario, password, inicioPeriodo,
       }
     }
     
-    // Filtrar suministros si hay filtro
-    const suministrosAFiltrar = nroClientesFiltrar && nroClientesFiltrar.length > 0
-      ? suministros.filter(s => nroClientesFiltrar.includes(s.nroCliente))
-      : suministros;
-    
+    // Filtrar suministros si hay filtro (holgado: nroCliente puede venir como string u objeto)
+    let suministrosAFiltrar = suministros;
+    if (nroClientesFiltrar && nroClientesFiltrar.length > 0) {
+      const filtrosNorm = nroClientesFiltrar.map((n) =>
+        normalizarNroCliente(n?.normalizado != null ? n.normalizado : n)
+      );
+      suministrosAFiltrar = suministros.filter((s) =>
+        filtrosNorm.some((f) => (s.nroCliente && (s.nroCliente.includes(f) || f.includes(s.nroCliente))))
+      );
+    }
+
     console.log(`[Litoralgas] Total de suministros a procesar: ${suministrosAFiltrar.length}`);
     
     if (suministrosAFiltrar.length === 0) {

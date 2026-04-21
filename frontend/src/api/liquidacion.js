@@ -52,6 +52,12 @@ export const liquidacionApi = {
     return response.data;
   },
 
+  // Completar importes de múltiples items en una sola transacción (batch)
+  completarImportesBatch: async (itemsPayload) => {
+    const { data } = await api.post('/liquidaciones/items/batch-completar', { items: itemsPayload });
+    return data;
+  },
+
   // Completar importe de un item (nuevo endpoint)
   completarImporteItem: async (itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null, pagadoPorActorId = null, vencimiento = null) => {
     const data = {};

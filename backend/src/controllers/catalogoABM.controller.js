@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 // Mapeo de nombres de modelos a sus nombres en Prisma
 const MODEL_MAP = {
@@ -13,6 +11,7 @@ const MODEL_MAP = {
   'estados-propiedad': 'estadoPropiedad',
   'destinos-propiedad': 'destinoPropiedad',
   'tipos-impuesto-propiedad': 'tipoImpuestoPropiedad',
+  'oficinas-virtuales': 'tipoImpuestoPropiedad',
   'tipos-cargo': 'tipoCargo',
   'tipos-expensa': 'tipoExpensa',
   'periodicidades-impuesto': 'periodicidadImpuesto',
@@ -42,15 +41,23 @@ const SPECIAL_FIELDS = {
   'tipoGastoInicialContrato': ['valorDefault', 'esPorcentaje']
 };
 
-// Campos que siempre se incluyen
-const COMMON_FIELDS = ['codigo', 'nombre', 'activo'];
+// Campos comunes por modelo (algunos modelos no tienen 'codigo')
+const COMMON_FIELDS_BY_MODEL = {
+  'localidad': ['nombre', 'activo'],  // Localidad no tiene codigo
+  'default': ['codigo', 'nombre', 'activo']
+};
+
+// Helper para obtener campos comunes de un modelo
+const getCommonFields = (modelName) => {
+  return COMMON_FIELDS_BY_MODEL[modelName] || COMMON_FIELDS_BY_MODEL['default'];
+};
 
 // Obtener todos los registros de un catálogo
 export const getAllCatalogos = async (req, res) => {
   try {
     const { tipo } = req.params;
     const { mostrarInactivos = 'false' } = req.query;
-    
+
     const modelName = MODEL_MAP[tipo];
     if (!modelName) {
       return res.status(400).json({ error: 'Tipo de catálogo no válido' });
@@ -104,6 +111,15 @@ export const getAllCatalogos = async (req, res) => {
       ]
     });
 
+    // No exponer credenciales de scrapers al frontend para usuarios regulares
+    // Pero en el ABM sí se necesitan para poder editarlos.
+    // if (modelName === 'tipoImpuestoPropiedad') {
+    //   for (const r of registros) {
+    //     // delete r.password;
+    //     // delete r.usuario;
+    //   }
+    // }
+
     res.json(registros);
   } catch (error) {
     console.error(`Error al obtener catálogo ${req.params.tipo}:`, error);
@@ -116,7 +132,7 @@ export const getCatalogoById = async (req, res) => {
   try {
     const { tipo, id } = req.params;
     const modelName = MODEL_MAP[tipo];
-    
+
     if (!modelName) {
       return res.status(400).json({ error: 'Tipo de catálogo no válido' });
     }
@@ -141,6 +157,13 @@ export const getCatalogoById = async (req, res) => {
       return res.status(404).json({ error: 'Registro no encontrado' });
     }
 
+    // No exponer credenciales de scrapers al frontend para usuarios regulares
+    // Pero en el ABM sí se necesitan para poder editarlos.
+    // if (modelName === 'tipoImpuestoPropiedad') {
+    //   // delete registro.password;
+    //   // delete registro.usuario;
+    // }
+
     res.json(registro);
   } catch (error) {
     console.error(`Error al obtener registro del catálogo ${req.params.tipo}:`, error);
@@ -154,7 +177,7 @@ export const createCatalogo = async (req, res) => {
     const { tipo } = req.params;
     const data = req.body;
     const modelName = MODEL_MAP[tipo];
-    
+
     if (!modelName) {
       return res.status(400).json({ error: 'Tipo de catálogo no válido' });
     }
@@ -170,13 +193,15 @@ export const createCatalogo = async (req, res) => {
       activo: data.activo !== undefined ? Boolean(data.activo) : true
     };
 
-    // Agregar código si existe y no es null (algunos modelos lo tienen como opcional)
-    // Para provincia, codigo es opcional
-    if (data.codigo !== undefined && data.codigo !== null && data.codigo !== '') {
-      createData.codigo = data.codigo.trim();
-    } else if (modelName === 'provincia') {
-      // Provincia puede no tener código
-      createData.codigo = null;
+    // Agregar código si existe y el modelo lo soporta
+    const commonFields = getCommonFields(modelName);
+    if (commonFields.includes('codigo')) {
+      if (data.codigo !== undefined && data.codigo !== null && data.codigo !== '') {
+        createData.codigo = data.codigo.trim();
+      } else if (modelName === 'provincia') {
+        // Provincia puede no tener código
+        createData.codigo = null;
+      }
     }
 
     // Agregar campos especiales
@@ -210,22 +235,32 @@ export const createCatalogo = async (req, res) => {
           } else {
             createData[field] = null;
           }
-          }
+        }
       }
     }
 
+    // Nunca insertar PK ni relaciones anidadas enviadas por error desde el cliente
+    delete createData.id;
+
     const nuevoRegistro = await prisma[modelName].create({
       data: createData,
-      include: modelName === 'localidad' ? { provincia: true } : 
-               modelName === 'indiceAjuste' ? { metodoAjuste: true } :
-               modelName === 'tipoImpuestoPropiedad' || modelName === 'tipoCargo' ? { periodicidad: true } : undefined
+      include: modelName === 'localidad' ? { provincia: true } :
+        modelName === 'indiceAjuste' ? { metodoAjuste: true } :
+          modelName === 'tipoImpuestoPropiedad' || modelName === 'tipoCargo' ? { periodicidad: true } : undefined
     });
 
     res.status(201).json(nuevoRegistro);
   } catch (error) {
     console.error(`Error al crear registro en catálogo ${req.params.tipo}:`, error);
-    
+
     if (error.code === 'P2002') {
+      const target = error.meta?.target;
+      if (Array.isArray(target) && target.includes('id')) {
+        return res.status(400).json({
+          error:
+            'No se pudo asignar ID al nuevo registro (secuencia de base desincronizada). En PostgreSQL ejecute: SELECT setval(pg_get_serial_sequence(\'localidades\',\'id\'), COALESCE((SELECT MAX(id) FROM localidades), 1)); (ajuste el nombre de tabla si corresponde.)',
+        });
+      }
       return res.status(400).json({ error: 'Ya existe un registro con este código' });
     }
 
@@ -239,7 +274,7 @@ export const updateCatalogo = async (req, res) => {
     const { tipo, id } = req.params;
     const data = req.body;
     const modelName = MODEL_MAP[tipo];
-    
+
     if (!modelName) {
       return res.status(400).json({ error: 'Tipo de catálogo no válido' });
     }
@@ -267,7 +302,9 @@ export const updateCatalogo = async (req, res) => {
       updateData.activo = Boolean(data.activo);
     }
 
-    if (data.codigo !== undefined && data.codigo !== null && data.codigo !== '') {
+    // Agregar código solo si el modelo lo soporta
+    const commonFields = getCommonFields(modelName);
+    if (commonFields.includes('codigo') && data.codigo !== undefined && data.codigo !== null && data.codigo !== '') {
       updateData.codigo = data.codigo.trim();
     }
 
@@ -309,15 +346,15 @@ export const updateCatalogo = async (req, res) => {
     const registroActualizado = await prisma[modelName].update({
       where: { id: parseInt(id) },
       data: updateData,
-      include: modelName === 'localidad' ? { provincia: true } : 
-               modelName === 'indiceAjuste' ? { metodoAjuste: true } :
-               modelName === 'tipoImpuestoPropiedad' || modelName === 'tipoCargo' ? { periodicidad: true } : undefined
+      include: modelName === 'localidad' ? { provincia: true } :
+        modelName === 'indiceAjuste' ? { metodoAjuste: true } :
+          modelName === 'tipoImpuestoPropiedad' || modelName === 'tipoCargo' ? { periodicidad: true } : undefined
     });
 
     res.json(registroActualizado);
   } catch (error) {
     console.error(`Error al actualizar registro en catálogo ${req.params.tipo}:`, error);
-    
+
     if (error.code === 'P2002') {
       return res.status(400).json({ error: 'Ya existe un registro con este código' });
     }
@@ -331,7 +368,7 @@ export const deleteCatalogo = async (req, res) => {
   try {
     const { tipo, id } = req.params;
     const modelName = MODEL_MAP[tipo];
-    
+
     if (!modelName) {
       return res.status(400).json({ error: 'Tipo de catálogo no válido' });
     }

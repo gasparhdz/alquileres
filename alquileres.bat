@@ -22,7 +22,7 @@ if not exist "%FRONTEND%\package.json" (
   exit /b 1
 )
 
-start "Alquileres - Backend" cmd /k "cd /d "%BACKEND%" && npm run dev"
-start "Alquileres - Frontend" cmd /k "cd /d "%FRONTEND%" && npm run dev"
+REM Abrir Windows Terminal con dos pestañas en la misma ventana
+wt -w 0 new-tab --title "Backend" -d "%BACKEND%" cmd /k "npm run dev" ; new-tab --title "Frontend" -d "%FRONTEND%" cmd /k "npm run dev"
 
 exit /b 0

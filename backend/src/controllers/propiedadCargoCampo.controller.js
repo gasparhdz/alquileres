@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 // Obtener todos los campos de un cargo de propiedad
 export const getCamposByPropiedadCargo = async (req, res) => {

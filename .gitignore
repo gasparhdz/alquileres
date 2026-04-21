@@ -31,6 +31,14 @@ Thumbs.db
 *.tmp
 *.temp
 
+# Screenshots de depuración (scrapers SIAT, ASSA, EPE, Litoral Gas, etc.)
+*-debug*.png
+siat-*.png
+assa-*.png
+epe-*.png
+litoralgas-*.png
+santafe-*.png
+
 # Logs
 logs/
 *.log

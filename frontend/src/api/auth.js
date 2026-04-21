@@ -3,6 +3,16 @@ import api from './index';
 export const authApi = {
   login: async (email, password) => {
     const response = await api.post('/auth/login', { email, password });
+    return response.data; // Solo retorna { user }, los tokens están en cookies HttpOnly
+  },
+
+  logout: async () => {
+    const response = await api.post('/auth/logout');
+    return response.data;
+  },
+
+  refresh: async () => {
+    const response = await api.post('/auth/refresh');
     return response.data;
   },
 

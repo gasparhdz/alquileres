@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { scrapeSiatLiquidaciones } from '../services/siatScraper.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Autocompletar importes y vencimientos desde SIAT Rosario (TGI)
@@ -140,94 +138,71 @@ export const autocompletarSiat = async (req, res) => {
       }
     }
 
-    // 6. Matching y actualización de LiquidacionItem
-    const actualizados = [];
+    // 6. Matching y actualización de LiquidacionItem (transacción ACID en bloque)
     const sinLiqEnPeriodo = [];
     const errores = [];
 
-    // Crear mapa de liquidaciones por propiedadImpuestoId
     const liquidacionesMap = new Map();
     for (const liq of liquidacionesSiat) {
       liquidacionesMap.set(liq.propiedadImpuestoId, liq);
     }
 
-    // Procesar cada propiedad
+    const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
+      where: { codigo: 'COMPLETADO' }
+    });
+    if (!estadoCompletado) {
+      return res.status(500).json({
+        error: 'No se encontró el estado COMPLETADO en la base de datos'
+      });
+    }
+
+    const completadoAt = new Date();
+    const completadoById = req.user?.id || null;
+    const transacciones = [];
+
     for (const [propiedadImpuestoId, propiedad] of propiedadesMap.entries()) {
       const liquidacion = liquidacionesMap.get(propiedadImpuestoId);
-      
       if (!liquidacion) {
         sinLiqEnPeriodo.push(propiedadImpuestoId);
         console.log(`[SIAT] No se encontró liquidación en período para propiedad ${propiedadImpuestoId}`);
         continue;
       }
 
-      // Actualizar todos los items de esta propiedad
       for (const item of propiedad.items) {
-        try {
-          // Obtener estado COMPLETADO
-          const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
-            where: {
-              codigo: 'COMPLETADO'
-            }
-          });
-
-          if (!estadoCompletado) {
-            throw new Error('No se encontró el estado COMPLETADO');
-          }
-
-          // Obtener usuario ejecutor del contexto (si está disponible)
-          const usuarioId = req.user?.id || 1; // Fallback a 1 si no hay usuario en contexto
-
-          // Guardar importe anterior si existe y es diferente al nuevo
-          const importeAnterior = item.importe && item.importe !== null 
-            ? parseFloat(item.importe) 
-            : null;
-          
-          // Solo guardar como importeAnterior si es diferente al nuevo importe
-          const nuevoImporteAnterior = (importeAnterior !== null && 
-                                        importeAnterior !== liquidacion.importe) 
-            ? importeAnterior 
-            : (item.importeAnterior ? parseFloat(item.importeAnterior) : null);
-
-          // Actualizar item
-          await prisma.liquidacionItem.update({
+        transacciones.push(
+          prisma.liquidacionItem.update({
             where: { id: item.id },
             data: {
-              importeAnterior: nuevoImporteAnterior,
               importe: liquidacion.importe,
               vencimiento: liquidacion.vencimiento,
               refExterna: liquidacion.refExterna,
               estadoItemId: estadoCompletado.id,
-              completadoAt: new Date(),
-              completadoById: usuarioId
+              completadoAt,
+              completadoById
             }
-          });
-
-          actualizados.push(item.id);
-          console.log(`[SIAT] Item ${item.id} actualizado con importe ${liquidacion.importe} y vencimiento ${liquidacion.vencimiento.toLocaleDateString('es-AR')}`);
-        } catch (error) {
-          console.error(`[SIAT] Error al actualizar item ${item.id}: ${error.message}`);
-          errores.push({
-            propiedadImpuestoId,
-            itemId: item.id,
-            mensaje: error.message
-          });
-        }
+          })
+        );
       }
     }
 
-    // 7. Preparar respuesta
+    let actualizados = 0;
+    if (transacciones.length > 0) {
+      await prisma.$transaction(transacciones);
+      actualizados = transacciones.length;
+      console.log(`[SIAT] ${actualizados} items actualizados en transacción.`);
+    }
+
     const respuesta = {
       periodo,
       totalItems: items.length,
-      actualizados: actualizados.length,
+      actualizados,
       sinCredencialesPropiedad: sinCredencialesPropiedad,
       sinLiqEnPeriodo: sinLiqEnPeriodo,
       warnings,
       errores
     };
 
-    console.log(`[SIAT] Proceso completado: ${actualizados.length} items actualizados, ${sinCredencialesPropiedad.length} sin credenciales, ${sinLiqEnPeriodo.length} sin liquidación en período`);
+    console.log(`[SIAT] Proceso completado: ${actualizados} items actualizados, ${sinCredencialesPropiedad.length} sin credenciales, ${sinLiqEnPeriodo.length} sin liquidación en período`);
 
     res.json(respuesta);
 

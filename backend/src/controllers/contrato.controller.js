@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 /**
  * Determina el estado de la propiedad basándose en los contratos asociados
@@ -40,10 +38,10 @@ async function determinarEstadoPropiedad(propiedadId) {
 
     // Estados que hacen que la propiedad esté alquilada (incluye estados intermedios donde el contrato sigue activo)
     const estadosAlquilada = ['VIGENTE', 'PRORROGADO', 'RENOVADO', 'SUSPENDIDO', 'EN_MORA'];
-    
+
     // Estados que hacen que la propiedad esté no disponible (pero no alquilada aún)
     const estadosNoDisponible = ['BORRADOR', 'PENDIENTE_FIRMA'];
-    
+
     // Estados que hacen que la propiedad esté disponible (contrato finalizado)
     const estadosDisponible = ['VENCIDO', 'RESCINDIDO', 'ANULADO', 'FINALIZADO'];
 
@@ -80,13 +78,13 @@ async function determinarEstadoPropiedad(propiedadId) {
 async function actualizarEstadoPropiedad(propiedadId) {
   try {
     const nuevoEstado = await determinarEstadoPropiedad(propiedadId);
-    
+
     if (nuevoEstado) {
       // Buscar el estado correspondiente en el catálogo
       const estadoPropiedad = await prisma.estadoPropiedad.findFirst({
         where: { codigo: nuevoEstado.toUpperCase() }
       });
-      
+
       if (estadoPropiedad) {
         await prisma.propiedad.update({
           where: { id: propiedadId },
@@ -106,20 +104,27 @@ export const getAllContratos = async (req, res) => {
   try {
     const { search, propiedadId, inquilinoId, activo, page = 1, limit = 50 } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    const limitNum = parseInt(limit);
     const now = new Date();
 
-    const where = {
-      deletedAt: null,
-      activo: true,
-      ...(propiedadId && { propiedadId: parseInt(propiedadId) }),
-      ...(inquilinoId && { inquilinoId: parseInt(inquilinoId) }),
-      ...(activo === 'true' && {
+    const andConditions = [
+      { deletedAt: null },
+      { activo: true }
+    ];
+
+    if (propiedadId) andConditions.push({ propiedadId: parseInt(propiedadId) });
+    if (inquilinoId) andConditions.push({ inquilinoId: parseInt(inquilinoId) });
+    if (activo === 'true') {
+      andConditions.push({
         OR: [
           { fechaFin: null },
           { fechaFin: { gte: now } }
         ]
-      }),
-      ...(search && {
+      });
+    }
+
+    if (search) {
+      andConditions.push({
         OR: [
           { nroContrato: { contains: search, mode: 'insensitive' } },
           { propiedad: { dirCalle: { contains: search, mode: 'insensitive' } } },
@@ -127,36 +132,32 @@ export const getAllContratos = async (req, res) => {
           { inquilino: { apellido: { contains: search, mode: 'insensitive' } } },
           { inquilino: { razonSocial: { contains: search, mode: 'insensitive' } } }
         ]
-      })
-    };
+      });
+    }
 
-    const [contratos, total] = await Promise.all([
+    const where = { AND: andConditions };
+
+    const [total, contratos] = await prisma.$transaction([
+      prisma.contrato.count({ where }),
       prisma.contrato.findMany({
         where,
         skip,
-        take: parseInt(limit),
+        take: limitNum,
         orderBy: { fechaInicio: 'desc' },
         include: {
           propiedad: {
             include: {
-              localidad: {
-                include: {
-                  provincia: true
-                }
-              },
+              localidad: { include: { provincia: true } },
               provincia: true,
               propietarios: {
-                where: {
-                  deletedAt: null,
-                  activo: true
-                },
+                where: { activo: true, deletedAt: null },
                 include: {
                   propietario: {
                     select: {
                       id: true,
                       nombre: true,
                       apellido: true,
-                      razonSocial: true
+                      razonSocial: true,
                     }
                   }
                 }
@@ -166,19 +167,18 @@ export const getAllContratos = async (req, res) => {
           inquilino: true,
           estado: true,
           moneda: true,
-          metodoAjuste: true
+          metodoAjuste: true,
         }
-      }),
-      prisma.contrato.count({ where })
+      })
     ]);
 
     res.json({
       data: contratos,
       pagination: {
         page: parseInt(page),
-        limit: parseInt(limit),
+        limit: limitNum,
         total,
-        totalPages: Math.ceil(total / parseInt(limit))
+        totalPages: Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
@@ -197,25 +197,28 @@ export const getContratoById = async (req, res) => {
     }
 
     const contrato = await prisma.contrato.findUnique({
-      where: { id: contratoId },
+      where: {
+        id: contratoId,
+        deletedAt: null,
+        activo: true
+      },
       include: {
         propiedad: {
           include: {
-            propietarios: {
-              include: {
-                propietario: true
-              }
-            },
-            localidad: {
-              include: {
-                provincia: true
-              }
-            },
+            localidad: { include: { provincia: true } },
             provincia: true,
             tipoPropiedad: true,
             estadoPropiedad: true,
             destino: true,
-            ambientes: true
+            ambientes: true,
+            propietarios: {
+              where: { activo: true, deletedAt: null },
+              include: {
+                propietario: {
+                  include: { tipoPersona: true }
+                }
+              }
+            }
           }
         },
         inquilino: true,
@@ -223,6 +226,7 @@ export const getContratoById = async (req, res) => {
         estado: true,
         metodoAjuste: true,
         responsabilidades: {
+          where: { activo: true, deletedAt: null },
           include: {
             tipoImpuesto: true,
             tipoCargo: true,
@@ -232,30 +236,40 @@ export const getContratoById = async (req, res) => {
           }
         },
         garantias: {
+          where: { deletedAt: null },
           include: {
             tipoGarantia: true,
             estadoGarantia: true
           }
         },
         gastosIniciales: {
+          where: { deletedAt: null },
           include: {
             tipoGastoInicial: true,
-            quienPaga: true
+            quienPaga: true,
+            itemsLiquidacion: {
+              where: { deletedAt: null },
+              take: 1
+            }
           }
         },
         ajustes: {
+          where: { deletedAt: null },
           orderBy: { fechaAjuste: 'desc' }
         },
         liquidaciones: {
+          where: { deletedAt: null },
           orderBy: { periodo: 'desc' },
           include: {
-            items: true
+            items: {
+              where: { deletedAt: null }
+            }
           }
         }
       }
     });
 
-    if (!contrato || contrato.deletedAt || !contrato.activo) {
+    if (!contrato) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
@@ -323,10 +337,10 @@ export const createContrato = async (req, res) => {
       return res.status(400).json({ error: 'Propiedad, inquilino, fecha de inicio y monto inicial son requeridos' });
     }
 
-    // Verificar que la propiedad y el inquilino existen
+    // Verificar que la propiedad y el inquilino (cliente) existen
     const [propiedad, inquilino] = await Promise.all([
       prisma.propiedad.findUnique({ where: { id: data.propiedadId } }),
-      prisma.inquilino.findUnique({ where: { id: data.inquilinoId } })
+      prisma.cliente.findUnique({ where: { id: data.inquilinoId } })
     ]);
 
     if (!propiedad || propiedad.deletedAt || !propiedad.activo) {
@@ -356,13 +370,13 @@ export const createContrato = async (req, res) => {
         const numeros = todosLosContratos
           .map(c => {
             if (!c.nroContrato) return 0;
-            
+
             // Si es solo número, parsearlo directamente
             const numeroDirecto = parseInt(c.nroContrato, 10);
             if (!isNaN(numeroDirecto) && numeroDirecto > 0) {
               return numeroDirecto;
             }
-            
+
             // Si tiene formato antiguo CONT-YYYY-NNNN, extraer el número
             const partes = c.nroContrato.split('-');
             if (partes.length === 3 && partes[2]) {
@@ -371,11 +385,11 @@ export const createContrato = async (req, res) => {
                 return numeroDelFormato;
               }
             }
-            
+
             return 0;
           })
           .filter(n => !isNaN(n) && n > 0);
-        
+
         if (numeros.length > 0) {
           siguienteNumero = Math.max(...numeros) + 1;
         }
@@ -388,24 +402,28 @@ export const createContrato = async (req, res) => {
     // Construir objeto de datos explícitamente para evitar campos no deseados
     const montoInicial = parseFloat(data.montoInicial);
     const montoActual = data.montoActual ? parseFloat(data.montoActual) : montoInicial;
-    
+
     const contratoData = {
-        propiedadId: data.propiedadId,
-        inquilinoId: data.inquilinoId,
-        nroContrato: nroContrato,
-        fechaInicio: data.fechaInicio ? new Date(data.fechaInicio) : new Date(),
-        fechaFin: data.fechaFin ? new Date(data.fechaFin) : null,
-        duracionMeses: data.duracionMeses ? parseInt(data.duracionMeses, 10) : null,
-        montoInicial: montoInicial,
-        montoActual: montoActual, // Requerido, usar montoInicial si no viene
-        gastosAdministrativos: data.gastosAdministrativos ? parseFloat(data.gastosAdministrativos) : null,
-        honorariosPropietario: data.honorariosPropietario ? parseFloat(data.honorariosPropietario) : null,
-        frecuenciaAjusteMeses: data.frecuenciaAjusteMeses ? parseInt(data.frecuenciaAjusteMeses, 10) : null,
-        metodoAjusteContratoId: data.metodoAjusteContratoId ? parseInt(data.metodoAjusteContratoId, 10) : null,
-        monedaId: data.monedaId ? parseInt(data.monedaId, 10) : null,
-        estadoContratoId: data.estadoContratoId ? parseInt(data.estadoContratoId, 10) : null
+      propiedadId: data.propiedadId,
+      inquilinoId: data.inquilinoId,
+      nroContrato: nroContrato,
+      fechaInicio: data.fechaInicio ? new Date(data.fechaInicio) : new Date(),
+      fechaFin: data.fechaFin ? new Date(data.fechaFin) : null,
+      duracionMeses: data.duracionMeses ? parseInt(data.duracionMeses, 10) : null,
+      montoInicial: montoInicial,
+      montoActual: montoActual, // Requerido, usar montoInicial si no viene
+      gastosAdministrativos: data.gastosAdministrativos ? parseFloat(data.gastosAdministrativos) : null,
+      honorariosPropietario: data.honorariosPropietario ? parseFloat(data.honorariosPropietario) : null,
+      frecuenciaAjusteMeses: data.frecuenciaAjusteMeses ? parseInt(data.frecuenciaAjusteMeses, 10) : null,
+      metodoAjusteContratoId: data.metodoAjusteContratoId ? parseInt(data.metodoAjusteContratoId, 10) : null,
+      monedaId: data.monedaId ? parseInt(data.monedaId, 10) : null,
+      estadoContratoId: data.estadoContratoId ? parseInt(data.estadoContratoId, 10) : null,
+      cantidadGarantiasNecesarias: data.cantidadGarantiasNecesarias !== undefined && data.cantidadGarantiasNecesarias !== null && data.cantidadGarantiasNecesarias !== ''
+        ? parseInt(data.cantidadGarantiasNecesarias, 10)
+        : null,
+      gastosInicialesLiquidados: data.gastosInicialesLiquidados === true || data.gastosInicialesLiquidados === 'true'
     };
-    
+
     // Solo agregar campos nuevos si están presentes en data y existen en el schema
     if (data.hasOwnProperty('fechaFirma')) {
       contratoData.fechaFirma = data.fechaFirma ? new Date(data.fechaFirma) : null;
@@ -441,37 +459,55 @@ export const createContrato = async (req, res) => {
       contratoData.enMora = Boolean(data.enMora);
     }
 
-    const contrato = await prisma.contrato.create({
-      data: contratoData
-    });
+    // Payload para Prisma: solo campos que existen en el schema (contratoData puede tener extras no mapeados)
+    const createData = {
+      propiedadId: contratoData.propiedadId,
+      inquilinoId: contratoData.inquilinoId,
+      nroContrato: contratoData.nroContrato,
+      fechaInicio: contratoData.fechaInicio,
+      fechaFin: contratoData.fechaFin,
+      duracionMeses: contratoData.duracionMeses,
+      montoInicial: contratoData.montoInicial,
+      montoActual: contratoData.montoActual,
+      monedaId: contratoData.monedaId,
+      metodoAjusteContratoId: contratoData.metodoAjusteContratoId,
+      frecuenciaAjusteMeses: contratoData.frecuenciaAjusteMeses,
+      gastosAdministrativos: contratoData.gastosAdministrativos,
+      honorariosPropietario: contratoData.honorariosPropietario,
+      estadoContratoId: contratoData.estadoContratoId,
+      cantidadGarantiasNecesarias: contratoData.cantidadGarantiasNecesarias,
+      gastosInicialesLiquidados: contratoData.gastosInicialesLiquidados ?? false,
+      activo: true,
+      createdById: req.user?.id ?? null,
+      updatedById: req.user?.id ?? null
+    };
 
-    // Actualizar estado de la propiedad a "Alquilada" y agregar cargo "Alquiler" con periodicidad mensual
-    try {
-      // Obtener el estado "Alquilada"
-      const estadoAlquilada = await prisma.estadoPropiedad.findFirst({
+    const contrato = await prisma.$transaction(async (tx) => {
+      const contratoCreado = await tx.contrato.create({ data: createData });
+
+      // Actualizar estado de la propiedad a "Alquilada" y agregar cargo "Alquiler" con periodicidad mensual
+      const estadoAlquilada = await tx.estadoPropiedad.findFirst({
         where: { codigo: 'ALQ', activo: true }
       });
 
       if (estadoAlquilada) {
-        await prisma.propiedad.update({
+        await tx.propiedad.update({
           where: { id: data.propiedadId },
           data: { estadoPropiedadId: estadoAlquilada.id }
         });
       }
 
-      // Obtener el tipo de cargo "Alquiler" y la periodicidad "Mensual"
       const [tipoCargoAlquiler, periodicidadMensual] = await Promise.all([
-        prisma.tipoCargo.findFirst({
+        tx.tipoCargo.findFirst({
           where: { codigo: 'ALQUILER', activo: true }
         }),
-        prisma.periodicidadImpuesto.findFirst({
+        tx.periodicidadImpuesto.findFirst({
           where: { codigo: '1_MENSUAL', activo: true }
         })
       ]);
 
       if (tipoCargoAlquiler) {
-        // Verificar si ya existe el cargo "Alquiler" para esta propiedad
-        const cargoAlquilerExistente = await prisma.propiedadCargo.findFirst({
+        const cargoAlquilerExistente = await tx.propiedadCargo.findFirst({
           where: {
             propiedadId: data.propiedadId,
             tipoCargoId: tipoCargoAlquiler.id,
@@ -480,8 +516,7 @@ export const createContrato = async (req, res) => {
         });
 
         if (cargoAlquilerExistente) {
-          // Actualizar el cargo existente (reactivarlo y agregar periodicidad si no tiene)
-          await prisma.propiedadCargo.update({
+          await tx.propiedadCargo.update({
             where: { id: cargoAlquilerExistente.id },
             data: {
               activo: true,
@@ -490,8 +525,7 @@ export const createContrato = async (req, res) => {
             }
           });
         } else {
-          // Crear nuevo cargo "Alquiler"
-          await prisma.propiedadCargo.create({
+          await tx.propiedadCargo.create({
             data: {
               propiedadId: data.propiedadId,
               tipoCargoId: tipoCargoAlquiler.id,
@@ -501,22 +535,21 @@ export const createContrato = async (req, res) => {
           });
         }
       }
-    } catch (error) {
-      console.error('Error al actualizar estado y cargo de propiedad:', error);
-      // No fallar la creación del contrato si falla la actualización del estado/cargo
-    }
+
+      return contratoCreado;
+    });
 
     res.status(201).json(contrato);
   } catch (error) {
     console.error('Error al crear contrato:', error);
     console.error('Error details:', error.message);
     console.error('Data received:', req.body);
-    
+
     if (error.code === 'P2002') {
       return res.status(400).json({ error: 'Ya existe un contrato con estos datos' });
     }
 
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Error al crear contrato',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
@@ -554,7 +587,7 @@ export const updateContrato = async (req, res) => {
     }
 
     if (data.inquilinoId) {
-      const inquilino = await prisma.inquilino.findUnique({
+      const inquilino = await prisma.cliente.findUnique({
         where: { id: parseInt(data.inquilinoId) }
       });
       if (!inquilino || inquilino.deletedAt || !inquilino.activo) {
@@ -564,7 +597,7 @@ export const updateContrato = async (req, res) => {
 
     // Construir objeto de actualización con solo los campos permitidos
     // updateData ya está definido fuera del try
-    
+
     // Campos de relación usando IDs directos (según el nuevo schema)
     if (data.propiedadId !== undefined && data.propiedadId !== null && data.propiedadId !== '') {
       updateData.propiedadId = parseInt(data.propiedadId);
@@ -578,10 +611,15 @@ export const updateContrato = async (req, res) => {
     if (data.estadoContratoId !== undefined && data.estadoContratoId !== null && data.estadoContratoId !== '') {
       updateData.estadoContratoId = parseInt(data.estadoContratoId);
     }
+    if (data.cantidadGarantiasNecesarias !== undefined) {
+      updateData.cantidadGarantiasNecesarias = data.cantidadGarantiasNecesarias !== null && data.cantidadGarantiasNecesarias !== ''
+        ? parseInt(data.cantidadGarantiasNecesarias, 10)
+        : null;
+    }
     if (data.metodoAjusteContratoId !== undefined && data.metodoAjusteContratoId !== null && data.metodoAjusteContratoId !== '') {
       updateData.metodoAjusteContratoId = parseInt(data.metodoAjusteContratoId);
     }
-    
+
     // Campos escalares
     if (data.fechaInicio !== undefined && data.fechaInicio !== null) {
       updateData.fechaInicio = data.fechaInicio instanceof Date ? data.fechaInicio : new Date(data.fechaInicio);
@@ -595,22 +633,49 @@ export const updateContrato = async (req, res) => {
     if (data.frecuenciaAjusteMeses !== undefined) {
       updateData.frecuenciaAjusteMeses = data.frecuenciaAjusteMeses !== null && data.frecuenciaAjusteMeses !== '' ? parseInt(data.frecuenciaAjusteMeses, 10) : null;
     }
-    
+
+    // Obtener el estado actual del contrato para validar modificación de montoInicial
+    const estadoActual = contrato.estadoContratoId
+      ? await prisma.estadoContrato.findUnique({ where: { id: contrato.estadoContratoId } })
+      : null;
+    const esBorrador = estadoActual?.codigo === 'BORRADOR';
+
+    // Flag para saber si se modificó montoInicial (para sincronizar montoActual)
+    let montoInicialModificado = false;
+
     // Campos numéricos requeridos (montoInicial y montoActual no pueden ser null)
     if (data.montoInicial !== undefined && data.montoInicial !== null && data.montoInicial !== '') {
       const parsed = parseFloat(data.montoInicial);
-      if (!isNaN(parsed) && parsed >= 0) {
+      const currentMontoInicial = Number(contrato.montoInicial) || 0;
+      // Solo validar restricción si el valor realmente cambió (con tolerancia para decimales)
+      const hayCambioReal = !isNaN(parsed) && parsed >= 0 && Math.abs(parsed - currentMontoInicial) > 0.01;
+      if (hayCambioReal) {
+        if (!esBorrador) {
+          return res.status(400).json({
+            error: 'No se puede modificar el monto inicial de un contrato que no está en estado Borrador'
+          });
+        }
         updateData.montoInicial = parsed;
+        // Si es borrador, al modificar montoInicial también se actualiza montoActual
+        updateData.montoActual = parsed;
+        montoInicialModificado = true;
       }
     }
-    
-    if (data.montoActual !== undefined && data.montoActual !== null && data.montoActual !== '') {
+
+    // montoActual solo se puede modificar directamente en borradores;
+    // en otros estados se actualiza mediante ajustes de contrato. Si el frontend envía
+    // un valor distinto (p. ej. formulario desactualizado tras guardar un ajuste), se ignora
+    // en lugar de rechazar la petición, para que Guardar siga funcionando.
+    if (!montoInicialModificado && data.montoActual !== undefined && data.montoActual !== null && data.montoActual !== '') {
       const parsed = parseFloat(data.montoActual);
-      if (!isNaN(parsed) && parsed >= 0) {
+      const currentMontoActual = Number(contrato.montoActual) || 0;
+      const hayCambioReal = !isNaN(parsed) && parsed >= 0 && Math.abs(parsed - currentMontoActual) > 0.01;
+      if (hayCambioReal && esBorrador) {
         updateData.montoActual = parsed;
       }
+      // Si no es borrador: no agregar montoActual a updateData (se ignora el valor enviado)
     }
-    
+
     if (data.gastosAdministrativos !== undefined) {
       if (data.gastosAdministrativos !== null && data.gastosAdministrativos !== '') {
         const parsed = parseFloat(data.gastosAdministrativos);
@@ -621,7 +686,7 @@ export const updateContrato = async (req, res) => {
         updateData.gastosAdministrativos = null;
       }
     }
-    
+
     if (data.honorariosPropietario !== undefined) {
       if (data.honorariosPropietario !== null && data.honorariosPropietario !== '') {
         const parsed = parseFloat(data.honorariosPropietario);
@@ -632,7 +697,12 @@ export const updateContrato = async (req, res) => {
         updateData.honorariosPropietario = null;
       }
     }
-    
+
+    // Campo para contratos migrados: indica si los gastos iniciales ya fueron cobrados
+    if (data.gastosInicialesLiquidados !== undefined) {
+      updateData.gastosInicialesLiquidados = data.gastosInicialesLiquidados === true || data.gastosInicialesLiquidados === 'true';
+    }
+
     if (data.periodoAumento !== undefined) {
       if (data.periodoAumento !== null && data.periodoAumento !== '') {
         const parsed = parseInt(data.periodoAumento, 10);
@@ -643,21 +713,21 @@ export const updateContrato = async (req, res) => {
         updateData.periodoAumento = null;
       }
     }
-    
+
     if (data.ultimoAjusteAt !== undefined) {
       updateData.ultimoAjusteAt = data.ultimoAjusteAt ? (data.ultimoAjusteAt instanceof Date ? data.ultimoAjusteAt : new Date(data.ultimoAjusteAt)) : null;
     }
-    
+
     if (data.estado !== undefined) {
       updateData.estado = data.estado || null;
     }
-    
+
     // Campos para gestión de estados avanzados
     // NOTA: Estos campos solo se procesan si están presentes en data
     // y solo se agregan a updateData si realmente se envían desde el frontend
     // Si la migración no se ha aplicado, Prisma fallará al intentar actualizar campos que no existen
     // Por ahora, solo procesamos estos campos si están explícitamente en data
-    
+
     // Solo agregar campos nuevos si están explícitamente en data (no undefined)
     // Esto evita intentar actualizar campos que no existen en la BD todavía
     if (data.hasOwnProperty('fechaFirma')) {
@@ -694,11 +764,43 @@ export const updateContrato = async (req, res) => {
       updateData.enMora = Boolean(data.enMora);
     }
 
-    // Obtener el contrato antes de actualizar para conocer la propiedadId y el estado anterior
+    // Obtener el contrato antes de actualizar para conocer la propiedadId, estado anterior y cantidadGarantiasNecesarias
     const contratoAnterior = await prisma.contrato.findUnique({
       where: { id: contratoId },
-      select: { propiedadId: true, estadoContratoId: true }
+      select: { propiedadId: true, estadoContratoId: true, cantidadGarantiasNecesarias: true }
     });
+
+    // Si se está pasando a Pendiente de firma o Vigente, validar que la cantidad de garantías cargadas coincida
+    const nuevoEstadoId = updateData.estadoContratoId !== undefined ? updateData.estadoContratoId : contratoAnterior?.estadoContratoId;
+    if (nuevoEstadoId != null) {
+      const estadoContrato = await prisma.estadoContrato.findUnique({
+        where: { id: nuevoEstadoId },
+        select: { codigo: true }
+      });
+      const codigoEstado = estadoContrato?.codigo || '';
+      if (codigoEstado === 'PENDIENTE_FIRMA' || codigoEstado === 'VIGENTE') {
+        const cantidadRequerida = updateData.cantidadGarantiasNecesarias !== undefined
+          ? updateData.cantidadGarantiasNecesarias
+          : (contratoAnterior?.cantidadGarantiasNecesarias ?? null);
+        const cantidadRequeridaNum = cantidadRequerida != null ? parseInt(cantidadRequerida, 10) : null;
+        if (cantidadRequeridaNum != null && cantidadRequeridaNum > 0) {
+          const garantiasActivas = await prisma.contratoGarantia.count({
+            where: {
+              contratoId,
+              activo: true,
+              deletedAt: null
+            }
+          });
+          if (garantiasActivas !== cantidadRequeridaNum) {
+            return res.status(400).json({
+              error: 'No se puede cambiar el estado: la cantidad de garantías cargadas no coincide con la cantidad necesaria configurada en el contrato.',
+              garantiasCargadas: garantiasActivas,
+              garantiasNecesarias: cantidadRequeridaNum
+            });
+          }
+        }
+      }
+    }
 
     const updated = await prisma.contrato.update({
       where: { id: contratoId },
@@ -707,9 +809,9 @@ export const updateContrato = async (req, res) => {
 
     // Determinar si se debe actualizar el estado de la propiedad
     const estadoCambio = contratoAnterior?.estadoContratoId !== updateData.estadoContratoId;
-    const propiedadCambio = updateData.propiedadId && 
-                         contratoAnterior?.propiedadId && 
-                         updateData.propiedadId !== contratoAnterior.propiedadId;
+    const propiedadCambio = updateData.propiedadId &&
+      contratoAnterior?.propiedadId &&
+      updateData.propiedadId !== contratoAnterior.propiedadId;
 
     // Actualizar el estado de la propiedad si:
     // 1. Cambió el estado del contrato, o
@@ -742,41 +844,41 @@ export const updateContrato = async (req, res) => {
     console.error('Error message:', error.message);
     console.error('Error meta:', error.meta);
     console.error('UpdateData que se intentó enviar:', JSON.stringify(updateData, null, 2));
-    
+
     if (error.code === 'P2022') {
-      return res.status(500).json({ 
-        error: 'Error de esquema de base de datos', 
+      return res.status(500).json({
+        error: 'Error de esquema de base de datos',
         message: 'El cliente de Prisma necesita ser regenerado. Por favor, detén el servidor y ejecuta: npx prisma generate --schema prisma/schema.prisma',
         code: error.code,
         detalles: error.meta
       });
     }
-    
+
     if (error.code === 'P2025') {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
-    
+
     // Si el error menciona campos que no existen, puede ser que la migración no se haya aplicado
     // o que el cliente de Prisma no esté sincronizado
     if (error.message && (
-      error.message.includes('Unknown argument') || 
+      error.message.includes('Unknown argument') ||
       error.message.includes('does not exist') ||
       error.message.includes('Unknown column') ||
       error.message.includes('Unknown field') ||
       error.message.includes('Invalid value') ||
       error.message.includes('Argument')
     )) {
-      return res.status(500).json({ 
-        error: 'Error de esquema de base de datos', 
+      return res.status(500).json({
+        error: 'Error de esquema de base de datos',
         message: 'El cliente de Prisma necesita ser regenerado o la migración no se aplicó correctamente. Por favor, detén el servidor y ejecuta: npx prisma generate --schema prisma/schema.prisma',
         detalles: error.message,
         meta: error.meta,
         code: error.code
       });
     }
-    
-    res.status(500).json({ 
-      error: 'Error al actualizar contrato', 
+
+    res.status(500).json({
+      error: 'Error al actualizar contrato',
       message: error.message,
       code: error.code,
       detalles: error.meta,
@@ -788,9 +890,13 @@ export const updateContrato = async (req, res) => {
 export const deleteContrato = async (req, res) => {
   try {
     const { id } = req.params;
+    const contratoId = parseInt(id, 10);
+    if (isNaN(contratoId)) {
+      return res.status(400).json({ error: 'ID de contrato inválido' });
+    }
 
     const contrato = await prisma.contrato.findUnique({
-      where: { id },
+      where: { id: contratoId },
       include: {
         liquidaciones: true
       }
@@ -800,14 +906,14 @@ export const deleteContrato = async (req, res) => {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
-    if (contrato.isDeleted) {
+    if (contrato.deletedAt) {
       return res.status(404).json({ error: 'El contrato ya ha sido eliminado' });
     }
 
     // Verificar que no tenga liquidaciones
     if (contrato.liquidaciones && contrato.liquidaciones.length > 0) {
       const cantidadLiquidaciones = contrato.liquidaciones.length;
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: `No se puede eliminar un contrato con liquidaciones asociadas`,
         detalles: `El contrato tiene ${cantidadLiquidaciones} liquidación(es) asociada(s)`
       });
@@ -816,11 +922,10 @@ export const deleteContrato = async (req, res) => {
     // Obtener unidadId antes de eliminar
     const unidadId = contrato.unidadId;
 
-    // Baja lógica
+    // Baja lógica (solo deletedAt; el modelo Contrato no tiene isDeleted)
     await prisma.contrato.update({
-      where: { id },
+      where: { id: contratoId },
       data: {
-        isDeleted: true,
         deletedAt: new Date()
       }
     });
@@ -834,13 +939,13 @@ export const deleteContrato = async (req, res) => {
   } catch (error) {
     console.error('Error al eliminar contrato:', error);
     console.error('Error details:', JSON.stringify(error, null, 2));
-    
+
     // Mejorar el manejo de errores
     if (error.code === 'P2025') {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       error: 'Error al eliminar contrato',
       message: error.message,
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
@@ -860,10 +965,10 @@ export const addResponsabilidad = async (req, res) => {
     }
 
     const contrato = await prisma.contrato.findFirst({
-      where: { 
-        id: contratoId, 
-        deletedAt: null, 
-        activo: true 
+      where: {
+        id: contratoId,
+        deletedAt: null,
+        activo: true
       }
     });
 
@@ -901,14 +1006,16 @@ export const addResponsabilidad = async (req, res) => {
       let existente = null;
       if (tipoImpuestoId) {
         existente = await prisma.contratoResponsabilidad.findUnique({
-          where: { contratoId_tipoImpuestoId: { contratoId, tipoImpuestoId } }
+          where: { unique_contrato_impuesto: { contratoId, tipoImpuestoId } }
         });
-      } else {
-        existente = await prisma.contratoResponsabilidad.findFirst({
+      } else if (tipoCargoId) {
+        existente = await prisma.contratoResponsabilidad.findUnique({
           where: {
-            contratoId,
-            tipoCargoId,
-            tipoExpensaId: tipoExpensaId ?? null
+            unique_contrato_cargo_tipo_expensa: {
+              contratoId,
+              tipoCargoId,
+              tipoExpensaId: tipoExpensaId ?? null
+            }
           }
         });
       }
@@ -1032,7 +1139,7 @@ export const deleteResponsabilidad = async (req, res) => {
 const actualizarGastoAveriguacionGarantias = async (contratoId) => {
   try {
     console.log(`[actualizarGastoAveriguacionGarantias] Iniciando para contratoId: ${contratoId}`);
-    
+
     // Calcular el total de costos de averiguación de todas las garantías del contrato
     const garantias = await prisma.contratoGarantia.findMany({
       where: {
@@ -1188,10 +1295,10 @@ export const addGarantia = async (req, res) => {
     }
 
     const contrato = await prisma.contrato.findFirst({
-      where: { 
-        id: contratoId, 
-        deletedAt: null, 
-        activo: true 
+      where: {
+        id: contratoId,
+        deletedAt: null,
+        activo: true
       }
     });
 
@@ -1346,30 +1453,30 @@ export const addGastoInicial = async (req, res) => {
 
     // Validar que quienPagaId esté presente o usar un valor por defecto
     let quienPagaId = data.quienPagaId ? parseInt(data.quienPagaId) : null;
-    
+
     if (!quienPagaId) {
       // Buscar un valor por defecto (por ejemplo, "INQUILINO" o el primer actor disponible)
       const actorDefault = await prisma.actorResponsableContrato.findFirst({
-        where: { 
+        where: {
           activo: true,
           deletedAt: null,
           codigo: 'INQ' // O el código que corresponda
         }
       });
-      
+
       if (!actorDefault) {
         // Si no existe "INQ", buscar cualquier actor activo
         const actorCualquiera = await prisma.actorResponsableContrato.findFirst({
-          where: { 
+          where: {
             activo: true,
             deletedAt: null
           }
         });
-        
+
         if (!actorCualquiera) {
           return res.status(400).json({ error: 'quienPagaId es requerido y no se encontró un valor por defecto' });
         }
-        
+
         quienPagaId = actorCualquiera.id;
       } else {
         quienPagaId = actorDefault.id;
@@ -1418,8 +1525,8 @@ export const updateGastoInicial = async (req, res) => {
     }
     // Si se envía quienPagaId, actualizarlo (incluso si es null)
     if (data.quienPagaId !== undefined) {
-      updateData.quienPagaId = data.quienPagaId !== null && data.quienPagaId !== '' 
-        ? parseInt(data.quienPagaId) 
+      updateData.quienPagaId = data.quienPagaId !== null && data.quienPagaId !== ''
+        ? parseInt(data.quienPagaId)
         : null;
     }
     if (data.importe !== undefined) {
@@ -1442,9 +1549,9 @@ export const updateGastoInicial = async (req, res) => {
     res.json(updated);
   } catch (error) {
     console.error('Error al actualizar gasto inicial:', error);
-    res.status(500).json({ 
-      error: 'Error al actualizar gasto inicial', 
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined 
+    res.status(500).json({
+      error: 'Error al actualizar gasto inicial',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };

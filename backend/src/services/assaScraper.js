@@ -146,6 +146,10 @@ export async function scrapeAssaFacturas(usuario, password, inicioPeriodo, finPe
           if (visible) {
             console.log(`[ASSA] Cerrando popup con selector: ${selector}`);
             await popupButton.click();
+            await Promise.race([
+              page.waitForLoadState('domcontentloaded'),
+              page.waitForTimeout(3000)
+            ]).catch(() => {});
             await page.waitForTimeout(1000);
             break; // Solo cerrar un popup
           }
@@ -164,19 +168,25 @@ export async function scrapeAssaFacturas(usuario, password, inicioPeriodo, finPe
       // No es crítico si falla
     }
     
-    // Esperar más tiempo después de cerrar popup para que cargue el contenido
+    // Esperar más tiempo después de cerrar popup y que la página esté estable (evitar "Execution context was destroyed")
     console.log('[ASSA] Esperando a que cargue el contenido después del popup...');
     await page.waitForTimeout(3000);
-    
-    // Hacer scroll para asegurar que todo el contenido esté cargado
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
-    await page.waitForTimeout(1000);
-    await page.evaluate(() => {
-      window.scrollTo(0, 0);
-    });
-    await page.waitForTimeout(1000);
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+    // Hacer scroll para asegurar que todo el contenido esté cargado (en try/catch por si hubo navegación)
+    try {
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await page.waitForTimeout(1000);
+      await page.evaluate(() => {
+        window.scrollTo(0, 0);
+      });
+      await page.waitForTimeout(1000);
+    } catch (e) {
+      if (!/Execution context was destroyed|Target closed/.test(e?.message || '')) throw e;
+      await page.waitForLoadState('domcontentloaded').catch(() => {});
+    }
 
     // Paso 5: Buscar selector de puntos de suministro
     console.log('[ASSA] Buscando selector de puntos...');

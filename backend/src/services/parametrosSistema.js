@@ -3,9 +3,7 @@
  * Se busca por código una sola vez; después se usa solo el id (el código puede ser editado por el usuario).
  */
 
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 let cache = null;
 
 export async function getIds() {
@@ -15,8 +13,10 @@ export async function getIds() {
     estadoLiquidacionBorrador,
     estadoLiquidacionLista,
     estadoLiquidacionEmitida,
+    estadoLiquidacionPagada,
     estadoItemPendiente,
     estadoItemCompletado,
+    estadoContratoVigente,
     actorINM,
     actorINQ,
     actorPROP,
@@ -27,8 +27,10 @@ export async function getIds() {
     prisma.estadoLiquidacion.findFirst({ where: { codigo: 'BORRADOR', activo: true }, select: { id: true } }),
     prisma.estadoLiquidacion.findFirst({ where: { codigo: 'LISTA', activo: true }, select: { id: true } }),
     prisma.estadoLiquidacion.findFirst({ where: { codigo: 'EMITIDA', activo: true }, select: { id: true } }),
+    prisma.estadoLiquidacion.findFirst({ where: { codigo: 'SALDADA', activo: true }, select: { id: true } }),
     prisma.estadoItemLiquidacion.findFirst({ where: { codigo: 'PENDIENTE', activo: true }, select: { id: true } }),
     prisma.estadoItemLiquidacion.findFirst({ where: { codigo: 'COMPLETADO', activo: true }, select: { id: true } }),
+    prisma.estadoContrato.findFirst({ where: { codigo: 'VIGENTE', activo: true }, select: { id: true } }),
     prisma.actorResponsableContrato.findFirst({ where: { codigo: 'INM', activo: true }, select: { id: true } }),
     prisma.actorResponsableContrato.findFirst({ where: { codigo: 'INQ', activo: true }, select: { id: true } }),
     prisma.actorResponsableContrato.findFirst({ where: { codigo: 'PROP', activo: true }, select: { id: true } }),
@@ -39,8 +41,10 @@ export async function getIds() {
 
   cache = {
     estadoLiquidacionBorradorId: estadoLiquidacionBorrador?.id ?? null,
+    estadoContratoVigenteId: estadoContratoVigente?.id ?? null,
     estadoLiquidacionListaId: estadoLiquidacionLista?.id ?? null,
     estadoLiquidacionEmitidaId: estadoLiquidacionEmitida?.id ?? null,
+    estadoLiquidacionPagadaId: estadoLiquidacionPagada?.id ?? null,
     estadoItemPendienteId: estadoItemPendiente?.id ?? null,
     estadoItemCompletadoId: estadoItemCompletado?.id ?? null,
     actorINMId: actorINM?.id ?? null,

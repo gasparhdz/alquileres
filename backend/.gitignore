@@ -11,3 +11,7 @@ coverage/
 .vscode/
 .idea/
 
+logs/
+
+# Volcados SQL generados por scripts/backup-tablas-datos.*
+backups/

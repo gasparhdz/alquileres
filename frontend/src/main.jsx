@@ -4,7 +4,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import { GlobalStyles } from '@mui/material';
+import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
+import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
+import { esES } from '@mui/x-date-pickers/locales';
+import dayjs from 'dayjs';
+import 'dayjs/locale/es';
 import App from './App';
+
+// Configurar dayjs en español globalmente
+dayjs.locale('es');
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,17 +49,26 @@ const theme = createTheme({
     success: {
       main: '#10b981',
       light: '#34d399',
-      dark: '#059669'
+      dark: '#059669',
+      lighter: '#d1fae5'
     },
     warning: {
       main: '#f59e0b',
       light: '#fbbf24',
-      dark: '#d97706'
+      dark: '#d97706',
+      lighter: '#fef3c7'
     },
     error: {
       main: '#ef4444',
       light: '#f87171',
-      dark: '#dc2626'
+      dark: '#dc2626',
+      lighter: '#fee2e2'
+    },
+    info: {
+      main: '#3b82f6',
+      light: '#60a5fa',
+      dark: '#2563eb',
+      lighter: '#dbeafe'
     }
   },
   typography: {
@@ -267,6 +284,13 @@ const theme = createTheme({
               padding: '8.5px 12px',
               height: '1.4375em',
               lineHeight: '1.4375em'
+            },
+            '& .MuiInputAdornment-root': {
+              height: '100%',
+              maxHeight: 'none',
+              '& .MuiSvgIcon-root': {
+                fontSize: '1.25rem'
+              }
             }
           },
           '& input': {
@@ -330,7 +354,11 @@ const theme = createTheme({
           fontSize: '0.875rem',
           '& .MuiSelect-select': {
             display: 'flex',
-            alignItems: 'center'
+            alignItems: 'center',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            paddingRight: 32
           }
         }
       }
@@ -350,6 +378,7 @@ const theme = createTheme({
     MuiAppBar: {
       styleOverrides: {
         root: {
+          borderRadius: 0,
           background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
           boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.1), 0px 2px 4px -1px rgba(0, 0, 0, 0.06)'
         }
@@ -471,6 +500,165 @@ const theme = createTheme({
           background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)'
         }
       }
+    },
+    // ==========================================
+    // Date Picker Components - Unificación Visual
+    // ==========================================
+    MuiPickersDay: {
+      styleOverrides: {
+        root: {
+          borderRadius: '50%',
+          '&.Mui-selected': {
+            backgroundColor: '#059669',
+            color: '#ffffff',
+            '&:hover': {
+              backgroundColor: '#047857'
+            },
+            '&:focus': {
+              backgroundColor: '#059669'
+            }
+          },
+          '&:hover': {
+            backgroundColor: 'rgba(5, 150, 105, 0.1)'
+          }
+        }
+      }
+    },
+    MuiPickersMonth: {
+      styleOverrides: {
+        monthButton: {
+          borderRadius: 8,
+          '&.Mui-selected': {
+            backgroundColor: '#059669',
+            color: '#ffffff',
+            '&:hover': {
+              backgroundColor: '#047857'
+            }
+          },
+          '&:hover': {
+            backgroundColor: 'rgba(5, 150, 105, 0.1)'
+          }
+        }
+      }
+    },
+    MuiPickersYear: {
+      styleOverrides: {
+        yearButton: {
+          borderRadius: 8,
+          '&.Mui-selected': {
+            backgroundColor: '#059669',
+            color: '#ffffff',
+            '&:hover': {
+              backgroundColor: '#047857'
+            }
+          },
+          '&:hover': {
+            backgroundColor: 'rgba(5, 150, 105, 0.1)'
+          }
+        }
+      }
+    },
+    MuiDateCalendar: {
+      styleOverrides: {
+        root: {
+          '& .MuiPickersCalendarHeader-switchViewButton': {
+            color: '#059669'
+          },
+          '& .MuiPickersArrowSwitcher-button': {
+            color: '#059669'
+          }
+        }
+      }
+    },
+    MuiMonthCalendar: {
+      styleOverrides: {
+        root: {
+          '& .MuiPickersMonth-monthButton.Mui-selected': {
+            backgroundColor: '#059669',
+            color: '#ffffff',
+            borderRadius: 8,
+            '&:hover': {
+              backgroundColor: '#047857'
+            }
+          }
+        }
+      }
+    },
+    MuiYearCalendar: {
+      styleOverrides: {
+        root: {
+          '& .MuiPickersYear-yearButton.Mui-selected': {
+            backgroundColor: '#059669',
+            color: '#ffffff',
+            borderRadius: 8,
+            '&:hover': {
+              backgroundColor: '#047857'
+            }
+          }
+        }
+      }
+    },
+    MuiPickersToolbar: {
+      styleOverrides: {
+        root: {
+          backgroundColor: '#059669',
+          color: '#ffffff',
+          '& .MuiTypography-root': {
+            color: '#ffffff'
+          },
+          '& .MuiPickersToolbar-penIconButton': {
+            color: 'rgba(255, 255, 255, 0.7)'
+          }
+        }
+      }
+    },
+    MuiDialogActions: {
+      styleOverrides: {
+        root: {
+          '& .MuiButton-textPrimary': {
+            color: '#059669'
+          }
+        }
+      }
+    },
+    MuiPickersLayout: {
+      styleOverrides: {
+        actionBar: {
+          '& .MuiButton-root': {
+            color: '#059669',
+            '&:hover': {
+              backgroundColor: 'rgba(5, 150, 105, 0.1)'
+            }
+          }
+        }
+      }
+    },
+    MuiPickersTextField: {
+      defaultProps: {
+        size: 'small'
+      },
+      styleOverrides: {
+        root: {
+          '& .MuiOutlinedInput-root': {
+            height: '36px',
+            '& input': {
+              padding: '8.5px 12px',
+              height: '1.4375em',
+              lineHeight: '1.4375em'
+            }
+          }
+        }
+      }
+    },
+    MuiPickersOutlinedInput: {
+      styleOverrides: {
+        root: {
+          height: '36px',
+          '& input': {
+            padding: '8.5px 12px'
+          }
+        }
+      }
     }
   }
 });
@@ -494,9 +682,15 @@ ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
-        <CssBaseline />
-        {globalStyles}
-        <App />
+        <LocalizationProvider 
+          dateAdapter={AdapterDayjs} 
+          adapterLocale="es"
+          localeText={esES.components.MuiLocalizationProvider.defaultProps.localeText}
+        >
+          <CssBaseline />
+          {globalStyles}
+          <App />
+        </LocalizationProvider>
       </ThemeProvider>
     </QueryClientProvider>
   </React.StrictMode>

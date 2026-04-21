@@ -37,6 +37,7 @@ import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import CalendarTodayIcon from '@mui/icons-material/CalendarToday';
 import api from '../api';
 import ParametroSelect from '../components/ParametroSelect';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useParametrosMap, getDescripcion } from '../utils/parametros';
 
 export default function CuentasTributarias() {
@@ -54,6 +55,7 @@ export default function CuentasTributarias() {
   });
   const [successMessage, setSuccessMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [cuentaAEliminar, setCuentaAEliminar] = useState(null);
   const queryClient = useQueryClient();
 
   // Mapas de parámetros para mostrar descripciones
@@ -109,6 +111,7 @@ export default function CuentasTributarias() {
   const deleteMutation = useMutation({
     mutationFn: (id) => api.delete(`/cuentas-tributarias/${id}`),
     onSuccess: () => {
+      setCuentaAEliminar(null);
       queryClient.invalidateQueries(['cuentasTributarias']);
       setSuccessMessage('Cuenta tributaria eliminada exitosamente');
       setSnackbarOpen(true);
@@ -177,6 +180,16 @@ export default function CuentasTributarias() {
 
   return (
     <Box>
+      <ConfirmDialog
+        open={!!cuentaAEliminar}
+        onClose={() => setCuentaAEliminar(null)}
+        title="Eliminar cuenta tributaria"
+        message="¿Está seguro de eliminar esta cuenta tributaria?"
+        confirmLabel="Eliminar"
+        confirmColor="error"
+        loading={deleteMutation.isPending}
+        onConfirm={() => cuentaAEliminar && deleteMutation.mutate(cuentaAEliminar.id)}
+      />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 3 }}>
         <Typography variant="h4">Cuentas Tributarias</Typography>
         <Button variant="contained" startIcon={<AddIcon />} onClick={handleOpen}>
@@ -186,7 +199,7 @@ export default function CuentasTributarias() {
 
       {/* Vista de tabla para desktop */}
       <TableContainer component={Paper} sx={{ display: { xs: 'none', md: 'block' } }}>
-        <Table>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' }, '& .MuiTableCell-head': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell>Unidad</TableCell>
@@ -219,20 +232,11 @@ export default function CuentasTributarias() {
                 <TableCell>{cuenta.password ? '••••••••' : '-'}</TableCell>
                 <TableCell>{cuenta.observaciones || '-'}</TableCell>
                 <TableCell>
-                  <IconButton size="small" onClick={() => handleEdit(cuenta)} title="Editar">
-                    <EditIcon />
+                  <IconButton size="small" onClick={() => handleEdit(cuenta)} title="Editar" sx={{ padding: '4px' }}>
+                    <EditIcon fontSize="small" />
                   </IconButton>
-                  <IconButton
-                    size="small"
-                    color="error"
-                    onClick={() => {
-                      if (window.confirm('¿Está seguro de eliminar esta cuenta tributaria?')) {
-                        deleteMutation.mutate(cuenta.id);
-                      }
-                    }}
-                    title="Eliminar"
-                  >
-                    <DeleteIcon />
+                  <IconButton size="small" color="error" onClick={() => setCuentaAEliminar(cuenta)} title="Eliminar" sx={{ padding: '4px' }}>
+                    <DeleteIcon fontSize="small" />
                   </IconButton>
                 </TableCell>
               </TableRow>
@@ -271,11 +275,7 @@ export default function CuentasTributarias() {
                       <IconButton
                         size="small"
                         color="error"
-                        onClick={() => {
-                          if (window.confirm('¿Está seguro de eliminar esta cuenta tributaria?')) {
-                            deleteMutation.mutate(cuenta.id);
-                          }
-                        }}
+                        onClick={() => setCuentaAEliminar(cuenta)}
                       >
                         <DeleteIcon />
                       </IconButton>

@@ -34,8 +34,10 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import dayjs from 'dayjs';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import api from '../api';
 import ParametroSelect from '../components/ParametroSelect';
+import ConfirmDialog from '../components/ConfirmDialog';
 import { useParametrosMap } from '../utils/parametros';
 import CatalogoABM from '../components/CatalogoABM';
 
@@ -53,7 +55,25 @@ const formatPeriodo = (periodo) => {
 
 const INDICES_CODE = '__indices__';
 
-// Lista de catálogos disponibles
+// Catálogos de sistema que el usuario final no debe editar/eliminar (ocultos en Configuración)
+const CATALOGOS_BLACKLIST = [
+  'estados-contrato',           // Estados de Contrato
+  'estados-garantia-contrato',  // Estados de Garantía
+  'estados-item-liquidacion',   // Estados de Item Liquidación
+  'estados-liquidacion',        // Estados de Liquidación
+  'estados-propiedad',          // Estados de Propiedad
+  'periodicidades-impuesto',    // Periodicidades
+  'actores-responsable-contrato', // Responsables
+  'tipos-persona',              // Tipos de Persona
+  'tipos-documento-propiedad',  // Tipos de Documento
+  'indices-ajuste',            // Valores Índices de Ajuste
+  'tipos-cargo',                // Tipos de Cargo
+  'tipos-expensa',              // Tipos de Expensa
+  'tipos-impuesto-propiedad',   // Tipos de Impuesto
+  'tipos-gasto-inicial-contrato', // Tipos de Gasto Inicial
+];
+
+// Lista de catálogos disponibles (los de CATALOGOS_BLACKLIST se filtran al armar el menú)
 const CATALOGOS = [
   { codigo: 'tipos-persona', nombre: 'Tipos de Persona' },
   { codigo: 'provincias', nombre: 'Provincias' },
@@ -64,6 +84,7 @@ const CATALOGOS = [
   { codigo: 'estados-propiedad', nombre: 'Estados de Propiedad' },
   { codigo: 'destinos-propiedad', nombre: 'Destinos de Propiedad' },
   { codigo: 'tipos-impuesto-propiedad', nombre: 'Tipos de Impuesto' },
+  { codigo: 'oficinas-virtuales', nombre: 'Oficinas Virtuales' },
   { codigo: 'tipos-cargo', nombre: 'Tipos de Cargo' },
   { codigo: 'tipos-expensa', nombre: 'Tipos de Expensa' },
   { codigo: 'periodicidades-impuesto', nombre: 'Periodicidades' },
@@ -122,6 +143,7 @@ function ParametrosCategoriaSection({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [formValues, setFormValues] = useState(emptyParametroForm);
   const [editingParametro, setEditingParametro] = useState(null);
+  const [parametroADesactivar, setParametroADesactivar] = useState(null);
   const [errorMessage, setErrorMessage] = useState('');
   
   // Obtener parámetros de periodicidad para el selector y la tabla
@@ -187,6 +209,7 @@ function ParametrosCategoriaSection({
       return response.data;
     },
     onSuccess: () => {
+      setParametroADesactivar(null);
       queryClient.invalidateQueries(['configuracion', 'parametros', categoria.parametroCodigo]);
       setErrorMessage('');
     },
@@ -259,13 +282,22 @@ function ParametrosCategoriaSection({
   };
 
   const handleDelete = (parametro) => {
-    if (!window.confirm('¿Seguro que desea desactivar este parámetro?')) return;
-    deleteMutation.mutate(parametro.id);
+    setParametroADesactivar(parametro);
   };
 
   return (
-    <Paper sx={{ p: 3 }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={2} flexWrap="wrap">
+    <Paper sx={{ p: 2 }}>
+      <ConfirmDialog
+        open={!!parametroADesactivar}
+        onClose={() => setParametroADesactivar(null)}
+        title="Desactivar parámetro"
+        message="¿Seguro que desea desactivar este parámetro?"
+        confirmLabel="Desactivar"
+        confirmColor="error"
+        loading={deleteMutation.isLoading}
+        onConfirm={() => parametroADesactivar && deleteMutation.mutate(parametroADesactivar.id)}
+      />
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={1.5} flexWrap="wrap">
         <Box>
           <Typography variant="h5">{categoria.descripcion}</Typography>
         </Box>
@@ -304,8 +336,8 @@ function ParametrosCategoriaSection({
         </Alert>
       )}
 
-      <TableContainer>
-        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
+      <TableContainer component={Paper} variant="outlined" sx={{ mb: 0 }}>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' }, '& .MuiTableCell-head': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: categoria.parametroCodigo === 'tipo_cargo' ? '12%' : '15%' }}>Código</TableCell>
@@ -335,7 +367,7 @@ function ParametrosCategoriaSection({
                 : '-';
               
               return (
-                <TableRow key={parametro.id} hover>
+                <TableRow key={parametro.id} hover sx={{ '& .MuiTableCell-root': { verticalAlign: 'middle' } }}>
                   <TableCell>{parametro.codigo}</TableCell>
                   <TableCell>{parametro.descripcion}</TableCell>
                   <TableCell>{parametro.abreviatura || '-'}</TableCell>
@@ -348,12 +380,13 @@ function ParametrosCategoriaSection({
                       label={parametro.activo ? 'Activo' : 'Inactivo'}
                       color={parametro.activo ? 'success' : 'default'}
                       size="small"
+                      sx={{ height: 22, fontSize: '0.75rem' }}
                     />
                   </TableCell>
-                  <TableCell align="right">
-                    <Stack direction="row" spacing={1} justifyContent="flex-end">
+                  <TableCell align="right" sx={{ py: 0.5 }}>
+                    <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center', justifyContent: 'flex-end' }}>
                       <Tooltip title="Editar">
-                        <IconButton size="small" onClick={() => handleEdit(parametro)}>
+                        <IconButton size="small" onClick={() => handleEdit(parametro)} sx={{ padding: '4px' }}>
                           <EditIcon fontSize="small" />
                         </IconButton>
                       </Tooltip>
@@ -364,6 +397,7 @@ function ParametrosCategoriaSection({
                           checked={parametro.activo}
                           onChange={() => handleToggleActivo(parametro)}
                           disabled={updateMutation.isLoading}
+                          sx={{ transform: 'scale(0.85)' }}
                         />
                       </Tooltip>
                       <Tooltip title="Desactivar definitivamente">
@@ -373,12 +407,13 @@ function ParametrosCategoriaSection({
                             color="error"
                             onClick={() => handleDelete(parametro)}
                             disabled={deleteMutation.isLoading}
+                            sx={{ padding: '4px' }}
                           >
                             <DeleteIcon fontSize="small" />
                           </IconButton>
                         </span>
                       </Tooltip>
-                    </Stack>
+                    </Box>
                   </TableCell>
                 </TableRow>
               );
@@ -604,8 +639,8 @@ function IndicesSection({
   };
 
   return (
-    <Paper sx={{ p: 3 }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={2} flexWrap="wrap">
+    <Paper sx={{ p: 2 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={1.5} flexWrap="wrap">
         <Box>
           <Typography variant="h5">Índices de ajuste</Typography>
         </Box>
@@ -686,8 +721,8 @@ function IndicesSection({
         </Alert>
       )}
 
-      <TableContainer>
-        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
+      <TableContainer component={Paper} variant="outlined" sx={{ mb: 0 }}>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' }, '& .MuiTableCell-head': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               <TableCell sx={{ width: '12%' }}>Código</TableCell>
@@ -709,7 +744,7 @@ function IndicesSection({
               </TableRow>
             )}
             {indices.map((indice) => (
-              <TableRow key={`${indice.codigo}-${indice.periodo}`} hover>
+              <TableRow key={`${indice.codigo}-${indice.periodo}`} hover sx={{ '& .MuiTableCell-root': { verticalAlign: 'middle' } }}>
                 <TableCell>{indice.codigo}</TableCell>
                 <TableCell>{indice.descripcion}</TableCell>
                 <TableCell>{formatPeriodo(indice.periodo)}</TableCell>
@@ -721,6 +756,7 @@ function IndicesSection({
                     label={indice.activo ? 'Activo' : 'Inactivo'}
                     color={indice.activo ? 'success' : 'default'}
                     size="small"
+                    sx={{ height: 22, fontSize: '0.75rem' }}
                   />
                 </TableCell>
                 <TableCell>{dayjs(indice.fechaPublicacion).format('DD/MM/YYYY')}</TableCell>
@@ -816,13 +852,19 @@ function IndicesSection({
               value={formValues.fuente}
               onChange={(e) => setFormValues({ ...formValues, fuente: e.target.value })}
             />
-            <TextField
+            <DatePicker
               label="Fecha de publicación"
-              type="date"
-              value={formValues.fechaPublicacion}
-              onChange={(e) => setFormValues({ ...formValues, fechaPublicacion: e.target.value })}
-              required
-              InputLabelProps={{ shrink: true }}
+              value={formValues.fechaPublicacion ? dayjs(formValues.fechaPublicacion) : null}
+              onChange={(newValue) => setFormValues({ ...formValues, fechaPublicacion: newValue ? newValue.format('YYYY-MM-DD') : '' })}
+              slotProps={{
+                textField: {
+                  required: true,
+                  fullWidth: true
+                },
+                actionBar: {
+                  actions: ['clear', 'today']
+                }
+              }}
             />
             <FormControlLabel
               control={
@@ -898,8 +940,8 @@ export default function Configuracion() {
       especial: true
     });*/
 
-    // Agregar cada catálogo como una opción individual
-    CATALOGOS.forEach((cat) => {
+    // Agregar cada catálogo permitido como opción (excluir tablas de sistema en CATALOGOS_BLACKLIST)
+    CATALOGOS.filter((cat) => !CATALOGOS_BLACKLIST.includes(cat.codigo)).forEach((cat) => {
       lista.push({
         codigo: `catalogo-${cat.codigo}`,
         parametroCodigo: `catalogo-${cat.codigo}`,

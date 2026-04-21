@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { scrapeCuotas, parseCuotasFromResultHtml, PERIODO_TO_CUOTA } from '../services/santafeEInBoletasScraper.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Normaliza partida para matching (trim, sin espacios extra)
@@ -34,8 +32,13 @@ export const autocompletarSantafeEInBoletas = async (req, res) => {
 
   const cuotaKey = PERIODO_TO_CUOTA[periodoDb];
   if (!cuotaKey) {
-    return res.status(400).json({
-      error: `Período ${periodo} no corresponde a una cuota de Impuesto Inmobiliario 2026. Use 02-2026 (cuota 1), 04-2026 (cuota 2) o 06-2026 (cuota 3).`,
+    // No devolver 400: en el flujo "Generar" se llama a todos los scrapers; este período simplemente no tiene cuota API
+    return res.json({
+      periodo,
+      actualizados: 0,
+      sinPartida: [],
+      warnings: [`Período ${periodo} no corresponde a una cuota de Impuesto Inmobiliario (solo 02, 04 y 06 de 2026). Se omite autocompletar API.`],
+      errores: [],
     });
   }
 
@@ -121,9 +124,11 @@ export const autocompletarSantafeEInBoletas = async (req, res) => {
       return res.status(500).json({ error: 'No se encontró el estado COMPLETADO en la base de datos' });
     }
 
-    const actualizados = [];
+    const transacciones = [];
     const errores = [];
     const headless = false;
+    const completadoAt = new Date();
+    const completadoById = req.user?.id ?? null;
 
     for (const partida of partidasUnicas) {
       try {
@@ -149,17 +154,18 @@ export const autocompletarSantafeEInBoletas = async (req, res) => {
         const vencimientoDate = new Date(cuota.fechaVto);
 
         for (const item of itemsToUpdate) {
-          await prisma.liquidacionItem.update({
-            where: { id: item.id },
-            data: {
-              importe: cuota.importe,
-              vencimiento: vencimientoDate,
-              estadoItemId: estadoCompletado.id,
-              completadoAt: new Date(),
-              completadoById: req.user?.id ?? null,
-            },
-          });
-          actualizados.push(item.id);
+          transacciones.push(
+            prisma.liquidacionItem.update({
+              where: { id: item.id },
+              data: {
+                importe: cuota.importe,
+                vencimiento: vencimientoDate,
+                estadoItemId: estadoCompletado.id,
+                completadoAt,
+                completadoById,
+              },
+            })
+          );
         }
       } catch (err) {
         errores.push(`Partida ${partida}: ${err.message}`);
@@ -168,9 +174,14 @@ export const autocompletarSantafeEInBoletas = async (req, res) => {
       await new Promise((r) => setTimeout(r, 1500));
     }
 
+    if (transacciones.length > 0) {
+      await prisma.$transaction(transacciones);
+      console.log(`[SANTAFE] ${transacciones.length} items actualizados en transacción.`);
+    }
+
     res.json({
       periodo,
-      actualizados: actualizados.length,
+      actualizados: transacciones.length,
       sinPartida: itemsSinPartida,
       warnings: itemsSinPartida.length ? ['Algunos items no tienen N° de partida configurado.'] : [],
       errores,

@@ -1,16 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-// Singleton pattern para asegurar que prisma siempre esté inicializado
-let prismaInstance = null;
-
-const getPrisma = () => {
-  if (!prismaInstance) {
-    prismaInstance = new PrismaClient();
-  }
-  return prismaInstance;
-};
-
-const prisma = getPrisma();
+import prisma from '../db/prisma.js';
 
 export const getAllUnidades = async (req, res) => {
   try {
@@ -127,10 +115,10 @@ export const createUnidad = async (req, res) => {
       return res.status(400).json({ error: 'Dirección y localidad son requeridos' });
     }
 
-    // Verificar que el propietario existe si se proporciona
+    // Verificar que el propietario (cliente) existe si se proporciona
     if (data.propietarioId) {
-      const propietario = await prisma.propietario.findFirst({
-        where: { id: data.propietarioId, isDeleted: false }
+      const propietario = await prisma.cliente.findFirst({
+        where: { id: data.propietarioId, deletedAt: null, activo: true }
       });
 
       if (!propietario) {
@@ -187,10 +175,10 @@ export const updateUnidad = async (req, res) => {
       return res.status(404).json({ error: 'Propiedad no encontrada' });
     }
 
-    // Verificar que el propietario existe si se proporciona
+    // Verificar que el propietario (cliente) existe si se proporciona
     if (req.body.propietarioId) {
-      const propietario = await prisma.propietario.findFirst({
-        where: { id: req.body.propietarioId, isDeleted: false }
+      const propietario = await prisma.cliente.findFirst({
+        where: { id: req.body.propietarioId, deletedAt: null, activo: true }
       });
 
       if (!propietario) {

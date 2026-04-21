@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 /**
  * Reglas de ajuste y recálculo (documentación):
@@ -26,18 +24,18 @@ const monthsBetween = (fromDate, toDate) => {
   const from = new Date(fromDate);
   const to = new Date(toDate);
 
-  return (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
+  return (to.getUTCFullYear() - from.getUTCFullYear()) * 12 + (to.getUTCMonth() - from.getUTCMonth());
 };
 
 const addMonths = (date, months) => {
   const result = new Date(date);
-  result.setMonth(result.getMonth() + months);
+  result.setUTCMonth(result.getUTCMonth() + months);
   return result;
 };
 
 const formatPeriodo = (date) => {
   const target = new Date(date);
-  return `${target.getFullYear()}-${String(target.getMonth() + 1).padStart(2, '0')}`;
+  return `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}`;
 };
 
 const toFixedDecimal = (value, decimals) => {
@@ -106,13 +104,16 @@ const createAjusteTransaction = async ({
 
 const getContratoWithConfig = async (id) => {
   const contrato = await prisma.contrato.findFirst({
-    where: { id, activo: true, deletedAt: null },
+    where: { id: Number(id), activo: true, deletedAt: null },
     include: {
       propiedad: {
         select: { dirCalle: true, dirNro: true, dirPiso: true, dirDepto: true }
       },
       inquilino: {
         select: { nombre: true, apellido: true, razonSocial: true }
+      },
+      estado: {
+        select: { codigo: true, nombre: true }
       }
     }
   });
@@ -153,6 +154,7 @@ export const getContratoAjustes = async (req, res) => {
  * POST /api/contratos/:id/ajustes
  * Crea ajuste manual: montoAnterior = contrato.montoActual, porcentajeAumento calculado.
  * Actualiza Contrato.montoActual en la misma transacción.
+ * Solo permitido si el contrato está en estado VIGENTE.
  */
 export const createAjuste = async (req, res) => {
   try {
@@ -169,10 +171,18 @@ export const createAjuste = async (req, res) => {
     }
 
     const contrato = await prisma.contrato.findFirst({
-      where: { id: contratoId, activo: true, deletedAt: null }
+      where: { id: contratoId, activo: true, deletedAt: null },
+      include: { estado: true }
     });
     if (!contrato) {
       return res.status(404).json({ error: 'Contrato no encontrado' });
+    }
+
+    // Validar que el contrato esté en estado VIGENTE para poder cargar ajustes
+    if (!contrato.estado || contrato.estado.codigo !== 'VIGENTE') {
+      return res.status(400).json({
+        error: 'Solo se pueden cargar ajustes en contratos con estado Vigente'
+      });
     }
 
     // montoAnterior = último ajuste activo por fechaAjuste (no por id), o montoInicial si no hay
@@ -359,12 +369,19 @@ export const generarAjusteAutomatico = async (req, res) => {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
+    // Validar que el contrato esté en estado VIGENTE para poder cargar ajustes
+    if (!contrato.estado || contrato.estado.codigo !== 'VIGENTE') {
+      return res.status(400).json({
+        error: 'Solo se pueden cargar ajustes en contratos con estado Vigente'
+      });
+    }
+
     if (!contrato.periodoAjuste) {
       return res.status(400).json({ error: 'El contrato no tiene configurado el período de ajuste' });
     }
 
     // Obtener el método de ajuste del contrato
-    if (!contrato.metodoAjuste) {
+    if (!contrato.metodoAjusteContratoId) {
       return res.status(400).json({ error: 'El contrato no tiene configurado el método de ajuste' });
     }
 
@@ -455,6 +472,13 @@ export const registrarAjusteManual = async (req, res) => {
       return res.status(404).json({ error: 'Contrato no encontrado' });
     }
 
+    // Validar que el contrato esté en estado VIGENTE para poder cargar ajustes
+    if (!contrato.estado || contrato.estado.codigo !== 'VIGENTE') {
+      return res.status(400).json({
+        error: 'Solo se pueden cargar ajustes en contratos con estado Vigente'
+      });
+    }
+
     const valorIndiceParsed = parseDecimalInput(valorIndice);
     if (valorIndiceParsed === null) {
       return res.status(400).json({ error: 'Valor del índice inválido' });
@@ -500,7 +524,7 @@ export const getAjustesProximos = async (req, res) => {
     const dias = req.query.dias ? parseInt(req.query.dias, 10) : 30;
     const hoy = new Date();
     const limite = new Date(hoy);
-    limite.setDate(limite.getDate() + dias);
+    limite.setUTCDate(limite.getUTCDate() + dias);
 
     const contratos = await prisma.contrato.findMany({
       where: {
@@ -636,12 +660,12 @@ export const calcularAjustesProyectados = async (req, res) => {
 
         if (indice) {
           const valorIndice = parseDecimalInput(indice.valor);
-          
+
           // Guardar el primer valor del cuatrimestre
           if (valorIndiceInicioCuatrimestre === null) {
             valorIndiceInicioCuatrimestre = valorIndice;
           }
-          
+
           // Calcular variación respecto al mes anterior
           let porcentajeMesAnterior = 0;
           if (valorIndiceAnterior !== null && valorIndiceAnterior !== 0) {
@@ -674,7 +698,7 @@ export const calcularAjustesProyectados = async (req, res) => {
           });
 
           const valorIndice = ultimoIndiceConocido ? parseDecimalInput(ultimoIndiceConocido.valor) : (valorIndiceAnterior || 0);
-          
+
           // Guardar el primer valor del cuatrimestre si es el primer mes
           if (valorIndiceInicioCuatrimestre === null && valorIndice > 0) {
             valorIndiceInicioCuatrimestre = valorIndice;
@@ -708,7 +732,7 @@ export const calcularAjustesProyectados = async (req, res) => {
       // Calcular aumento del cuatrimestre usando el acumulado del último mes
       const ultimoMes = meses[meses.length - 1];
       let aumentoCuatrimestre = 0;
-      
+
       // Si hay meses con datos, usar el acumulado del último mes
       if (meses.length > 0 && ultimoMes.acumulado !== undefined) {
         aumentoCuatrimestre = ultimoMes.acumulado;

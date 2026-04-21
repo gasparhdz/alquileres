@@ -1,11 +1,18 @@
-import { PrismaClient } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import prisma from '../db/prisma.js';
 
-const prisma = new PrismaClient();
+function parseSuperficieM2(val) {
+  if (val === null || val === undefined || val === '') return null;
+  const n = parseFloat(String(val).replace(',', '.'));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return new Prisma.Decimal(n.toFixed(2));
+}
 
 export const getAllPropiedades = async (req, res) => {
   try {
-    const { search, propietarioId, page = 1, limit = 50 } = req.query;
+    const { search, propietarioId, estado, page = 1, limit = 50, orderBy = 'direccion', order = 'asc' } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
+    const dir = (order === 'asc' ? 'asc' : 'desc');
 
     const where = {
       deletedAt: null,
@@ -24,15 +31,32 @@ export const getAllPropiedades = async (req, res) => {
             activo: true
           }
         }
-      })
+      }),
+      ...(estado && { estadoPropiedadId: parseInt(estado) })
     };
+
+    const orderByClause = (() => {
+      switch (orderBy) {
+        case 'localidad':
+          return { localidad: { nombre: dir } };
+        case 'tipo':
+          return { tipoPropiedad: { nombre: dir } };
+        case 'estado':
+          return { estadoPropiedad: { nombre: dir } };
+        case 'propietarios':
+          return { createdAt: dir };
+        case 'direccion':
+        default:
+          return { dirCalle: dir };
+      }
+    })();
 
     const [propiedades, total] = await Promise.all([
       prisma.propiedad.findMany({
         where,
         skip,
         take: parseInt(limit),
-        orderBy: { createdAt: 'desc' },
+        orderBy: orderByClause,
         include: {
           localidad: {
             include: {
@@ -44,6 +68,7 @@ export const getAllPropiedades = async (req, res) => {
           estadoPropiedad: true,
           destino: true,
           ambientes: true,
+          consorcio: true,
           propietarios: {
             where: { activo: true },
             include: {
@@ -90,69 +115,93 @@ export const getAllPropiedades = async (req, res) => {
 
 export const getPropiedadById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const propiedadId = parseInt(id);
-
+    const propiedadId = parseInt(req.params.id, 10);
     if (isNaN(propiedadId)) {
       return res.status(400).json({ error: 'ID de propiedad inválido' });
     }
 
-    const propiedad = await prisma.propiedad.findFirst({
-      where: {
-        id: propiedadId,
-        deletedAt: null,
-        activo: true
-      },
+    // Paso A: entidad base con relaciones directas
+    let propiedad = await prisma.propiedad.findUnique({
+      where: { id: propiedadId, deletedAt: null, activo: true },
       include: {
-        localidad: {
-          include: {
-            provincia: true
-          }
-        },
+        localidad: { include: { provincia: true } },
         provincia: true,
         tipoPropiedad: true,
         estadoPropiedad: true,
         destino: true,
         ambientes: true,
+        consorcio: true,
         propietarios: {
           where: { activo: true },
           include: {
-            propietario: {
-              include: {
-                tipoPersona: true
-              }
-            }
-          }
-        },
-        impuestos: {
-          where: { deletedAt: null, activo: true },
-          include: {
-            tipoImpuesto: true,
-            periodicidad: true
-          }
-        },
-        contratos: {
-          where: { deletedAt: null, activo: true },
-          include: {
-            inquilino: true,
-            estadoContrato: true
-          },
-          orderBy: { fechaInicio: 'desc' }
-        },
-        documentos: {
-          where: { deletedAt: null, activo: true },
-          include: {
-            tipoDocumento: true
+            propietario: { include: { tipoPersona: true } }
           }
         }
       }
     });
-
     if (!propiedad) {
       return res.status(404).json({ error: 'Propiedad no encontrada' });
     }
 
-    res.json(propiedad);
+    // Paso B: impuestos
+    const impuestos = await prisma.propiedadImpuesto.findMany({
+      where: { propiedadId, activo: true, deletedAt: null },
+      include: {
+        tipoImpuesto: true,
+        periodicidad: true,
+        campos: { include: { tipoCampo: true } },
+        titularPropietario: {
+          select: {
+            id: true,
+            nombre: true,
+            apellido: true,
+            razonSocial: true,
+            tipoPersonaId: true,
+          },
+        },
+      },
+    });
+    propiedad = { ...propiedad, impuestos };
+
+    // Paso B2: cargos (expensas, seguro, etc.)
+    const cargos = await prisma.propiedadCargo.findMany({
+      where: { propiedadId, activo: true, deletedAt: null },
+      include: {
+        tipoCargo: true,
+        periodicidad: true,
+        campos: { include: { tipoCampo: true } }
+      }
+    });
+    propiedad = { ...propiedad, cargos };
+
+    // Paso C: historial de contratos (límite 20)
+    const contratos = await prisma.contrato.findMany({
+      where: { propiedadId, activo: true, deletedAt: null },
+      orderBy: { fechaInicio: 'desc' },
+      take: 20,
+      include: {
+        inquilino: true,
+        estado: true,
+        metodoAjuste: true,
+        garantias: { include: { tipoGarantia: true } }
+      }
+    });
+    propiedad = { ...propiedad, contratos };
+
+    // Paso D: documentos
+    const documentos = await prisma.propiedadDocumento.findMany({
+      where: { propiedadId, activo: true, deletedAt: null },
+      include: { tipoDocumento: true }
+    });
+    propiedad = { ...propiedad, documentos };
+
+    const seguros = await prisma.propiedadSeguro.findMany({
+      where: { propiedadId, activo: true, deletedAt: null },
+      orderBy: { fechaFin: 'desc' },
+    });
+    propiedad = { ...propiedad, seguros };
+
+    return res.json(propiedad);
   } catch (error) {
     console.error('Error al obtener propiedad:', error);
     res.status(500).json({ error: 'Error al obtener propiedad' });
@@ -186,17 +235,40 @@ export const createPropiedad = async (req, res) => {
       tipoPropiedadId: data.tipoPropiedadId ? parseInt(data.tipoPropiedadId) : null,
       estadoPropiedadId: data.estadoPropiedadId ? parseInt(data.estadoPropiedadId) : null,
       destinoId: data.destinoId ? parseInt(data.destinoId) : null,
-      ambientesId: data.ambientesId ? parseInt(data.ambientesId) : null
+      ambientesId: data.ambientesId ? parseInt(data.ambientesId) : null,
+      superficieM2: parseSuperficieM2(data.superficieM2),
+      administraImpuestosInmobiliaria: data.administraImpuestosInmobiliaria === true,
     };
 
-    // Verificar que los propietarios existen si se proporcionan
+    if (data.consorcioId !== undefined && data.consorcioId !== null && data.consorcioId !== '') {
+      const cid = parseInt(data.consorcioId, 10);
+      if (isNaN(cid)) {
+        return res.status(400).json({ error: 'consorcioId inválido' });
+      }
+      const cons = await prisma.consorcio.findFirst({
+        where: { id: cid, deletedAt: null, activo: true },
+      });
+      if (!cons) {
+        return res.status(400).json({ error: 'Consorcio no encontrado' });
+      }
+      propiedadData.consorcioId = cid;
+    }
+
+    // Verificar que los propietarios (clientes con rol) existen si se proporcionan
     const propietarioIds = data.propietarioIds || [];
     if (propietarioIds.length > 0) {
-      const propietarios = await prisma.propietario.findMany({
+      const propietarios = await prisma.cliente.findMany({
         where: {
           id: { in: propietarioIds.map(id => parseInt(id)) },
           deletedAt: null,
-          activo: true
+          activo: true,
+          roles: {
+            some: {
+              rol: { codigo: 'PROPIETARIO', activo: true },
+              deletedAt: null,
+              activo: true
+            }
+          }
         }
       });
 
@@ -219,7 +291,8 @@ export const createPropiedad = async (req, res) => {
           tipoPropiedad: true,
           estadoPropiedad: true,
           destino: true,
-          ambientes: true
+          ambientes: true,
+          consorcio: true,
         }
       });
 
@@ -248,6 +321,7 @@ export const createPropiedad = async (req, res) => {
           estadoPropiedad: true,
           destino: true,
           ambientes: true,
+          consorcio: true,
           propietarios: {
             where: { activo: true },
             include: {
@@ -326,8 +400,36 @@ export const updatePropiedad = async (req, res) => {
       tipoPropiedadId: updateData.tipoPropiedadId ? parseInt(updateData.tipoPropiedadId) : null,
       estadoPropiedadId: updateData.estadoPropiedadId ? parseInt(updateData.estadoPropiedadId) : null,
       destinoId: updateData.destinoId ? parseInt(updateData.destinoId) : null,
-      ambientesId: updateData.ambientesId ? parseInt(updateData.ambientesId) : null
+      ambientesId: updateData.ambientesId ? parseInt(updateData.ambientesId) : null,
+      superficieM2:
+        updateData.superficieM2 !== undefined
+          ? parseSuperficieM2(updateData.superficieM2)
+          : propiedad.superficieM2,
+      administraImpuestosInmobiliaria:
+        updateData.administraImpuestosInmobiliaria !== undefined
+          ? Boolean(updateData.administraImpuestosInmobiliaria)
+          : propiedad.administraImpuestosInmobiliaria,
     };
+
+    if (updateData.consorcioId !== undefined) {
+      if (updateData.consorcioId === null || updateData.consorcioId === '') {
+        propiedadUpdateData.consorcioId = null;
+      } else {
+        const cid = parseInt(updateData.consorcioId, 10);
+        if (isNaN(cid)) {
+          return res.status(400).json({ error: 'consorcioId inválido' });
+        }
+        const cons = await prisma.consorcio.findFirst({
+          where: { id: cid, deletedAt: null, activo: true },
+        });
+        if (!cons) {
+          return res.status(400).json({ error: 'Consorcio no encontrado' });
+        }
+        propiedadUpdateData.consorcioId = cid;
+      }
+    } else {
+      propiedadUpdateData.consorcioId = propiedad.consorcioId;
+    }
 
     // Actualizar propiedad y propietarios en una transacción
     const updated = await prisma.$transaction(async (tx) => {
@@ -351,12 +453,19 @@ export const updatePropiedad = async (req, res) => {
 
         // Crear nuevas relaciones activas
         if (propietarioIds.length > 0) {
-          // Verificar que los propietarios existen
-          const propietarios = await tx.propietario.findMany({
+          // Verificar que los propietarios (clientes con rol PROPIETARIO) existen
+          const propietarios = await tx.cliente.findMany({
             where: {
-              id: { in: propietarioIds.map(id => parseInt(id)) },
+              id: { in: propietarioIds.map(pid => parseInt(pid)) },
               deletedAt: null,
-              activo: true
+              activo: true,
+              roles: {
+                some: {
+                  rol: { codigo: 'PROPIETARIO', activo: true },
+                  deletedAt: null,
+                  activo: true
+                }
+              }
             }
           });
 
@@ -419,6 +528,7 @@ export const updatePropiedad = async (req, res) => {
           estadoPropiedad: true,
           destino: true,
           ambientes: true,
+          consorcio: true,
           propietarios: {
             where: { activo: true },
             include: {

@@ -10,6 +10,7 @@ import {
   FormControl,
   FormControlLabel,
   IconButton,
+  InputAdornment,
   InputLabel,
   MenuItem,
   Paper,
@@ -31,7 +32,12 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import { DatePicker } from '@mui/x-date-pickers/DatePicker';
+import dayjs from 'dayjs';
 import api from '../api';
+import ConfirmDialog from './ConfirmDialog';
 
 // Configuración de campos especiales por tipo de catálogo
 const CATALOGO_CONFIG = {
@@ -46,7 +52,6 @@ const CATALOGO_CONFIG = {
   'localidades': {
     title: 'Localidades',
     fields: [
-      { name: 'codigo', label: 'Código', type: 'text', required: false },
       { name: 'nombre', label: 'Nombre', type: 'text', required: true },
       { name: 'provinciaId', label: 'Provincia', type: 'select', required: true, 
         optionsEndpoint: '/catalogos/provincias', optionLabel: 'nombre', optionValue: 'id' },
@@ -114,6 +119,16 @@ const CATALOGO_CONFIG = {
       { name: 'activo', label: 'Activo', type: 'switch', required: false }
     ]
   },
+  'oficinas-virtuales': {
+    title: 'Oficinas Virtuales',
+    disableAdd: true,
+    disableDelete: true,
+    fields: [
+      { name: 'nombre', label: 'Impuesto / Servicio', type: 'text', required: true, disabled: true },
+      { name: 'usuario', label: 'Usuario', type: 'text', required: false, placeholder: 'Usuario de la oficina virtual' },
+      { name: 'password', label: 'Contraseña', type: 'password', required: false }
+    ]
+  },
   'tipos-cargo': {
     title: 'Tipos de Cargo',
     fields: [
@@ -157,6 +172,13 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
   const [editingCampo, setEditingCampo] = useState(null);
   const [campoFormData, setCampoFormData] = useState({ codigo: '', nombre: '', orden: 0 });
   const [campoErrorMessage, setCampoErrorMessage] = useState('');
+  const [campoAEliminar, setCampoAEliminar] = useState(null);
+  const [registroAEliminar, setRegistroAEliminar] = useState(null);
+  const [passwordVisible, setPasswordVisible] = useState({});
+
+  useEffect(() => {
+    if (!dialogOpen) setPasswordVisible({});
+  }, [dialogOpen]);
 
   const config = CATALOGO_CONFIG[tipo] || { ...DEFAULT_CONFIG, title: tipo.replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) };
   const fields = config.fields || DEFAULT_CONFIG.fields;
@@ -251,6 +273,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
       return response.data;
     },
     onSuccess: () => {
+      setRegistroAEliminar(null);
       queryClient.invalidateQueries(['catalogos-abm', tipo]);
     },
     onError: (error) => {
@@ -368,6 +391,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
       }
     },
     onSuccess: () => {
+      setCampoAEliminar(null);
       if (esTipoImpuesto) {
         queryClient.invalidateQueries(['tipos-impuesto-propiedad-campos', tipoImpuestoId]);
       } else if (esTipoCargo) {
@@ -433,9 +457,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
   };
 
   const handleDeleteCampo = (id) => {
-    if (window.confirm('¿Está seguro de eliminar este campo?')) {
-      deleteCampoMutation.mutate(id);
-    }
+    setCampoAEliminar(id);
   };
 
   const handleSubmit = (e) => {
@@ -474,14 +496,19 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
     if (editingItem) {
       updateMutation.mutate({ id: editingItem.id, data: submitData });
     } else {
-      createMutation.mutate(submitData);
+      // Solo campos del formulario: evita enviar id, provincia anidada, etc. (duplicaba PK al crear)
+      const createPayload = {};
+      fields.forEach((field) => {
+        if (submitData[field.name] !== undefined) {
+          createPayload[field.name] = submitData[field.name];
+        }
+      });
+      createMutation.mutate(createPayload);
     }
   };
 
   const handleDelete = (id) => {
-    if (window.confirm('¿Está seguro de eliminar este registro?')) {
-      deleteMutation.mutate(id);
-    }
+    setRegistroAEliminar(id);
   };
 
   const renderField = (field) => {
@@ -524,6 +551,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
             rows={3}
             required={field.required}
             placeholder={field.placeholder}
+            disabled={field.disabled}
           />
         );
       
@@ -543,15 +571,20 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
       
       case 'date':
         return (
-          <TextField
+          <DatePicker
             key={field.name}
-            fullWidth
             label={field.label}
-            type="date"
-            value={value}
-            onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
-            required={field.required}
-            InputLabelProps={{ shrink: true }}
+            value={value ? dayjs(value) : null}
+            onChange={(newValue) => setFormData({ ...formData, [field.name]: newValue ? newValue.format('YYYY-MM-DD') : '' })}
+            slotProps={{
+              textField: {
+                fullWidth: true,
+                required: field.required
+              },
+              actionBar: {
+                actions: ['clear', 'today']
+              }
+            }}
           />
         );
       
@@ -590,11 +623,26 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
             key={field.name}
             fullWidth
             label={field.label}
-            type="password"
+            type={passwordVisible[field.name] ? 'text' : 'password'}
             value={value}
             onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
             required={field.required}
             placeholder={field.placeholder}
+            disabled={field.disabled}
+            InputProps={{
+              endAdornment: (
+                <InputAdornment position="end">
+                  <IconButton
+                    onClick={() => setPasswordVisible((p) => ({ ...p, [field.name]: !p[field.name] }))}
+                    onMouseDown={(e) => e.preventDefault()}
+                    aria-label={passwordVisible[field.name] ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    edge="end"
+                  >
+                    {passwordVisible[field.name] ? <VisibilityOff /> : <Visibility />}
+                  </IconButton>
+                </InputAdornment>
+              )
+            }}
           />
         );
       
@@ -608,6 +656,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
             onChange={(e) => setFormData({ ...formData, [field.name]: e.target.value })}
             required={field.required}
             placeholder={field.placeholder}
+            disabled={field.disabled}
           />
         );
     }
@@ -647,6 +696,26 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
 
   return (
     <Paper sx={{ p: 3 }}>
+      <ConfirmDialog
+        open={campoAEliminar != null}
+        onClose={() => setCampoAEliminar(null)}
+        title="Eliminar campo"
+        message="¿Está seguro de eliminar este campo?"
+        confirmLabel="Eliminar"
+        confirmColor="error"
+        loading={deleteCampoMutation.isPending}
+        onConfirm={() => { if (campoAEliminar != null) deleteCampoMutation.mutate(campoAEliminar); }}
+      />
+      <ConfirmDialog
+        open={registroAEliminar != null}
+        onClose={() => setRegistroAEliminar(null)}
+        title="Eliminar registro"
+        message="¿Está seguro de eliminar este registro?"
+        confirmLabel="Eliminar"
+        confirmColor="error"
+        loading={deleteMutation.isPending}
+        onConfirm={() => { if (registroAEliminar != null) deleteMutation.mutate(registroAEliminar); }}
+      />
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
         <Typography variant="h5">{config.title}</Typography>
         <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
@@ -659,13 +728,15 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
             }
             label="Mostrar inactivos"
           />
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => handleOpenDialog()}
-          >
-            Nuevo
-          </Button>
+          {!config.disableAdd && (
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => handleOpenDialog()}
+            >
+              Nuevo
+            </Button>
+          )}
         </Box>
       </Box>
 
@@ -676,7 +747,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
       )}
 
       <TableContainer>
-        <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
+        <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' }, '& .MuiTableCell-head': { py: 0.5, px: 1 } }}>
           <TableHead>
             <TableRow>
               {fields.filter(f => f.type !== 'switch' && f.name !== 'usuario' && f.name !== 'password').map(field => (
@@ -712,9 +783,11 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
                     <IconButton size="small" onClick={() => handleOpenDialog(item)}>
                       <EditIcon />
                     </IconButton>
-                    <IconButton size="small" color="error" onClick={() => handleDelete(item.id)}>
-                      <DeleteIcon />
-                    </IconButton>
+                    {!config.disableDelete && (
+                      <IconButton size="small" color="error" onClick={() => handleDelete(item.id)}>
+                        <DeleteIcon />
+                      </IconButton>
+                    )}
                   </TableCell>
                 </TableRow>
               ))
@@ -763,7 +836,7 @@ export default function CatalogoABM({ tipo, mostrarInactivos = false, onMostrarI
                   
                   {campos && campos.length > 0 ? (
                     <TableContainer>
-                      <Table size="small" sx={{ '& .MuiTableCell-root': { padding: '6px 8px' } }}>
+                      <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.5, px: 1, fontSize: '0.875rem' }, '& .MuiTableCell-head': { py: 0.5, px: 1 } }}>
                         <TableHead>
                           <TableRow>
                             <TableCell>Código</TableCell>

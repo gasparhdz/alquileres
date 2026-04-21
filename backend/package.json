@@ -7,11 +7,14 @@
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "test": "cross-env NODE_ENV=test vitest run",
+    "test:watch": "cross-env NODE_ENV=test vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "prisma:seed": "node prisma/seed/index.js",
-    "truncate": "node prisma/seed/index.js"
+    "truncate": "node prisma/seed/index.js",
+    "compare-seed": "node scripts/compare-seed-with-db.js"
   },
   "prisma": {
     "seed": "node prisma/seed/index.js"
@@ -22,15 +25,21 @@
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "bcrypt": "^5.1.1",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^5.0.1",
+    "express-rate-limit": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "playwright": "^1.57.0",
-    "puppeteer": "^23.8.0"
+    "puppeteer": "^23.8.0",
+    "winston": "^3.19.0"
   },
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "nodemon": "^3.1.7",
-    "prisma": "^5.20.0"
+    "prisma": "^5.22.0",
+    "supertest": "^7.2.2",
+    "vitest": "^4.0.18"
   }
 }

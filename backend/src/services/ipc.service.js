@@ -1,6 +1,4 @@
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import prisma from '../db/prisma.js';
 
 // Serie mensual del IPC nivel general nacional (base dic-2016=100)
 // Fuente: API Series de Tiempo (dataseries: https://apis.datos.gob.ar/series/api/datasets/?id=148.3_INIVELNAL_DICI_M_26)

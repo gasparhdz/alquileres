@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Box,
@@ -22,7 +23,6 @@ import {
   Snackbar,
   Switch,
   FormControlLabel,
-  IconButton,
   InputAdornment,
   CircularProgress,
   Dialog,
@@ -35,18 +35,26 @@ import {
   Card,
   CardContent,
   Pagination,
-  Tooltip,
   Tabs,
-  Tab
+  Tab,
+  Fab
 } from '@mui/material';
-import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
-import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import SyncIcon from '@mui/icons-material/Sync';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import SearchIcon from '@mui/icons-material/Search';
+import AddIcon from '@mui/icons-material/Add';
 import SaveIcon from '@mui/icons-material/Save';
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
+import HomeWorkIcon from '@mui/icons-material/HomeWork';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import { liquidacionApi } from '../api/liquidacion';
 import api from '../api';
+import ConfirmDialog from '../components/ConfirmDialog';
+import RequirePermission from '../components/RequirePermission';
+import TablaImpuestos from '../components/Pendientes/TablaImpuestos';
+import TablaExpensas from '../components/Pendientes/TablaExpensas';
 import dayjs from 'dayjs';
 import 'dayjs/locale/es';
 
@@ -92,6 +100,8 @@ const parseImporteFormatted = (value) => {
 };
 
 export default function PendientesImpuestos() {
+  const [searchParams] = useSearchParams();
+
   const [periodo, setPeriodo] = useState(() => {
     const ahora = new Date();
     return `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}`;
@@ -99,6 +109,19 @@ export default function PendientesImpuestos() {
   const [periodoDate, setPeriodoDate] = useState(() => dayjs());
   const [tipoImpuesto, setTipoImpuesto] = useState('');
   const [search, setSearch] = useState('');
+
+  // Inicializar periodo y search desde la URL si existen
+  useEffect(() => {
+    const p = searchParams.get('periodo');
+    const s = searchParams.get('search');
+    if (p) {
+      setPeriodo(p);
+      setPeriodoDate(dayjs(p + '-01').isValid() ? dayjs(p + '-01') : dayjs());
+    }
+    if (s != null && s !== '') {
+      setSearch(decodeURIComponent(s));
+    }
+  }, [searchParams]);
   const [generarDialog, setGenerarDialog] = useState(false);
   const [periodoGenerar, setPeriodoGenerar] = useState(() => {
     const ahora = new Date();
@@ -116,11 +139,22 @@ export default function PendientesImpuestos() {
   const [quienSoportaCostoEditado, setQuienSoportaCostoEditado] = useState({}); // Estado para "Cobrar a" editado { itemId: quienSoportaCostoId }
   const [verCompletados, setVerCompletados] = useState(false); // Switch para mostrar completados
   const [camposEnFoco, setCamposEnFoco] = useState({}); // Estado para rastrear qué campos están en foco { itemId: true }
-  
+
+  // Cambios pendientes de guardar (batch). Forma: { [itemId]: { importe?, pagadoPorActorId?, quienSoportaCostoId?, actorFacturadoId?, vencimiento? } }
+  const [cambiosPendientes, setCambiosPendientes] = useState({});
+  // Estados para UI (errores de validación, etc.)
+  const [itemsSaving, setItemsSaving] = useState({}); // solo durante batch save
+  const [itemsError, setItemsError] = useState({}); // { itemId: true } - items con error
+  const [valoresOriginales, setValoresOriginales] = useState({}); // { itemId: valor } - valores al entrar en focus
+
+  // Refs para navegación por teclado entre inputs
+  const importeInputRefs = useRef({});
+
   const [successMessage, setSuccessMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
+  const [confirmarAutocompletar, setConfirmarAutocompletar] = useState(null); // { tipo: 'assa'|'epe'|'litoralgas'|'siat', periodo: string }
 
   const [incidenciasDialogOpen, setIncidenciasDialogOpen] = useState(false);
   const [incidenciaForm, setIncidenciaForm] = useState({
@@ -185,7 +219,7 @@ export default function PendientesImpuestos() {
 
   const actores = useMemo(() => {
     if (!actoresResponse) return [];
-    return Array.isArray(actoresResponse) 
+    return Array.isArray(actoresResponse)
       ? actoresResponse.filter(a => a.activo === true)
       : [];
   }, [actoresResponse]);
@@ -228,11 +262,11 @@ export default function PendientesImpuestos() {
     if (!impuestosCompletados) return false;
     const impuestos = impuestosCompletados.impuestos || [];
     const expensas = impuestosCompletados.expensas || [];
-    
+
     // Verificar si hay items completados en impuestos
     const totalItemsImpuestos = impuestos.reduce((total, grupo) => total + (grupo.items || []).length, 0);
     const totalItemsExpensas = expensas.length;
-    
+
     return totalItemsImpuestos > 0 || totalItemsExpensas > 0;
   }, [impuestosCompletados]);
 
@@ -273,10 +307,72 @@ export default function PendientesImpuestos() {
     }, 0);
   }, [expensasData]);
 
+  // Auto-expandir accordions que tienen items pendientes
+  useEffect(() => {
+    if (!impuestosData || !Array.isArray(impuestosData)) return;
+
+    const nuevosExpandidos = {};
+    impuestosData.forEach(grupo => {
+      const tipo = grupo.tipoImpuesto?.codigo || 'SIN_TIPO';
+      const items = grupo.items || [];
+      const tienePendientes = items.some(esItemPendiente);
+      // Solo auto-expandir si tiene pendientes, mantener colapsado si no
+      nuevosExpandidos[tipo] = tienePendientes;
+    });
+
+    setExpandedAccordions(prev => {
+      // Solo actualizar si es la primera carga o cambió el período
+      const keys = Object.keys(nuevosExpandidos);
+      const prevKeys = Object.keys(prev);
+      if (prevKeys.length === 0 || keys.some(k => prev[k] === undefined)) {
+        return { ...prev, ...nuevosExpandidos };
+      }
+      return prev;
+    });
+  }, [impuestosData, periodo]);
+
+  // Auto-expandir accordions de expensas que tienen items pendientes
+  useEffect(() => {
+    if (!expensasData || !Array.isArray(expensasData)) return;
+
+    // Agrupar por propiedad para verificar pendientes
+    const expensasPorPropiedad = {};
+    expensasData.forEach(expensa => {
+      const propiedadKey = expensa.propiedad || 'SIN_PROPIEDAD';
+      if (!expensasPorPropiedad[propiedadKey]) {
+        expensasPorPropiedad[propiedadKey] = [];
+      }
+      expensasPorPropiedad[propiedadKey].push(expensa);
+    });
+
+    const nuevosExpandidos = {};
+    Object.entries(expensasPorPropiedad).forEach(([propiedad, expensas]) => {
+      const tienePendientes = expensas.some(expensa => {
+        const ordPendiente = expensa.estadoItemORD
+          ? expensa.estadoItemORD.codigo === 'PENDIENTE'
+          : (expensa.importeORD === null || expensa.importeORD === undefined || expensa.importeORD === 0 || expensa.importeORD === '');
+        const extPendiente = expensa.estadoItemEXT
+          ? expensa.estadoItemEXT.codigo === 'PENDIENTE'
+          : (expensa.importeEXT === null || expensa.importeEXT === undefined || expensa.importeEXT === 0 || expensa.importeEXT === '');
+        return (expensa.itemIdORD && ordPendiente) || (expensa.itemIdEXT && extPendiente);
+      });
+      nuevosExpandidos[propiedad] = tienePendientes;
+    });
+
+    setExpandedAccordions(prev => {
+      const keys = Object.keys(nuevosExpandidos);
+      const prevKeys = Object.keys(prev);
+      if (prevKeys.length === 0 || keys.some(k => prev[k] === undefined)) {
+        return { ...prev, ...nuevosExpandidos };
+      }
+      return prev;
+    });
+  }, [expensasData, periodo]);
+
   // Filtrar y procesar datos de impuestos según filtros
   const itemsAgrupados = useMemo(() => {
     if (!impuestosData || !Array.isArray(impuestosData)) return {};
-    
+
     // Filtrar por tipo de impuesto si está seleccionado
     let gruposFiltrados = impuestosData;
     if (tipoImpuesto) {
@@ -285,17 +381,18 @@ export default function PendientesImpuestos() {
       );
     }
 
-    // Filtrar por búsqueda (propiedad o inquilino)
-    if (search) {
-      const searchLower = search.toLowerCase();
+    // Filtrar por búsqueda (propiedad o inquilino), tolerando valores nulos
+    const searchTrimmed = (search || '').trim();
+    if (searchTrimmed) {
+      const searchLower = searchTrimmed.toLowerCase();
       gruposFiltrados = gruposFiltrados.map(grupo => ({
         ...grupo,
-        items: grupo.items.filter(item => {
-          const propiedadMatch = item.propiedad?.toLowerCase().includes(searchLower);
-          const inquilinoMatch = item.inquilino?.toLowerCase().includes(searchLower);
-          return propiedadMatch || inquilinoMatch;
+        items: (grupo.items || []).filter(item => {
+          const propiedadStr = (item.propiedad ?? '').toString().toLowerCase();
+          const inquilinoStr = (item.inquilino ?? '').toString().toLowerCase();
+          return propiedadStr.includes(searchLower) || inquilinoStr.includes(searchLower);
         })
-      })).filter(grupo => grupo.items.length > 0);
+      })).filter(grupo => (grupo.items || []).length > 0);
     }
 
     // Convertir a objeto para mantener compatibilidad con el código existente
@@ -304,25 +401,26 @@ export default function PendientesImpuestos() {
       const codigo = grupo.tipoImpuesto?.codigo || 'SIN_TIPO';
       agrupados[codigo] = grupo.items || [];
     });
-    
+
     return agrupados;
   }, [impuestosData, tipoImpuesto, search]);
 
   // Agrupar expensas por propiedad
   const expensasAgrupadas = useMemo(() => {
     if (!expensasData || !Array.isArray(expensasData)) return {};
-    
-    // Filtrar por búsqueda si existe
+
+    // Filtrar por búsqueda si existe, tolerando valores nulos
     let expensasFiltradas = expensasData;
-    if (search) {
-      const searchLower = search.toLowerCase();
+    const searchTrimmedExp = (search || '').trim();
+    if (searchTrimmedExp) {
+      const searchLower = searchTrimmedExp.toLowerCase();
       expensasFiltradas = expensasData.filter(expensa => {
-        const propiedadMatch = expensa.propiedad?.toLowerCase().includes(searchLower);
-        const inquilinoMatch = expensa.inquilino?.toLowerCase().includes(searchLower);
-        return propiedadMatch || inquilinoMatch;
+        const propiedadStr = (expensa.propiedad ?? '').toString().toLowerCase();
+        const inquilinoStr = (expensa.inquilino ?? '').toString().toLowerCase();
+        return propiedadStr.includes(searchLower) || inquilinoStr.includes(searchLower);
       });
     }
-    
+
     // Agrupar por propiedad
     const agrupadas = {};
     expensasFiltradas.forEach(expensa => {
@@ -332,10 +430,10 @@ export default function PendientesImpuestos() {
       }
       agrupadas[propiedadKey].push(expensa);
     });
-    
+
     return agrupadas;
   }, [expensasData, search]);
-  
+
   // Lista de propiedades para iterar
   const propiedadesExpensas = useMemo(() => {
     return Object.keys(expensasAgrupadas).sort();
@@ -355,6 +453,19 @@ export default function PendientesImpuestos() {
     setExpandedAccordions({});
   }, [periodo, verCompletados]);
 
+  // Cuando hay búsqueda, auto-expandir los acordeones que tienen resultados para que se vean visualmente
+  useEffect(() => {
+    const searchTrimmed = (search || '').trim();
+    if (!searchTrimmed) return;
+
+    setExpandedAccordions(prev => {
+      const next = { ...prev };
+      Object.keys(itemsAgrupados).forEach(k => { next[k] = true; });
+      Object.keys(expensasAgrupadas).forEach(k => { next[k] = true; });
+      return next;
+    });
+  }, [search, itemsAgrupados, expensasAgrupadas]);
+
   // Inicializar valores editados cuando se cargan los datos
   useEffect(() => {
     if (impuestosData && impuestosData.length > 0) {
@@ -363,7 +474,7 @@ export default function PendientesImpuestos() {
       setImportesEditados(prev => {
         const nuevos = { ...prev };
         let hayCambios = false;
-        
+
         impuestosData.forEach(grupo => {
           (grupo.items || []).forEach(item => {
             // Todos los items del nuevo endpoint están pendientes
@@ -371,7 +482,7 @@ export default function PendientesImpuestos() {
             const valorNuevo = item.importe !== null && item.importe !== undefined
               ? item.importe.toString()
               : '';
-            
+
             // Si no existe en el estado previo, inicializar
             if (valorActual === undefined || valorActual === null) {
               nuevos[item.itemId] = valorNuevo;
@@ -439,40 +550,24 @@ export default function PendientesImpuestos() {
             }
           });
         });
-        
+
         return hayCambios ? nuevos : prev;
       });
     }
   }, [impuestosData, expensasAgrupadas, itemsAgrupados, propiedadesExpensas]);
 
-  // Mutation para completar item (nuevo endpoint)
+  // Mutation para completar un solo item (usado por el diálogo de confirmar importe 0)
   const completarMutation = useMutation({
-    mutationFn: ({ itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null, pagadoPorActorId = null, vencimiento = null }) => 
+    mutationFn: ({ itemId, importe, actorFacturadoId = null, quienSoportaCostoId = null, pagadoPorActorId = null, vencimiento = null }) =>
       liquidacionApi.completarImporteItem(itemId, importe, actorFacturadoId, quienSoportaCostoId, pagadoPorActorId, vencimiento),
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
-      // Limpiar estados editados para este item
-      setImportesEditados(prev => {
-        const nuevo = { ...prev };
-        delete nuevo[variables.itemId];
-        return nuevo;
-      });
-      setActoresEditados(prev => {
-        const nuevo = { ...prev };
-        delete nuevo[variables.itemId];
-        return nuevo;
-      });
-      setPagadoPorEditado(prev => {
-        const nuevo = { ...prev };
-        delete nuevo[variables.itemId];
-        return nuevo;
-      });
-      setQuienSoportaCostoEditado(prev => {
-        const nuevo = { ...prev };
-        delete nuevo[variables.itemId];
-        return nuevo;
-      });
+      setImportesEditados(prev => { const n = { ...prev }; delete n[variables.itemId]; return n; });
+      setActoresEditados(prev => { const n = { ...prev }; delete n[variables.itemId]; return n; });
+      setPagadoPorEditado(prev => { const n = { ...prev }; delete n[variables.itemId]; return n; });
+      setQuienSoportaCostoEditado(prev => { const n = { ...prev }; delete n[variables.itemId]; return n; });
+      setCambiosPendientes(prev => { const n = { ...prev }; delete n[variables.itemId]; return n; });
       setSuccessMessage('Importe completado exitosamente');
       setSnackbarSeverity('success');
       setSnackbarOpen(true);
@@ -483,6 +578,66 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
     }
   });
+
+  /** Construye el array de ítems para el endpoint batch desde cambiosPendientes. */
+  const buildBatchPayload = () => {
+    return Object.entries(cambiosPendientes)
+      .map(([id, c]) => {
+        const itemId = parseInt(id, 10);
+        if (isNaN(itemId)) return null;
+        const importeVal = c.importe !== undefined && c.importe !== null && c.importe !== ''
+          ? (typeof c.importe === 'string' ? parseImporteFormatted(c.importe) : c.importe)
+          : (c.importe === '' || c.importe === null ? 0 : undefined);
+        return {
+          itemId,
+          ...(importeVal !== undefined && { importe: importeVal ?? 0 }),
+          ...(c.pagadoPorActorId !== undefined && { pagadoPorActorId: c.pagadoPorActorId || null }),
+          ...(c.quienSoportaCostoId !== undefined && { quienSoportaCostoId: c.quienSoportaCostoId || null }),
+          ...(c.actorFacturadoId !== undefined && { actorFacturadoId: c.actorFacturadoId || null }),
+          ...(c.vencimiento !== undefined && { vencimiento: c.vencimiento || null })
+        };
+      })
+      .filter(Boolean)
+      .filter(item => Object.keys(item).length > 1); // al menos itemId + un campo
+  };
+
+  const batchMutation = useMutation({
+    mutationFn: (items) => liquidacionApi.completarImportesBatch(items),
+    onSuccess: (data, itemsEnviados) => {
+      queryClient.invalidateQueries(['impuestos-pendientes']);
+      queryClient.invalidateQueries(['liquidaciones']);
+      const ids = (itemsEnviados || []).map(i => i.itemId);
+      setCambiosPendientes(prev => {
+        const n = { ...prev };
+        ids.forEach(id => delete n[id]);
+        return n;
+      });
+      setImportesEditados(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n; });
+      setActoresEditados(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n; });
+      setPagadoPorEditado(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n; });
+      setQuienSoportaCostoEditado(prev => { const n = { ...prev }; ids.forEach(id => delete n[id]); return n; });
+      setSuccessMessage(data?.actualizados ? `Se guardaron ${data.actualizados} ítem(s) correctamente.` : 'Cambios guardados.');
+      setSnackbarSeverity('success');
+      setSnackbarOpen(true);
+    },
+    onError: (error) => {
+      setErrorMessage(error.response?.data?.error || error.response?.data?.detalles || 'Error al guardar en lote');
+      setSnackbarSeverity('error');
+      setSnackbarOpen(true);
+    }
+  });
+
+  const handleGuardarCambiosMultiples = () => {
+    const payload = buildBatchPayload();
+    if (payload.length === 0) return;
+    const conCero = payload.filter(p => p.importe === 0);
+    if (conCero.length > 0) {
+      setConfirmImporteCeroPayload({ batch: true, items: payload });
+      setConfirmImporteCeroOpen(true);
+      return;
+    }
+    batchMutation.mutate(payload);
+  };
 
   // Función para ejecutar todos los scrapers en secuencia
   const ejecutarScrapers = async (periodoFormato, setMensajeProgreso) => {
@@ -572,13 +727,13 @@ export default function PendientesImpuestos() {
       // Primero generar los items
       setMensajeProgreso('Generando impuestos...');
       const data = await liquidacionApi.generarImpuestos(periodoGen);
-      
+
       // Convertir período a formato MM-YYYY para los scrapers
       const periodoFormato = formatPeriodo(periodoGen);
-      
+
       // Luego ejecutar los scrapers
       const { resultados, errores } = await ejecutarScrapers(periodoFormato, setMensajeProgreso);
-      
+
       return { ...data, scrapers: resultados, erroresScrapers: errores };
     },
     onSuccess: (data) => {
@@ -586,7 +741,7 @@ export default function PendientesImpuestos() {
       queryClient.invalidateQueries(['liquidaciones']);
       setGenerarDialog(false);
       setProgresoDialog(false);
-      
+
       const resumen = {
         creadas: data.creadas || 0,
         itemsCreados: data.itemsCreados || 0,
@@ -594,7 +749,7 @@ export default function PendientesImpuestos() {
       };
 
       // Resumen de scrapers
-      const totalActualizados = 
+      const totalActualizados =
         (data.scrapers?.assa?.actualizados || 0) +
         (data.scrapers?.epe?.actualizados || 0) +
         (data.scrapers?.litoralgas?.actualizados || 0) +
@@ -602,7 +757,7 @@ export default function PendientesImpuestos() {
         (data.scrapers?.santafe?.actualizados || 0);
 
       let mensaje = `Generación completada:\n• Liquidaciones creadas/reutilizadas: ${resumen.creadas}\n• Items de impuestos creados: ${resumen.itemsCreados}\n• Errores en generación: ${resumen.errores}`;
-      
+
       if (totalActualizados > 0) {
         mensaje += `\n\nAutocompletado de importes:\n• Total items actualizados: ${totalActualizados}`;
         if (data.scrapers?.assa?.actualizados) mensaje += `\n  - ASSA: ${data.scrapers.assa.actualizados}`;
@@ -630,7 +785,14 @@ export default function PendientesImpuestos() {
     },
     onError: (error) => {
       setProgresoDialog(false);
-      setErrorMessage(error.response?.data?.error || error.response?.data?.detalles || 'Error al generar liquidaciones de impuestos');
+      const data = error.response?.data || {};
+      const detalle = data.detalles || data.error;
+      const bloqueantes = data.contratosBloqueantes;
+      const ajustesVencidos = data.ajustesVencidos;
+      let msg = detalle || 'Error al generar liquidaciones de impuestos';
+      if (bloqueantes?.length) msg += ` (${bloqueantes.length} contrato(s) con fechas pendientes)`;
+      if (ajustesVencidos?.length) msg += ` (${ajustesVencidos.length} ajuste(s) vencidos sin cargar monto)`;
+      setErrorMessage(msg);
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     }
@@ -638,12 +800,12 @@ export default function PendientesImpuestos() {
 
   // Mutation para autocompletar desde ASSA
   const autocompletarAssaMutation = useMutation({
-    mutationFn: (periodoAssa) => 
+    mutationFn: (periodoAssa) =>
       api.post('/liquidaciones/impuestos/assa/autocompletar', { periodo: periodoAssa }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
-      
+
       const resumen = {
         actualizados: data.data?.actualizados || 0,
         sinFacturaEnPeriodo: data.data?.sinFacturaEnPeriodo || [],
@@ -651,32 +813,34 @@ export default function PendientesImpuestos() {
         warnings: data.data?.warnings || [],
         errores: data.data?.errores || []
       };
-      
+
       let mensaje = `Autocompletado ASSA completado:\n• Items actualizados: ${resumen.actualizados}`;
-      
+
       if (resumen.sinFacturaEnPeriodo.length > 0) {
         mensaje += `\n• Puntos sin factura en período: ${resumen.sinFacturaEnPeriodo.join(', ')}`;
       }
-      
+
       if (resumen.sinMatchPunto.length > 0) {
         mensaje += `\n• Puntos en ASSA sin configurar: ${resumen.sinMatchPunto.join(', ')}`;
       }
-      
+
       if (resumen.warnings.length > 0) {
         mensaje += `\n• Advertencias: ${resumen.warnings.join('; ')}`;
       }
-      
+
       if (resumen.errores.length > 0) {
         mensaje += `\n• Errores: ${resumen.errores.join('; ')}`;
         setSnackbarSeverity('warning');
       } else {
         setSnackbarSeverity('success');
       }
-      
+
+      setConfirmarAutocompletar(null);
       setSuccessMessage(mensaje);
       setSnackbarOpen(true);
     },
     onError: (error) => {
+      setConfirmarAutocompletar(null);
       setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde ASSA');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
@@ -685,12 +849,12 @@ export default function PendientesImpuestos() {
 
   // Mutation para autocompletar desde EPE
   const autocompletarEpeMutation = useMutation({
-    mutationFn: (periodoEpe) => 
+    mutationFn: (periodoEpe) =>
       api.post('/liquidaciones/impuestos/epe/autocompletar', { periodo: periodoEpe }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
-      
+
       const resumen = {
         actualizados: data.data?.actualizados || 0,
         sinFacturaEnPeriodo: data.data?.sinFacturaEnPeriodo || [],
@@ -698,32 +862,34 @@ export default function PendientesImpuestos() {
         warnings: data.data?.warnings || [],
         errores: data.data?.errores || []
       };
-      
+
       let mensaje = `Autocompletado EPE completado:\n• Items actualizados: ${resumen.actualizados}`;
-      
+
       if (resumen.sinFacturaEnPeriodo.length > 0) {
         mensaje += `\n• Clientes sin factura en período: ${resumen.sinFacturaEnPeriodo.join(', ')}`;
       }
-      
+
       if (resumen.sinMatchNroCliente.length > 0) {
         mensaje += `\n• Clientes en EPE sin configurar: ${resumen.sinMatchNroCliente.join(', ')}`;
       }
-      
+
       if (resumen.warnings.length > 0) {
         mensaje += `\n• Advertencias: ${resumen.warnings.join('; ')}`;
       }
-      
+
       if (resumen.errores.length > 0) {
         mensaje += `\n• Errores: ${resumen.errores.join('; ')}`;
         setSnackbarSeverity('warning');
       } else {
         setSnackbarSeverity('success');
       }
-      
+
+      setConfirmarAutocompletar(null);
       setSuccessMessage(mensaje);
       setSnackbarOpen(true);
     },
     onError: (error) => {
+      setConfirmarAutocompletar(null);
       setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde EPE');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
@@ -737,20 +903,18 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
       return;
     }
-    
+
     // Convertir YYYY-MM a MM-YYYY para el backend
     const periodoAssa = formatPeriodo(periodo);
-    
+
     if (!/^\d{2}-\d{4}$/.test(periodoAssa)) {
       setErrorMessage('El período debe tener el formato MM-YYYY');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
       return;
     }
-    
-    if (window.confirm(`¿Desea autocompletar los importes de AGUA desde ASSA para el período ${periodoAssa}?`)) {
-      autocompletarAssaMutation.mutate(periodoAssa);
-    }
+
+    setConfirmarAutocompletar({ tipo: 'assa', periodo: periodoAssa });
   };
 
   const handleAutocompletarEpe = () => {
@@ -760,30 +924,28 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
       return;
     }
-    
+
     // Convertir YYYY-MM a MM-YYYY para el backend
     const periodoEpe = formatPeriodo(periodo);
-    
+
     if (!/^\d{2}-\d{4}$/.test(periodoEpe)) {
       setErrorMessage('El período debe tener el formato MM-YYYY');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
       return;
     }
-    
-    if (window.confirm(`¿Desea autocompletar los importes de LUZ desde EPE para el período ${periodoEpe}?`)) {
-      autocompletarEpeMutation.mutate(periodoEpe);
-    }
+
+    setConfirmarAutocompletar({ tipo: 'epe', periodo: periodoEpe });
   };
 
   // Mutation para autocompletar desde Litoralgas
   const autocompletarLitoralgasMutation = useMutation({
-    mutationFn: (periodoLitoralgas) => 
+    mutationFn: (periodoLitoralgas) =>
       api.post('/liquidaciones/impuestos/litoralgas/autocompletar', { periodo: periodoLitoralgas }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
-      
+
       const resumen = {
         actualizados: data.data?.actualizados || 0,
         sinFacturaEnPeriodo: data.data?.sinFacturaEnPeriodo || [],
@@ -791,32 +953,34 @@ export default function PendientesImpuestos() {
         warnings: data.data?.warnings || [],
         errores: data.data?.errores || []
       };
-      
+
       let mensaje = `Autocompletado Litoralgas completado:\n• Items actualizados: ${resumen.actualizados}`;
-      
+
       if (resumen.sinFacturaEnPeriodo.length > 0) {
         mensaje += `\n• Clientes sin factura en período: ${resumen.sinFacturaEnPeriodo.join(', ')}`;
       }
-      
+
       if (resumen.sinMatchNroCli.length > 0) {
         mensaje += `\n• Clientes en Litoralgas sin configurar: ${resumen.sinMatchNroCli.join(', ')}`;
       }
-      
+
       if (resumen.warnings.length > 0) {
         mensaje += `\n• Advertencias: ${resumen.warnings.join('; ')}`;
       }
-      
+
       if (resumen.errores.length > 0) {
         mensaje += `\n• Errores: ${resumen.errores.join('; ')}`;
         setSnackbarSeverity('warning');
       } else {
         setSnackbarSeverity('success');
       }
-      
+
+      setConfirmarAutocompletar(null);
       setSuccessMessage(mensaje);
       setSnackbarOpen(true);
     },
     onError: (error) => {
+      setConfirmarAutocompletar(null);
       setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde Litoralgas');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
@@ -830,30 +994,28 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
       return;
     }
-    
+
     // Convertir YYYY-MM a MM-YYYY para el backend
     const periodoLitoralgas = formatPeriodo(periodo);
-    
+
     if (!/^\d{2}-\d{4}$/.test(periodoLitoralgas)) {
       setErrorMessage('El período debe tener el formato MM-YYYY');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
       return;
     }
-    
-    if (window.confirm(`¿Desea autocompletar los importes de GAS desde Litoralgas para el período ${periodoLitoralgas}?`)) {
-      autocompletarLitoralgasMutation.mutate(periodoLitoralgas);
-    }
+
+    setConfirmarAutocompletar({ tipo: 'litoralgas', periodo: periodoLitoralgas });
   };
 
   // Mutation para autocompletar desde SIAT (TGI)
   const autocompletarSiatMutation = useMutation({
-    mutationFn: (periodoSiat) => 
+    mutationFn: (periodoSiat) =>
       api.post('/liquidaciones/impuestos/siat/autocompletar', { periodo: periodoSiat }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
-      
+
       const resumen = {
         totalItems: data.data?.totalItems || 0,
         actualizados: data.data?.actualizados || 0,
@@ -862,32 +1024,34 @@ export default function PendientesImpuestos() {
         warnings: data.data?.warnings || [],
         errores: data.data?.errores || []
       };
-      
+
       let mensaje = `Autocompletado TGI (SIAT) completado:\n• Items procesados: ${resumen.totalItems}\n• Items actualizados: ${resumen.actualizados}`;
-      
+
       if (resumen.sinCredencialesPropiedad.length > 0) {
         mensaje += `\n• Propiedades sin credenciales (CTA/COD_GES): ${resumen.sinCredencialesPropiedad.join(', ')}`;
       }
-      
+
       if (resumen.sinLiqEnPeriodo.length > 0) {
         mensaje += `\n• Propiedades sin liquidación en período: ${resumen.sinLiqEnPeriodo.join(', ')}`;
       }
-      
+
       if (resumen.warnings.length > 0) {
         mensaje += `\n• Advertencias: ${resumen.warnings.join('; ')}`;
       }
-      
+
       if (resumen.errores.length > 0) {
         mensaje += `\n• Errores: ${resumen.errores.map(e => `Propiedad ${e.propiedadImpuestoId}: ${e.mensaje}`).join('; ')}`;
         setSnackbarSeverity('warning');
       } else {
         setSnackbarSeverity('success');
       }
-      
+
+      setConfirmarAutocompletar(null);
       setSuccessMessage(mensaje);
       setSnackbarOpen(true);
     },
     onError: (error) => {
+      setConfirmarAutocompletar(null);
       setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde SIAT');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
@@ -901,20 +1065,18 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
       return;
     }
-    
+
     // Convertir YYYY-MM a MM-YYYY para el backend
     const periodoSiat = formatPeriodo(periodo);
-    
+
     if (!/^\d{2}-\d{4}$/.test(periodoSiat)) {
       setErrorMessage('El período debe tener el formato MM-YYYY');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
       return;
     }
-    
-    if (window.confirm(`¿Desea autocompletar los importes de TGI desde SIAT Rosario para el período ${periodoSiat}?`)) {
-      autocompletarSiatMutation.mutate(periodoSiat);
-    }
+
+    setConfirmarAutocompletar({ tipo: 'siat', periodo: periodoSiat });
   };
 
   const incidenciaFormReset = {
@@ -983,109 +1145,232 @@ export default function PendientesImpuestos() {
   };
 
   const handleImporteChange = (itemId, value) => {
-    // Permitir comas como separador decimal
-    setImportesEditados(prev => ({
-      ...prev,
-      [itemId]: value
-    }));
+    setImportesEditados(prev => ({ ...prev, [itemId]: value }));
+    setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], importe: value } }));
+    if (itemsError[itemId]) {
+      setItemsError(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[itemId];
+        return nuevo;
+      });
+    }
   };
 
-  const handleCompletarItem = (item) => {
-    // Obtener el importe editado o usar el importe actual como valor por defecto
-    let importeStr = importesEditados[item.itemId];
+  // Auto-guardado inteligente para un item
+  const autoGuardarItem = async (item, options = {}) => {
+    const { skipIfUnchanged = true, confirmZero = true, overrideActores = {} } = options;
+    const itemId = item.itemId;
+
+    // Obtener valores actuales
+    let importeStr = importesEditados[itemId];
     if (importeStr === undefined || importeStr === '') {
-      importeStr = item.importe !== null && item.importe !== undefined 
+      importeStr = item.importe !== null && item.importe !== undefined
         ? String(item.importe)
-        : '';
+        : '0';
     }
     const importeNum = parseImporteFormatted(importeStr) ?? 0;
+
+    // Validar
     if (importeNum === null || importeNum < 0) {
-      setErrorMessage('El importe debe ser un número mayor o igual a 0');
-      setSnackbarSeverity('error');
-      setSnackbarOpen(true);
-      return;
+      setItemsError(prev => ({ ...prev, [itemId]: true }));
+      return false;
     }
-    const pagadoPorActorId = pagadoPorEditado[item.itemId] !== undefined
-      ? pagadoPorEditado[item.itemId]
-      : (item.pagadoPorActorId || null);
-    const quienSoportaCostoId = quienSoportaCostoEditado[item.itemId] !== undefined
-      ? quienSoportaCostoEditado[item.itemId]
-      : (item.quienSoportaCostoId || null);
-    const payload = {
-      itemId: item.itemId,
-      importe: importeNum,
-      pagadoPorActorId: pagadoPorActorId,
-      quienSoportaCostoId: quienSoportaCostoId
-    };
-    if (importeNum === 0) {
-      setConfirmImporteCeroPayload(payload);
-      setConfirmImporteCeroOpen(true);
-      return;
+
+    // Usar override si se proporciona, sino tomar del estado editado, sino del item original
+    const pagadoPorActorId = overrideActores.pagadoPorActorId !== undefined
+      ? overrideActores.pagadoPorActorId
+      : (pagadoPorEditado[itemId] !== undefined
+        ? pagadoPorEditado[itemId]
+        : (item.pagadoPorActorId || null));
+    const quienSoportaCostoId = overrideActores.quienSoportaCostoId !== undefined
+      ? overrideActores.quienSoportaCostoId
+      : (quienSoportaCostoEditado[itemId] !== undefined
+        ? quienSoportaCostoEditado[itemId]
+        : (item.quienSoportaCostoId || null));
+
+    // Verificar si hay cambios (comparar con valores originales del item)
+    const importeOriginal = parseFloat(item.importe) || 0;
+    const pagadoPorOriginal = item.pagadoPorActorId || null;
+    const quienSoportaOriginal = item.quienSoportaCostoId || null;
+
+    if (skipIfUnchanged &&
+      importeNum === importeOriginal &&
+      pagadoPorActorId === pagadoPorOriginal &&
+      quienSoportaCostoId === quienSoportaOriginal) {
+      return true; // No hay cambios, no guardar
     }
-    completarMutation.mutate(payload);
-  };
 
-  // Funciones para manejar expensas
-  const handleImporteChangeExpensas = (itemId, value) => {
-    // Permitir comas como separador decimal
-    setImportesEditados(prev => ({
-      ...prev,
-      [itemId]: value
-    }));
-  };
-
-  const handleActorChangeExpensas = (itemId, tipo, actorId) => {
-    setActoresEditados(prev => ({
-      ...prev,
-      [itemId]: {
-        ...prev[itemId],
-        [tipo]: actorId ? parseInt(actorId) : null
-      }
-    }));
-  };
-
-  const handleCompletarItemExpensasIndividual = (expensa, tipo) => {
-    const itemId = tipo === 'ORD' ? expensa.itemIdORD : expensa.itemIdEXT;
-    if (!itemId) return;
-
-    // Obtener importe
-    let importeStr = tipo === 'ORD' 
-      ? importesEditados[expensa.itemIdORD]
-      : importesEditados[expensa.itemIdEXT];
-    
-    if (importeStr === undefined || importeStr === '') {
-      const importeOriginal = tipo === 'ORD' ? expensa.importeORD : expensa.importeEXT;
-      importeStr = importeOriginal !== null && importeOriginal !== undefined 
-        ? String(importeOriginal)
-        : '';
-    }
-    
-    const importeNum = parseImporteFormatted(importeStr) ?? 0;
-    if (importeNum === null || importeNum < 0) {
-      setErrorMessage('El importe debe ser un número mayor o igual a 0');
-      setSnackbarSeverity('error');
-      setSnackbarOpen(true);
-      return;
-    }
-    const actoresItem = actoresEditados[itemId] || {};
-    const pagadoPorActorId = actoresItem.pagadoPorActorId !== undefined 
-      ? actoresItem.pagadoPorActorId 
-      : (tipo === 'ORD' ? expensa.pagadoPorActorIdORD : expensa.pagadoPorActorIdEXT);
-    const quienSoportaCostoId = actoresItem.quienSoportaCostoId !== undefined
-      ? actoresItem.quienSoportaCostoId
-      : (tipo === 'ORD' ? expensa.quienSoportaCostoIdORD : expensa.quienSoportaCostoIdEXT);
     const payload = {
       itemId: itemId,
       importe: importeNum,
       pagadoPorActorId: pagadoPorActorId,
       quienSoportaCostoId: quienSoportaCostoId
     };
-    if (importeNum === 0) {
+
+    // Si el importe es 0 y confirmZero es true, mostrar confirmación
+    if (importeNum === 0 && confirmZero) {
       setConfirmImporteCeroPayload(payload);
       setConfirmImporteCeroOpen(true);
-      return;
+      return false;
     }
-    completarMutation.mutate(payload);
+
+    // Marcar como guardando
+    setItemsSaving(prev => ({ ...prev, [itemId]: true }));
+    setItemsError(prev => {
+      const nuevo = { ...prev };
+      delete nuevo[itemId];
+      return nuevo;
+    });
+
+    try {
+      await api.patch(`/liquidaciones/liquidacion-items/${itemId}`, {
+        importe: importeNum,
+        pagadoPorActorId,
+        quienSoportaCostoId
+      });
+
+      // Éxito - limpiar estado de guardando
+      setItemsSaving(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[itemId];
+        return nuevo;
+      });
+
+      // Refrescar datos
+      queryClient.invalidateQueries(['impuestos-pendientes']);
+      return true;
+    } catch (error) {
+      console.error('Error al auto-guardar item:', error);
+      setItemsSaving(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[itemId];
+        return nuevo;
+      });
+      setItemsError(prev => ({ ...prev, [itemId]: true }));
+      return false;
+    }
+  };
+
+  // Función legacy para compatibilidad (usada por el diálogo de confirmación de importe 0)
+  const handleCompletarItem = (item) => {
+    autoGuardarItem(item, { skipIfUnchanged: false, confirmZero: true });
+  };
+
+  // Funciones para manejar expensas
+  const handleImporteChangeExpensas = (itemId, value) => {
+    setImportesEditados(prev => ({ ...prev, [itemId]: value }));
+    setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], importe: value } }));
+  };
+
+  const handleActorChangeExpensas = (itemId, tipo, actorId) => {
+    const val = actorId ? parseInt(actorId) : null;
+    setActoresEditados(prev => ({ ...prev, [itemId]: { ...prev[itemId], [tipo]: val } }));
+    setCambiosPendientes(prev => ({
+      ...prev,
+      [itemId]: {
+        ...prev[itemId],
+        ...(tipo === 'pagadoPorActorId' && { pagadoPorActorId: val }),
+        ...(tipo === 'quienSoportaCostoId' && { quienSoportaCostoId: val })
+      }
+    }));
+  };
+
+  // Auto-guardado para expensas
+  const autoGuardarExpensa = async (expensa, tipo, options = {}) => {
+    const { skipIfUnchanged = true, confirmZero = true, overrideActores = {} } = options;
+    const itemId = tipo === 'ORD' ? expensa.itemIdORD : expensa.itemIdEXT;
+    if (!itemId) return false;
+
+    // Obtener importe
+    let importeStr = importesEditados[itemId];
+    if (importeStr === undefined || importeStr === '') {
+      const importeOriginal = tipo === 'ORD' ? expensa.importeORD : expensa.importeEXT;
+      importeStr = importeOriginal !== null && importeOriginal !== undefined
+        ? String(importeOriginal)
+        : '0';
+    }
+
+    const importeNum = parseImporteFormatted(importeStr) ?? 0;
+    if (importeNum === null || importeNum < 0) {
+      setItemsError(prev => ({ ...prev, [itemId]: true }));
+      return false;
+    }
+
+    const actoresItem = actoresEditados[itemId] || {};
+    const pagadoPorActorId = overrideActores.pagadoPorActorId !== undefined
+      ? overrideActores.pagadoPorActorId
+      : (actoresItem.pagadoPorActorId !== undefined
+        ? actoresItem.pagadoPorActorId
+        : (tipo === 'ORD' ? expensa.pagadoPorActorIdORD : expensa.pagadoPorActorIdEXT));
+    const quienSoportaCostoId = overrideActores.quienSoportaCostoId !== undefined
+      ? overrideActores.quienSoportaCostoId
+      : (actoresItem.quienSoportaCostoId !== undefined
+        ? actoresItem.quienSoportaCostoId
+        : (tipo === 'ORD' ? expensa.quienSoportaCostoIdORD : expensa.quienSoportaCostoIdEXT));
+
+    // Verificar si hay cambios
+    const importeOriginal = parseFloat(tipo === 'ORD' ? expensa.importeORD : expensa.importeEXT) || 0;
+    const pagadoPorOriginal = (tipo === 'ORD' ? expensa.pagadoPorActorIdORD : expensa.pagadoPorActorIdEXT) || null;
+    const quienSoportaOriginal = (tipo === 'ORD' ? expensa.quienSoportaCostoIdORD : expensa.quienSoportaCostoIdEXT) || null;
+
+    if (skipIfUnchanged &&
+      importeNum === importeOriginal &&
+      pagadoPorActorId === pagadoPorOriginal &&
+      quienSoportaCostoId === quienSoportaOriginal) {
+      return true;
+    }
+
+    const payload = {
+      itemId: itemId,
+      importe: importeNum,
+      pagadoPorActorId: pagadoPorActorId,
+      quienSoportaCostoId: quienSoportaCostoId
+    };
+
+    if (importeNum === 0 && confirmZero) {
+      setConfirmImporteCeroPayload(payload);
+      setConfirmImporteCeroOpen(true);
+      return false;
+    }
+
+    // Marcar como guardando
+    setItemsSaving(prev => ({ ...prev, [itemId]: true }));
+    setItemsError(prev => {
+      const nuevo = { ...prev };
+      delete nuevo[itemId];
+      return nuevo;
+    });
+
+    try {
+      await api.patch(`/liquidaciones/liquidacion-items/${itemId}`, {
+        importe: importeNum,
+        pagadoPorActorId,
+        quienSoportaCostoId
+      });
+
+      setItemsSaving(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[itemId];
+        return nuevo;
+      });
+
+      queryClient.invalidateQueries(['impuestos-pendientes']);
+      return true;
+    } catch (error) {
+      console.error('Error al auto-guardar expensa:', error);
+      setItemsSaving(prev => {
+        const nuevo = { ...prev };
+        delete nuevo[itemId];
+        return nuevo;
+      });
+      setItemsError(prev => ({ ...prev, [itemId]: true }));
+      return false;
+    }
+  };
+
+  // Función legacy para compatibilidad
+  const handleCompletarItemExpensasIndividual = (expensa, tipo) => {
+    autoGuardarExpensa(expensa, tipo, { skipIfUnchanged: false, confirmZero: true });
   };
 
   const handleAccordionChange = (tipoImpuesto) => (event, isExpanded) => {
@@ -1108,24 +1393,24 @@ export default function PendientesImpuestos() {
       setSnackbarOpen(true);
       return;
     }
-    
+
     // Convertir a YYYY-MM para enviar al backend
     const periodoBackend = periodoToBackend(periodoGenerar);
-    
+
     // Validar si ya hay items generados para este período
     try {
       setMensajeProgreso('Verificando items pendientes...');
       setProgresoDialog(true);
       setGenerarDialog(false);
-      
+
       // Consultar si hay items pendientes para este período
       const response = await liquidacionApi.getImpuestosPendientes(periodoBackend, false);
       const impuestosData = response.impuestos || [];
       const expensasData = response.expensas || [];
-      
+
       // Verificar si hay items pendientes
       let hayPendientes = false;
-      
+
       // Verificar impuestos (por estado)
       for (const grupo of impuestosData) {
         const items = grupo.items || [];
@@ -1135,7 +1420,7 @@ export default function PendientesImpuestos() {
           break;
         }
       }
-      
+
       // Verificar expensas si no hay pendientes en impuestos (por estado)
       if (!hayPendientes) {
         for (const expensa of expensasData) {
@@ -1147,13 +1432,13 @@ export default function PendientesImpuestos() {
           }
         }
       }
-      
+
       // Si no hay items pendientes, verificar si hay items generados
       if (!hayPendientes) {
         // Contar total de items (completados y pendientes)
         const totalItems = impuestosData.reduce((total, grupo) => total + (grupo.items || []).length, 0) +
-                          expensasData.length;
-        
+          expensasData.length;
+
         if (totalItems === 0) {
           // No hay items generados, proceder con la generación
           setMensajeProgreso('Generando impuestos...');
@@ -1191,220 +1476,217 @@ export default function PendientesImpuestos() {
 
 
 
+  const autocompletarTitles = { assa: 'Autocompletar AGUA (ASSA)', epe: 'Autocompletar LUZ (EPE)', litoralgas: 'Autocompletar GAS (Litoralgas)', siat: 'Autocompletar TGI (SIAT)' };
+  const autocompletarMessages = {
+    assa: (p) => `¿Desea autocompletar los importes de AGUA desde ASSA para el período ${p}?`,
+    epe: (p) => `¿Desea autocompletar los importes de LUZ desde EPE para el período ${p}?`,
+    litoralgas: (p) => `¿Desea autocompletar los importes de GAS desde Litoralgas para el período ${p}?`,
+    siat: (p) => `¿Desea autocompletar los importes de TGI desde SIAT Rosario para el período ${p}?`
+  };
+
   return (
-    <Box sx={{ p: 2 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-        <Typography variant="h4">Carga de Impuestos</Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
-          <Button
-            variant="outlined"
-            size="small"
-            onClick={() => setIncidenciasDialogOpen(true)}
-            disabled={crearIncidenciaMutation.isPending}
-          >
-            Incidencias
-          </Button>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<PlayArrowIcon />}
-            onClick={() => setGenerarDialog(true)}
-            disabled={generarMutation.isPending}
-            sx={{
-              background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-              '&:hover': {
-                background: 'linear-gradient(135deg, #047857 0%, #059669 100%)'
-              }
-            }}
-          >
-            {generarMutation.isPending ? 'Generando y sincronizando...' : 'Generar Impuestos'}
-          </Button>
-        </Box>
-      </Box>
+    <Box sx={{ maxWidth: '100%', overflowX: 'hidden' }}>
+      <ConfirmDialog
+        open={!!confirmarAutocompletar}
+        onClose={() => setConfirmarAutocompletar(null)}
+        title={confirmarAutocompletar ? autocompletarTitles[confirmarAutocompletar.tipo] : ''}
+        message={confirmarAutocompletar ? autocompletarMessages[confirmarAutocompletar.tipo]?.(confirmarAutocompletar.periodo) : ''}
+        confirmLabel="Autocompletar"
+        confirmColor="primary"
+        loading={autocompletarAssaMutation.isPending || autocompletarEpeMutation.isPending || autocompletarLitoralgasMutation.isPending || autocompletarSiatMutation.isPending}
+        onConfirm={() => {
+          if (!confirmarAutocompletar) return;
+          const { tipo, periodo } = confirmarAutocompletar;
+          if (tipo === 'assa') autocompletarAssaMutation.mutate(periodo);
+          else if (tipo === 'epe') autocompletarEpeMutation.mutate(periodo);
+          else if (tipo === 'litoralgas') autocompletarLitoralgasMutation.mutate(periodo);
+          else if (tipo === 'siat') autocompletarSiatMutation.mutate(periodo);
+        }}
+      />
+      <Typography variant="h4" gutterBottom sx={{ fontSize: { xs: '1.5rem', md: '2.125rem' } }}>
+        Carga de Impuestos
+      </Typography>
 
-      {/* Filtros */}
-      <Card sx={{ mb: 2 }}>
-        <CardContent sx={{ py: 1.5, '&:last-child': { pb: 1.5 } }}>
-          <Grid container spacing={1.5} alignItems="center">
-            <Grid item xs={12} sm={6} md={3}>
-              <LocalizationProvider 
-                dateAdapter={AdapterDayjs} 
-                adapterLocale="es"
-                localeText={{
-                  todayButtonLabel: 'Hoy'
-                }}
-              >
-                <DatePicker
-                  label="Período"
-                  views={['month', 'year']}
-                  openTo="month"
-                  value={periodoDate}
-                  onChange={(newValue) => {
-                    if (newValue) {
-                      setPeriodoDate(newValue);
-                      const year = newValue.year();
-                      const month = String(newValue.month() + 1).padStart(2, '0');
-                      // Convertir a YYYY-MM para el query (backend espera YYYY-MM)
-                      setPeriodo(`${year}-${month}`);
-                    }
-                  }}
-                  format="MMMM YYYY"
-                  slotProps={{
-                    textField: {
-                      size: 'small',
-                      fullWidth: true,
-                      InputLabelProps: { shrink: true },
-                      sx: {
-                        '& .MuiInputBase-root': {
-                          height: '36px'
-                        },
-                        '& .MuiInputBase-input': {
-                          py: '8px'
-                        }
-                      }
-                    },
-                    actionBar: {
-                      actions: ['today']
-                    }
-                  }}
-                  sx={{
-                    '& .MuiPickersDay-root.Mui-selected': {
-                      backgroundColor: 'primary.main',
-                      '&:hover': {
-                        backgroundColor: 'primary.dark'
-                      }
-                    },
-                    '& .MuiPickersMonth-monthButton.Mui-selected': {
-                      backgroundColor: 'primary.main',
-                      color: 'white',
-                      '&:hover': {
-                        backgroundColor: 'primary.dark'
-                      }
-                    },
-                    '& .MuiPickersYear-yearButton.Mui-selected': {
-                      backgroundColor: 'primary.main',
-                      color: 'white',
-                      '&:hover': {
-                        backgroundColor: 'primary.dark'
-                      }
-                    },
-                    '& .MuiPickersActionBar-actionButton': {
-                      color: 'primary.main',
-                      '&:hover': {
-                        backgroundColor: 'primary.light',
-                        color: 'white'
-                      }
-                    }
-                  }}
-                />
-              </LocalizationProvider>
-            </Grid>
-            <Grid item xs={12} sm={6} md={3}>
-              <FormControl fullWidth size="small">
-                <InputLabel>Tipo de Impuesto</InputLabel>
-                <Select
-                  value={tipoImpuesto}
-                  label="Tipo de Impuesto"
-                  onChange={(e) => {
-                    setTipoImpuesto(e.target.value);
-                  }}
-                >
-                  <MenuItem value="">Todos</MenuItem>
-                  {tiposImpuesto.map(tipo => {
-                    const grupo = impuestosData?.find(g => g.tipoImpuesto?.codigo === tipo);
-                    return (
-                      <MenuItem key={tipo} value={tipo}>
-                        {grupo?.tipoImpuesto?.nombre || tipo}
-                      </MenuItem>
-                    );
-                  })}
-                </Select>
-              </FormControl>
-            </Grid>
-            <Grid item xs={12} sm={6} md={4}>
-              <TextField
-                fullWidth
-                size="small"
-                label="Buscar (Dirección / Inquilino)"
-                value={search}
-                onChange={(e) => {
-                  setSearch(e.target.value);
-                }}
-                placeholder="Buscar..."
-              />
-            </Grid>
-            <Grid item xs={12} sm={6} md={2}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={verCompletados}
-                    onChange={(e) => setVerCompletados(e.target.checked)}
-                    size="small"
-                  />
-                }
-                label="Ver completados"
-                sx={{ mt: 0.5 }}
-              />
-            </Grid>
-          </Grid>
-        </CardContent>
-      </Card>
-
-      {/* Tabs para Impuestos y Expensas */}
-      <Card sx={{ mb: 2 }}>
-        <Tabs value={tabValue} onChange={(e, newValue) => setTabValue(newValue)}>
-          <Tab 
+      {/* TABS - Mismo estilo que Clientes */}
+      <Paper sx={{ mb: { xs: 2, md: 3 } }}>
+        <Tabs
+          value={tabValue}
+          onChange={(e, newValue) => setTabValue(newValue)}
+          aria-label="tabs de impuestos"
+          variant="fullWidth"
+        >
+          <Tab
             label={
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <span>Impuestos</span>
+              <Box display="flex" alignItems="center" gap={0.5} sx={{ flexWrap: 'nowrap' }}>
+                <ReceiptLongIcon fontSize="small" />
+                <Typography variant="body2" component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                  Impuestos
+                </Typography>
+                <Typography variant="body2" component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>
+                  Imp.
+                </Typography>
                 {cantidadImpuestosPendientes > 0 && (
                   <Chip
                     label={cantidadImpuestosPendientes}
                     size="small"
                     color="warning"
-                    sx={{
-                      height: '20px',
-                      fontSize: '0.7rem',
-                      fontWeight: 700,
-                      backgroundColor: '#ffc107',
-                      color: '#856404',
-                      '& .MuiChip-label': {
-                        px: 0.75,
-                        py: 0
-                      }
-                    }}
+                    sx={{ height: 20, '& .MuiChip-label': { px: 1 } }}
                   />
                 )}
               </Box>
             }
+            id="impuestos-tab-0"
+            aria-controls="impuestos-tabpanel-0"
+            sx={{ minHeight: { xs: 48, md: 64 }, px: { xs: 1, md: 2 } }}
           />
-          <Tab 
+          <Tab
             label={
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <span>Expensas</span>
+              <Box display="flex" alignItems="center" gap={0.5} sx={{ flexWrap: 'nowrap' }}>
+                <HomeWorkIcon fontSize="small" />
+                <Typography variant="body2" component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                  Expensas
+                </Typography>
+                <Typography variant="body2" component="span" sx={{ display: { xs: 'inline', sm: 'none' } }}>
+                  Exp.
+                </Typography>
                 {cantidadExpensasPendientes > 0 && (
                   <Chip
                     label={cantidadExpensasPendientes}
                     size="small"
                     color="warning"
-                    sx={{
-                      height: '20px',
-                      fontSize: '0.7rem',
-                      fontWeight: 700,
-                      backgroundColor: '#ffc107',
-                      color: '#856404',
-                      '& .MuiChip-label': {
-                        px: 0.75,
-                        py: 0
-                      }
-                    }}
+                    sx={{ height: 20, '& .MuiChip-label': { px: 1 } }}
                   />
                 )}
               </Box>
             }
+            id="impuestos-tab-1"
+            aria-controls="impuestos-tabpanel-1"
+            sx={{ minHeight: { xs: 48, md: 64 }, px: { xs: 1, md: 2 } }}
           />
         </Tabs>
-      </Card>
+      </Paper>
+
+      {/* Filtros y Acciones - Responsive */}
+      <Box sx={{
+        display: 'flex',
+        flexDirection: { xs: 'column', md: 'row' },
+        justifyContent: 'space-between',
+        alignItems: { xs: 'stretch', md: 'center' },
+        mb: 2,
+        gap: 2
+      }}>
+        <Box sx={{
+          display: 'flex',
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: 2,
+          alignItems: { xs: 'stretch', sm: 'center' },
+          flexWrap: 'wrap',
+          flex: 1
+        }}>
+          <TextField
+            size="small"
+            placeholder="Buscar por dirección o inquilino..."
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+            }}
+            sx={{ width: { xs: '100%', sm: 280 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
+          <DatePicker
+            label="Período"
+            views={['month', 'year']}
+            openTo="month"
+            value={periodoDate}
+            onChange={(newValue) => {
+              if (newValue) {
+                setPeriodoDate(newValue);
+                const year = newValue.year();
+                const month = String(newValue.month() + 1).padStart(2, '0');
+                setPeriodo(`${year}-${month}`);
+              }
+            }}
+            format="MMMM YYYY"
+            slotProps={{
+              textField: {
+                size: 'small',
+                sx: { width: { xs: '100%', sm: 180 } }
+              },
+              actionBar: {
+                actions: ['today']
+              }
+            }}
+          />
+          <FormControlLabel
+            control={
+              <Switch
+                checked={verCompletados}
+                onChange={(e) => setVerCompletados(e.target.checked)}
+                size="small"
+              />
+            }
+            label={<Typography variant="body2">Ver completados</Typography>}
+            sx={{ ml: 0 }}
+          />
+        </Box>
+        <Box sx={{
+          display: 'flex',
+          flexDirection: { xs: 'column', sm: 'row' },
+          gap: 1,
+          width: { xs: '100%', md: 'auto' }
+        }}>
+          <RequirePermission codigo="impuestos.crear">
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setIncidenciasDialogOpen(true)}
+              disabled={crearIncidenciaMutation.isPending}
+              sx={{ height: 36, width: { xs: '100%', md: 'auto' } }}
+            >
+              Cargar Incidencia
+            </Button>
+          </RequirePermission>
+          <RequirePermission codigo="impuestos.crear">
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => setGenerarDialog(true)}
+              disabled={generarMutation.isPending}
+              sx={{ height: 36, py: 0, px: 1.5, fontSize: '0.875rem', '& .MuiButton-startIcon': { marginRight: 0.5 }, width: { xs: '100%', md: 'auto' } }}
+            >
+              {generarMutation.isPending ? 'Generando...' : 'Generar Impuestos'}
+            </Button>
+          </RequirePermission>
+          {Object.keys(cambiosPendientes).length > 0 && (
+            <RequirePermission codigo="impuestos.editar">
+              <Button
+                variant="contained"
+                color="secondary"
+                startIcon={batchMutation.isPending ? <CircularProgress size={18} color="inherit" /> : <SaveIcon />}
+                onClick={handleGuardarCambiosMultiples}
+                disabled={batchMutation.isPending}
+                sx={{
+                  height: 36,
+                  py: 0,
+                  px: 1.5,
+                  fontSize: '0.875rem',
+                  fontWeight: 600,
+                  boxShadow: 2,
+                  width: { xs: '100%', md: 'auto' }
+                }}
+              >
+                {batchMutation.isPending ? 'Guardando...' : `Guardar Cambios (${Object.keys(cambiosPendientes).length})`}
+              </Button>
+            </RequirePermission>
+          )}
+        </Box>
+      </Box>
 
       {/* Contenido según tab seleccionado */}
       {isLoading ? (
@@ -1415,7 +1697,7 @@ export default function PendientesImpuestos() {
         // Tab de Impuestos
         (!impuestosData || impuestosData.length === 0) ? (
           hayItemsCompletados ? (
-            <Alert severity="success" sx={{ 
+            <Alert severity="success" sx={{
               backgroundColor: '#d1fae5',
               border: '1px solid #10b981',
               '& .MuiAlert-icon': {
@@ -1430,387 +1712,67 @@ export default function PendientesImpuestos() {
             </Alert>
           )
         ) : (
-          <Box sx={{ mb: 2 }}>
-            {/* Calcular total de items pendientes (por estado, no por importe) */}
-            {(() => {
-              const totalPendientes = impuestosData.reduce((total, grupo) => {
-                const items = grupo.items || [];
-                const pendientes = items.filter(esItemPendiente);
-                return total + pendientes.length;
-              }, 0);
-
-              if (totalPendientes > 0) {
-                return (
-                  <Alert 
-                    severity="warning" 
-                    sx={{ 
-                      mb: 2,
-                      backgroundColor: '#fff3cd',
-                      border: '2px solid #ffc107',
-                      borderRadius: '8px',
-                      '& .MuiAlert-icon': {
-                        fontSize: '1.5rem',
-                        color: '#856404'
-                      },
-                      '& .MuiAlert-message': {
-                        fontSize: '1rem',
-                        fontWeight: 600,
-                        color: '#856404'
-                      }
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body1" sx={{ fontWeight: 700 }}>
-                        ⚠️ Atención: Hay {totalPendientes} item{totalPendientes !== 1 ? 's' : ''} pendiente{totalPendientes !== 1 ? 's' : ''} de completar
-                      </Typography>
-                    </Box>
-                  </Alert>
-                );
+          <TablaImpuestos
+            impuestosData={impuestosData}
+            tipoImpuesto={tipoImpuesto}
+            expandedAccordions={expandedAccordions}
+            onAccordionChange={handleAccordionChange}
+            verCompletados={verCompletados}
+            esItemPendiente={esItemPendiente}
+            parseImporteFormatted={parseImporteFormatted}
+            importesEditados={importesEditados}
+            camposEnFoco={camposEnFoco}
+            itemsError={itemsError}
+            itemsSaving={itemsSaving}
+            pagadoPorEditado={pagadoPorEditado}
+            quienSoportaCostoEditado={quienSoportaCostoEditado}
+            actores={actores}
+            actorInqId={actorInqId}
+            actorPropId={actorPropId}
+            onImporteChange={handleImporteChange}
+            onPagadoPorChange={(itemId, v) => {
+              setPagadoPorEditado(prev => ({ ...prev, [itemId]: v }));
+              setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], pagadoPorActorId: v } }));
+            }}
+            onQuienSoportaChange={(itemId, v) => {
+              setQuienSoportaCostoEditado(prev => ({ ...prev, [itemId]: v }));
+              setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], quienSoportaCostoId: v } }));
+            }}
+            onImporteFocus={(itemId, item, _itemIndex, _items, e) => {
+              setCamposEnFoco(prev => ({ ...prev, [itemId]: true }));
+              setValoresOriginales(prev => ({ ...prev, [itemId]: item.importe != null ? parseFloat(item.importe) : 0 }));
+              if (e?.target?.value) {
+                const num = parseImporteFormatted(e.target.value);
+                if (num !== null) handleImporteChange(itemId, num.toString().replace('.', ','));
               }
-              return null;
-            })()}
-            {/* Mostrar grupos de impuestos */}
-          {impuestosData
-            .filter(grupo => {
-              const codigo = grupo.tipoImpuesto?.codigo;
-              return !tipoImpuesto || codigo === tipoImpuesto;
-            })
-            .map((grupo) => {
-              const tipo = grupo.tipoImpuesto?.codigo || 'SIN_TIPO';
-              const items = grupo.items || [];
-              
-              // Filtrar solo los items en estado PENDIENTE (no por importe 0)
-              const itemsPendientes = items.filter(esItemPendiente);
-              
-              return (
-              <Accordion
-                key={tipo}
-                expanded={expandedAccordions[tipo] === true}
-                onChange={handleAccordionChange(tipo)}
-                sx={{ 
-                  mb: 0.5,
-                  '&:before': { display: 'none' },
-                  boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
-                  borderRadius: '8px',
-                  overflow: 'hidden',
-                  '&.Mui-expanded': {
-                    borderRadius: '8px'
+              setTimeout(() => { if (e?.target) e.target.select(); }, 0);
+            }}
+            onImporteBlur={(e, itemId, _item, itemIndex, items) => {
+              const wasEnterPressed = e.target.dataset.enterPressed === 'true';
+              e.target.dataset.enterPressed = 'false';
+              setCamposEnFoco(prev => { const n = { ...prev }; delete n[itemId]; return n; });
+              const valor = e.target.value.trim();
+              if (valor !== '' || wasEnterPressed) {
+                setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], importe: valor || '' } }));
+              }
+              if (wasEnterPressed) {
+                setTimeout(() => {
+                  const nextIndex = itemIndex + 1;
+                  if (nextIndex < items.length) {
+                    const nextInput = importeInputRefs.current[items[nextIndex].itemId];
+                    if (nextInput) nextInput.focus();
                   }
-                }}
-              >
-                <AccordionSummary
-                  expandIcon={<ExpandMoreIcon sx={{ fontSize: '0.9rem' }} />}
-                  sx={{
-                    minHeight: '28px !important',
-                    maxHeight: '28px !important',
-                    borderRadius: '8px',
-                    '& .MuiAccordionSummary-content': {
-                      my: 0,
-                      alignItems: 'center',
-                      minHeight: '28px !important'
-                    },
-                    background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-                    color: 'white',
-                    '&:hover': {
-                      background: 'linear-gradient(135deg, #047857 0%, #059669 100%)'
-                    },
-                    '&.Mui-expanded': {
-                      minHeight: '28px !important',
-                      maxHeight: '28px !important',
-                      background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-                      borderRadius: '8px 8px 0 0'
-                    },
-                    '& .MuiSvgIcon-root': {
-                      color: 'white'
-                    }
-                  }}
-                >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
-                    <Typography variant="body2" sx={{ flexGrow: 1, fontWeight: 500, fontSize: '0.875rem', color: 'white' }}>
-                      {grupo.tipoImpuesto?.nombre || grupo.tipoImpuesto?.codigo || tipo}
-                    </Typography>
-                    <Chip
-                      label={`${itemsPendientes.length} item${itemsPendientes.length !== 1 ? 's pendientes' : ' pendiente'}`}
-                      size="small"
-                      variant="outlined"
-                      sx={{ 
-                        height: '16px', 
-                        fontSize: '0.6rem', 
-                        '& .MuiChip-label': { px: 0.5, py: 0, color: 'white' },
-                        borderColor: 'rgba(255, 255, 255, 0.5)',
-                        color: 'white'
-                      }}
-                    />
-                  </Box>
-                </AccordionSummary>
-                <AccordionDetails sx={{ p: 0, '&.MuiAccordionDetails-root': { py: 0, borderRadius: '0 0 8px 8px' } }}>
-                  <TableContainer sx={{ borderRadius: '0 0 8px 8px', overflow: 'hidden', mt: 0 }}>
-                    <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.1, px: 0.75, fontSize: '0.8rem' } }}>
-                      <TableHead>
-                        <TableRow sx={{ '& .MuiTableCell-head': { py: 0.15, px: 0.75, fontWeight: 600, fontSize: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.04)', borderTop: 'none', '&:first-of-type': { borderTopLeftRadius: 0 }, '&:last-of-type': { borderTopRightRadius: 0 } } }}>
-                          <TableCell>Propiedad</TableCell>
-                          <TableCell>Inquilino</TableCell>
-                          <TableCell>Período</TableCell>
-                          <TableCell>Pagado por</TableCell>
-                          <TableCell>Cobrar a</TableCell>
-                          <TableCell>Importe Anterior</TableCell>
-                          <TableCell>Importe</TableCell>
-                          <TableCell align="center">Acción</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {items.map((item) => {
-                          // Obtener el valor editado del estado
-                          const valorEditado = importesEditados[item.itemId];
-                          const estaEnFoco = camposEnFoco[item.itemId] === true;
-                          
-                          // Determinar qué valor mostrar
-                          let valorAMostrar = '';
-                          if (estaEnFoco) {
-                            // Si está en foco, mostrar el valor sin formatear para edición
-                            if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
-                              valorAMostrar = String(valorEditado);
-                            } else {
-                              // Si no hay valor editado, convertir el importe original a formato editable
-                              const importeOriginal = item.importe !== null && item.importe !== undefined ? item.importe : 0;
-                              valorAMostrar = importeOriginal.toString().replace('.', ',');
-                            }
-                          } else {
-                            // Si no está en foco, mostrar formateado
-                            if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
-                              const valorNum = parseImporteFormatted(valorEditado);
-                              if (valorNum !== null) {
-                                valorAMostrar = formatNumber(valorNum);
-                              } else {
-                                valorAMostrar = String(valorEditado);
-                              }
-                            } else {
-                              // Mostrar el importe original formateado
-                              // Asegurar que item.importe sea un número antes de formatear
-                              const importeNum = item.importe !== null && item.importe !== undefined 
-                                ? (typeof item.importe === 'string' ? parseFloat(item.importe) : item.importe)
-                                : null;
-                              valorAMostrar = importeNum !== null && !isNaN(importeNum) ? formatNumber(importeNum) : '';
-                            }
-                          }
-                          
-                          return (
-                            <TableRow key={item.itemId} hover sx={{ '& .MuiTableCell-body': { py: 0.1 } }}>
-                              <TableCell>
-                                <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem', lineHeight: 1.2 }}>
-                                  {item.propiedad || '-'}
-                                </Typography>
-                              </TableCell>
-                              <TableCell sx={{ fontSize: '0.8rem' }}>{item.inquilino || '-'}</TableCell>
-                              <TableCell sx={{ fontSize: '0.8rem' }}>
-                                {item.periodoRef 
-                                  ? item.periodoRef.replace(/^(\d{4})-(\d{2})$/, '$2-$1')
-                                  : '-'
-                                }
-                              </TableCell>
-                              <TableCell sx={{ width: '140px', padding: '1px 4px' }}>
-                                <FormControl fullWidth size="small">
-                                  <Select
-                                    value={pagadoPorEditado[item.itemId] !== undefined 
-                                      ? pagadoPorEditado[item.itemId] 
-                                      : (item.pagadoPorActorId || '')}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      setPagadoPorEditado(prev => ({
-                                        ...prev,
-                                        [item.itemId]: e.target.value || null
-                                      }));
-                                    }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    onMouseDown={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    displayEmpty
-                                    sx={{
-                                      height: '22px',
-                                      fontSize: '0.75rem',
-                                      '& .MuiSelect-select': {
-                                        padding: '1px 4px',
-                                        fontSize: '0.75rem'
-                                      }
-                                    }}
-                                    disabled={completarMutation.isLoading}
-                                  >
-                                    <MenuItem value="">
-                                      <em>Sin definir</em>
-                                    </MenuItem>
-                                    {actores.filter(a => a.activo).map(actor => (
-                                      <MenuItem key={actor.id} value={actor.id}>
-                                        {actor.nombre}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-                              </TableCell>
-                              <TableCell sx={{ width: '140px', padding: '1px 4px' }}>
-                                <FormControl fullWidth size="small">
-                                  <Select
-                                    value={quienSoportaCostoEditado[item.itemId] !== undefined 
-                                      ? quienSoportaCostoEditado[item.itemId] 
-                                      : (item.quienSoportaCostoId || '')}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      setQuienSoportaCostoEditado(prev => ({
-                                        ...prev,
-                                        [item.itemId]: e.target.value || null
-                                      }));
-                                    }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    onMouseDown={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    displayEmpty
-                                    sx={{
-                                      height: '22px',
-                                      fontSize: '0.75rem',
-                                      '& .MuiSelect-select': {
-                                        padding: '1px 4px',
-                                        fontSize: '0.75rem'
-                                      }
-                                    }}
-                                    disabled={completarMutation.isLoading}
-                                  >
-                                    <MenuItem value="">
-                                      <em>Sin definir</em>
-                                    </MenuItem>
-                                    {actores.filter(a => a.activo && (a.id === actorInqId || a.id === actorPropId)).map(actor => (
-                                      <MenuItem key={actor.id} value={actor.id}>
-                                        {actor.nombre}
-                                      </MenuItem>
-                                    ))}
-                                  </Select>
-                                </FormControl>
-                              </TableCell>
-                              <TableCell sx={{ fontSize: '0.8rem', textAlign: 'right' }}>
-                                {item.importeAnterior !== null && item.importeAnterior !== undefined
-                                  ? formatNumber(typeof item.importeAnterior === 'string' ? parseFloat(item.importeAnterior) : item.importeAnterior)
-                                  : '-'}
-                              </TableCell>
-                              <TableCell sx={{ width: '120px', padding: '1px 4px' }}>
-                                <TextField
-                                  fullWidth
-                                  size="small"
-                                  type="text"
-                                  value={valorAMostrar}
-                                  onChange={(e) => {
-                                    e.stopPropagation();
-                                    // Permitir solo números, comas y puntos
-                                    const nuevoValor = e.target.value.replace(/[^\d,.-]/g, '');
-                                    handleImporteChange(item.itemId, nuevoValor);
-                                  }}
-                                  onFocus={(e) => {
-                                    e.stopPropagation();
-                                    setCamposEnFoco(prev => ({ ...prev, [item.itemId]: true }));
-                                    const valorActual = e.target.value;
-                                    if (valorActual) {
-                                      const num = parseImporteFormatted(valorActual);
-                                      if (num !== null) {
-                                        handleImporteChange(item.itemId, num.toString().replace('.', ','));
-                                      }
-                                    }
-                                    setTimeout(() => {
-                                      if (e.target) e.target.select();
-                                    }, 0);
-                                  }}
-                                  onBlur={(e) => {
-                                    setCamposEnFoco(prev => {
-                                      const nuevo = { ...prev };
-                                      delete nuevo[item.itemId];
-                                      return nuevo;
-                                    });
-                                    const valor = e.target.value;
-                                    if (valor && valor.trim() !== '') {
-                                      const num = parseImporteFormatted(valor);
-                                      if (num !== null) {
-                                        handleImporteChange(item.itemId, num.toString().replace('.', ','));
-                                      }
-                                    }
-                                  }}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                  }}
-                                  onMouseDown={(e) => {
-                                    e.stopPropagation();
-                                  }}
-                                  inputProps={{ 
-                                    style: { 
-                                      textAlign: 'right', 
-                                      fontSize: '0.75rem',
-                                      padding: '1px 4px'
-                                    }
-                                  }}
-                                  sx={{
-                                    width: '100%',
-                                    '& .MuiOutlinedInput-root': {
-                                      height: '22px',
-                                      '& fieldset': {
-                                        borderWidth: '1px'
-                                      }
-                                    },
-                                    '& .MuiInputBase-input': {
-                                      padding: '1px 4px',
-                                      height: '22px',
-                                      fontSize: '0.75rem'
-                                    }
-                                  }}
-                                  disabled={completarMutation.isLoading}
-                                />
-                              </TableCell>
-                              <TableCell align="center" sx={{ width: '50px', padding: '1px' }}>
-                                <Tooltip title="Guardar">
-                                  <span>
-                                    <IconButton
-                                      size="small"
-                                      color="success"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleCompletarItem(item);
-                                      }}
-                                      disabled={completarMutation.isLoading}
-                                      sx={{
-                                        padding: '4px',
-                                        '& .MuiSvgIcon-root': { fontSize: '1.1rem' },
-                                        '&:hover': {
-                                          backgroundColor: 'success.light',
-                                          color: 'white'
-                                        }
-                                      }}
-                                    >
-                                      {completarMutation.isLoading ? (
-                                        <CircularProgress size={18} />
-                                      ) : (
-                                        <SaveIcon fontSize="inherit" />
-                                      )}
-                                    </IconButton>
-                                  </span>
-                                </Tooltip>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
-                </AccordionDetails>
-              </Accordion>
-            );
-          })}
-          </Box>
+                }, 50);
+              }
+            }}
+            importeInputRefs={importeInputRefs}
+          />
         )
       ) : (
         // Tab de Expensas
         (propiedadesExpensas.length === 0) ? (
           hayExpensasCompletadas ? (
-            <Alert severity="success" sx={{ 
+            <Alert severity="success" sx={{
               backgroundColor: '#d1fae5',
               border: '1px solid #10b981',
               '& .MuiAlert-icon': {
@@ -1825,458 +1787,100 @@ export default function PendientesImpuestos() {
             </Alert>
           )
         ) : (
-          <Box sx={{ mb: 2 }}>
-            {/* Calcular total de expensas pendientes */}
-            {(() => {
-              const totalPendientes = propiedadesExpensas.reduce((total, propiedad) => {
-                const expensasGrupo = expensasAgrupadas[propiedad] || [];
-                return total + expensasGrupo.reduce((subtotal, expensa) => {
-                  let pendientes = 0;
-                  const ordPendiente = expensa.estadoItemORD ? expensa.estadoItemORD.codigo === 'PENDIENTE' : (expensa.importeORD === null || expensa.importeORD === undefined || expensa.importeORD === 0 || expensa.importeORD === '');
-                  const extPendiente = expensa.estadoItemEXT ? expensa.estadoItemEXT.codigo === 'PENDIENTE' : (expensa.importeEXT === null || expensa.importeEXT === undefined || expensa.importeEXT === 0 || expensa.importeEXT === '');
-                  if (expensa.itemIdORD && ordPendiente) pendientes++;
-                  if (expensa.itemIdEXT && extPendiente) pendientes++;
-                  return subtotal + pendientes;
-                }, 0);
-              }, 0);
-
-              if (totalPendientes > 0) {
-                return (
-                  <Alert 
-                    severity="warning" 
-                    sx={{ 
-                      mb: 2,
-                      backgroundColor: '#fff3cd',
-                      border: '2px solid #ffc107',
-                      borderRadius: '8px',
-                      '& .MuiAlert-icon': {
-                        fontSize: '1.5rem',
-                        color: '#856404'
-                      },
-                      '& .MuiAlert-message': {
-                        fontSize: '1rem',
-                        fontWeight: 600,
-                        color: '#856404'
-                      }
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                      <Typography variant="body1" sx={{ fontWeight: 700 }}>
-                        ⚠️ Atención: Hay {totalPendientes} item{totalPendientes !== 1 ? 's' : ''} de expensas pendiente{totalPendientes !== 1 ? 's' : ''} de completar
-                      </Typography>
-                    </Box>
-                  </Alert>
-                );
+          <TablaExpensas
+            expensasAgrupadas={expensasAgrupadas}
+            propiedadesExpensas={propiedadesExpensas}
+            expandedAccordions={expandedAccordions}
+            onAccordionChange={(propiedad, expanded) => setExpandedAccordions(prev => ({ ...prev, [propiedad]: expanded }))}
+            verCompletados={verCompletados}
+            parseImporteFormatted={parseImporteFormatted}
+            importesEditados={importesEditados}
+            camposEnFoco={camposEnFoco}
+            itemsError={itemsError}
+            itemsSaving={itemsSaving}
+            actoresEditados={actoresEditados}
+            actores={actores}
+            actorInqId={actorInqId}
+            actorPropId={actorPropId}
+            onImporteChange={handleImporteChangeExpensas}
+            onActorChange={handleActorChangeExpensas}
+            onImporteFocus={(itemId, importe, e) => {
+              setCamposEnFoco(prev => ({ ...prev, [itemId]: true }));
+              setValoresOriginales(prev => ({ ...prev, [itemId]: importe != null ? parseFloat(importe) : 0 }));
+              if (e?.target?.value) {
+                const num = parseImporteFormatted(e.target.value);
+                if (num !== null) handleImporteChangeExpensas(itemId, num.toString().replace('.', ','));
               }
-              return null;
-            })()}
-            {propiedadesExpensas.map((propiedad) => {
-              const expensasGrupo = expensasAgrupadas[propiedad] || [];
-              if (expensasGrupo.length === 0) return null;
-              
-              // Tomar la primera expensa del grupo para obtener datos comunes
-              const primeraExpensa = expensasGrupo[0];
-              const isExpanded = expandedAccordions[propiedad] === true;
-              
-              return (
-                <Accordion
-                  key={propiedad}
-                  expanded={isExpanded}
-                  onChange={(e, expanded) => {
-                    setExpandedAccordions(prev => ({
-                      ...prev,
-                      [propiedad]: expanded
-                    }));
-                  }}
-                  sx={{ 
-                    mb: 1, 
-                    '&:before': { display: 'none' },
-                    borderRadius: '8px',
-                    overflow: 'hidden',
-                    '&.Mui-expanded': {
-                      borderRadius: '8px'
+              setTimeout(() => { if (e?.target) e.target.select(); }, 0);
+            }}
+            onImporteBlur={(e, itemId, tipo, expensa, expensasGrupo) => {
+              const wasEnterPressed = e.target.dataset.enterPressed === 'true';
+              e.target.dataset.enterPressed = 'false';
+              setCamposEnFoco(prev => { const n = { ...prev }; delete n[itemId]; return n; });
+              const valor = e.target.value.trim();
+              if (valor !== '' || wasEnterPressed) {
+                setCambiosPendientes(prev => ({ ...prev, [itemId]: { ...prev[itemId], importe: valor || '' } }));
+              }
+              if (wasEnterPressed) {
+                setTimeout(() => {
+                  let nextItemId = null;
+                  if (tipo === 'ORD' && expensa.itemIdEXT) nextItemId = expensa.itemIdEXT;
+                  else {
+                    const currentIndex = expensasGrupo.findIndex(ee => ee.itemIdORD === itemId || ee.itemIdEXT === itemId);
+                    if (currentIndex >= 0 && currentIndex < expensasGrupo.length - 1) {
+                      const nextExpensa = expensasGrupo[currentIndex + 1];
+                      nextItemId = nextExpensa.itemIdORD || nextExpensa.itemIdEXT;
                     }
-                  }}
-                >
-                  <AccordionSummary
-                    expandIcon={<ExpandMoreIcon sx={{ fontSize: '0.9rem', color: 'white' }} />}
-                    sx={{
-                      background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-                      color: 'white',
-                      borderRadius: '8px',
-                      '&:hover': { background: 'linear-gradient(135deg, #047857 0%, #059669 100%)' },
-                      minHeight: '28px !important',
-                      maxHeight: '28px !important',
-                      '& .MuiAccordionSummary-content': {
-                        my: 0,
-                        alignItems: 'center',
-                        minHeight: '28px !important'
-                      },
-                      '&.Mui-expanded': { 
-                        minHeight: '28px !important',
-                        maxHeight: '28px !important',
-                        background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
-                        borderRadius: '8px 8px 0 0'
-                      },
-                      '& .MuiSvgIcon-root': {
-                        color: 'white'
-                      }
-                    }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', width: '100%', pr: 1 }}>
-                      <Typography variant="body2" fontWeight={600} sx={{ flexGrow: 1, fontSize: '0.875rem', color: 'white' }}>
-                        {propiedad}
-                      </Typography>
-                    </Box>
-                  </AccordionSummary>
-                  <AccordionDetails sx={{ p: 0, '&.MuiAccordionDetails-root': { py: 0, borderRadius: '0 0 8px 8px' } }}>
-                    <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: '0 0 8px 8px', overflow: 'hidden', border: 'none', boxShadow: 'none', mt: 0 }}>
-                      <Table size="small" sx={{ '& .MuiTableCell-root': { py: 0.15, px: 0.75, fontSize: '0.8rem' } }}>
-                        <TableHead>
-                          <TableRow sx={{ '& .MuiTableCell-head': { py: 0.25, px: 0.75, fontWeight: 600, fontSize: '0.75rem', backgroundColor: 'rgba(0, 0, 0, 0.04)', borderTop: 'none', '&:first-of-type': { borderTopLeftRadius: 0 }, '&:last-of-type': { borderTopRightRadius: 0 } } }}>
-                            <TableCell>Inquilino</TableCell>
-                            <TableCell>Tipo</TableCell>
-                            <TableCell>Período</TableCell>
-                            <TableCell>Pagado por</TableCell>
-                            <TableCell>Cobrar a</TableCell>
-                            <TableCell>Importe Anterior</TableCell>
-                            <TableCell>Importe</TableCell>
-                            <TableCell align="center">Acción</TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {expensasGrupo.map((expensa) => {
-                    // Renderizar fila para ORD
-                    const renderExpensaRow = (tipo, itemId, importe, importeAnterior, pagadoPorActorId, quienSoportaCostoId, pagadoPorActor, quienSoportaCosto, periodoRef, vencimiento) => {
-                      if (!itemId) return null;
-
-                      // Obtener el valor editado del estado
-                      const valorEditado = importesEditados[itemId];
-                      const estaEnFoco = camposEnFoco[itemId] === true;
-                      
-                      // Determinar qué valor mostrar
-                      let valorAMostrar = '';
-                      if (estaEnFoco) {
-                        // Si está en foco, mostrar el valor sin formatear para edición
-                        if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
-                          valorAMostrar = String(valorEditado);
-                        } else {
-                          // Si no hay valor editado, convertir el importe original a formato editable
-                          const importeOriginal = importe !== null && importe !== undefined ? importe : 0;
-                          valorAMostrar = importeOriginal.toString().replace('.', ',');
-                        }
-                      } else {
-                        if (valorEditado !== undefined && valorEditado !== null && valorEditado !== '') {
-                          const valorNum = parseImporteFormatted(valorEditado);
-                          valorAMostrar = valorNum !== null ? formatNumber(valorNum) : String(valorEditado);
-                        } else {
-                          const importeNum = importe !== null && importe !== undefined 
-                            ? (typeof importe === 'string' ? parseFloat(importe) : importe)
-                            : null;
-                          valorAMostrar = importeNum !== null && !isNaN(importeNum) ? formatNumber(importeNum) : '';
-                        }
-                      }
-
-                      const actoresItem = actoresEditados[itemId] || {};
-                      const pagadoPorActorIdActual = actoresItem.pagadoPorActorId !== undefined
-                        ? actoresItem.pagadoPorActorId
-                        : pagadoPorActorId;
-                      const quienSoportaCostoIdActual = actoresItem.quienSoportaCostoId !== undefined
-                        ? actoresItem.quienSoportaCostoId
-                        : quienSoportaCostoId;
-
-                      return (
-                        <TableRow key={`${itemId}-${tipo}`} hover sx={{ '& .MuiTableCell-body': { py: 0.15 } }}>
-                          <TableCell sx={{ fontSize: '0.8rem' }}>{primeraExpensa.inquilino || '-'}</TableCell>
-                          <TableCell sx={{ fontSize: '0.8rem' }}>
-                            {tipo === 'ORD' ? 'Ordinarias' : 'Extraordinarias'}
-                          </TableCell>
-                          <TableCell sx={{ fontSize: '0.8rem' }}>
-                            {periodoRef 
-                              ? periodoRef.replace(/^(\d{4})-(\d{2})$/, '$2-$1')
-                              : '-'
-                            }
-                          </TableCell>
-                          <TableCell sx={{ width: '140px', padding: '1px 4px' }}>
-                            <FormControl fullWidth size="small">
-                              <Select
-                                value={pagadoPorActorIdActual || ''}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  handleActorChangeExpensas(itemId, 'pagadoPorActorId', e.target.value);
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                displayEmpty
-                                sx={{
-                                  height: '26px',
-                                  fontSize: '0.75rem',
-                                  '& .MuiSelect-select': {
-                                    padding: '1px 4px',
-                                    fontSize: '0.75rem'
-                                  }
-                                }}
-                                disabled={completarMutation.isLoading}
-                              >
-                                <MenuItem value="">
-                                  <em>Sin definir</em>
-                                </MenuItem>
-                                {actores.filter(a => a.activo).map(actor => (
-                                  <MenuItem key={actor.id} value={actor.id}>
-                                    {actor.nombre}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </TableCell>
-                          <TableCell sx={{ width: '140px', padding: '1px 4px' }}>
-                            <FormControl fullWidth size="small">
-                              <Select
-                                value={quienSoportaCostoIdActual || ''}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  handleActorChangeExpensas(itemId, 'quienSoportaCostoId', e.target.value);
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                displayEmpty
-                                sx={{
-                                  height: '26px',
-                                  fontSize: '0.75rem',
-                                  '& .MuiSelect-select': {
-                                    padding: '1px 4px',
-                                    fontSize: '0.75rem'
-                                  }
-                                }}
-                                disabled={completarMutation.isLoading}
-                              >
-                                <MenuItem value="">
-                                  <em>Sin definir</em>
-                                </MenuItem>
-                                {actores.filter(a => a.activo && (a.id === actorInqId || a.id === actorPropId)).map(actor => (
-                                  <MenuItem key={actor.id} value={actor.id}>
-                                    {actor.nombre}
-                                  </MenuItem>
-                                ))}
-                              </Select>
-                            </FormControl>
-                          </TableCell>
-                          <TableCell sx={{ fontSize: '0.8rem', textAlign: 'right' }}>
-                            {importeAnterior !== null && importeAnterior !== undefined
-                              ? formatNumber(typeof importeAnterior === 'string' ? parseFloat(importeAnterior) : importeAnterior)
-                              : '-'}
-                          </TableCell>
-                          <TableCell sx={{ width: '120px', padding: '1px 4px' }}>
-                            <TextField
-                              fullWidth
-                              size="small"
-                              type="text"
-                              value={valorAMostrar}
-                              onChange={(e) => {
-                                e.stopPropagation();
-                                // Permitir solo números, comas y puntos
-                                const nuevoValor = e.target.value.replace(/[^\d,.-]/g, '');
-                                handleImporteChangeExpensas(itemId, nuevoValor);
-                              }}
-                              onFocus={(e) => {
-                                e.stopPropagation();
-                                setCamposEnFoco(prev => ({ ...prev, [itemId]: true }));
-                                const valorActual = e.target.value;
-                                if (valorActual) {
-                                  const num = parseImporteFormatted(valorActual);
-                                  if (num !== null) {
-                                    handleImporteChangeExpensas(itemId, num.toString().replace('.', ','));
-                                  }
-                                }
-                                setTimeout(() => { if (e.target) e.target.select(); }, 0);
-                              }}
-                              onBlur={(e) => {
-                                setCamposEnFoco(prev => {
-                                  const nuevo = { ...prev };
-                                  delete nuevo[itemId];
-                                  return nuevo;
-                                });
-                                const valor = e.target.value;
-                                if (valor && valor.trim() !== '') {
-                                  const num = parseImporteFormatted(valor);
-                                  if (num !== null) {
-                                    handleImporteChangeExpensas(itemId, num.toString().replace('.', ','));
-                                  }
-                                }
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                              inputProps={{
-                                style: {
-                                  textAlign: 'right',
-                                  fontSize: '0.75rem',
-                                  padding: '2px 4px'
-                                }
-                              }}
-                              sx={{
-                                width: '100%',
-                                '& .MuiOutlinedInput-root': {
-                                  height: '26px',
-                                  '& fieldset': { borderWidth: '1px' }
-                                },
-                                '& .MuiInputBase-input': {
-                                  padding: '2px 4px',
-                                  height: '26px',
-                                  fontSize: '0.75rem'
-                                }
-                              }}
-                              disabled={completarMutation.isLoading}
-                            />
-                          </TableCell>
-                          <TableCell align="center" sx={{ width: '50px', padding: '1px' }}>
-                            <Tooltip title="Guardar">
-                              <span>
-                                <IconButton
-                                  size="small"
-                                  color="success"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleCompletarItemExpensasIndividual(expensa, tipo);
-                                  }}
-                                  disabled={completarMutation.isLoading}
-                                  sx={{
-                                    padding: '4px',
-                                    '& .MuiSvgIcon-root': { fontSize: '1.1rem' },
-                                    '&:hover': {
-                                      backgroundColor: 'success.light',
-                                      color: 'white'
-                                    }
-                                  }}
-                                >
-                                  {completarMutation.isLoading ? (
-                                    <CircularProgress size={18} />
-                                  ) : (
-                                    <SaveIcon fontSize="inherit" />
-                                  )}
-                                </IconButton>
-                              </span>
-                            </Tooltip>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    };
-
-                            return (
-                              <React.Fragment key={`${expensa.propiedad}-${expensa.inquilino || 'sin-inquilino'}`}>
-                                {renderExpensaRow('ORD', expensa.itemIdORD, expensa.importeORD, expensa.importeAnteriorORD, expensa.pagadoPorActorIdORD, expensa.quienSoportaCostoIdORD, expensa.pagadoPorActorORD, expensa.quienSoportaCostoORD, expensa.periodoRef, expensa.vencimientoORD)}
-                                {renderExpensaRow('EXT', expensa.itemIdEXT, expensa.importeEXT, expensa.importeAnteriorEXT, expensa.pagadoPorActorIdEXT, expensa.quienSoportaCostoIdEXT, expensa.pagadoPorActorEXT, expensa.quienSoportaCostoEXT, expensa.periodoRef, expensa.vencimientoEXT)}
-                              </React.Fragment>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
-                  </AccordionDetails>
-                </Accordion>
-              );
-            })}
-          </Box>
+                  }
+                  if (nextItemId && importeInputRefs.current[nextItemId]) importeInputRefs.current[nextItemId].focus();
+                }, 50);
+              }
+            }}
+            onClearItemError={(itemId) => setItemsError(prev => { const n = { ...prev }; delete n[itemId]; return n; })}
+            importeInputRefs={importeInputRefs}
+          />
         )
       )}
 
-      {/* Dialog para generar liquidaciones */}
+      {/* Dialog para sincronizar impuestos y servicios */}
       <Dialog
         open={generarDialog}
         onClose={() => setGenerarDialog(false)}
+        closeAfterTransition={false}
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Generar Liquidaciones Automáticas</DialogTitle>
+        <DialogTitle>Sincronizar Impuestos y Servicios</DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 1 }}>
             <Alert severity="info" sx={{ mb: 2 }}>
-              Este proceso generará liquidaciones para todas las propiedades con impuestos asociados y sincronizará los importes y vencimientos con las oficinas virtuales correspondientes.
+              Este proceso buscará y registrará los comprobantes de impuestos y servicios pendientes para todas las propiedades, sincronizando los importes y vencimientos con las oficinas virtuales correspondientes.
             </Alert>
-            <LocalizationProvider 
-              dateAdapter={AdapterDayjs} 
-              adapterLocale="es"
-              localeText={{
-                todayButtonLabel: 'Hoy'
+            <DatePicker
+              label="Período"
+              views={['month', 'year']}
+              openTo="month"
+              value={periodoGenerarDate}
+              onChange={(newValue) => {
+                if (newValue) {
+                  setPeriodoGenerarDate(newValue);
+                  const year = newValue.year();
+                  const month = String(newValue.month() + 1).padStart(2, '0');
+                  setPeriodoGenerar(`${month}-${year}`);
+                }
               }}
-            >
-              <DatePicker
-                label="Período"
-                views={['month', 'year']}
-                openTo="month"
-                value={periodoGenerarDate}
-                onChange={(newValue) => {
-                  if (newValue) {
-                    setPeriodoGenerarDate(newValue);
-                    const year = newValue.year();
-                    const month = String(newValue.month() + 1).padStart(2, '0');
-                    // Guardar en formato MM-AAAA para mostrar al usuario
-                    setPeriodoGenerar(`${month}-${year}`);
-                  }
-                }}
-                format="MMMM YYYY"
-                slotProps={{
-                  textField: {
-                    fullWidth: true,
-                    InputLabelProps: { shrink: true },
-                    helperText: "Seleccione el mes y año",
-                    sx: {
-                      '& .MuiInputBase-root': {
-                        height: '36px'
-                      },
-                      '& .MuiInputBase-input': {
-                        py: '8px'
-                      }
-                    }
-                  },
-                  actionBar: {
-                    actions: ['today']
-                  },
-                  layout: {
-                    sx: {
-                      '& .MuiPickersLayout-root': {
-                        padding: '8px 4px 4px 4px',
-                        minWidth: '280px'
-                      },
-                      '& .MuiPickersLayout-contentWrapper': {
-                        padding: 0
-                      },
-                      '& .MuiMonthCalendar-root': {
-                        margin: 0,
-                        padding: '4px 8px'
-                      },
-                      '& .MuiPickersMonth-monthButton': {
-                        margin: '1px',
-                        minWidth: '64px',
-                        height: '28px',
-                        fontSize: '0.75rem',
-                        padding: '4px 8px'
-                      },
-                      '& .MuiPickersCalendarHeader-root': {
-                        padding: '4px 8px',
-                        marginBottom: '4px'
-                      },
-                      '& .MuiPickersCalendarHeader-labelContainer': {
-                        marginLeft: '4px'
-                      },
-                      '& .MuiPickersActionBar-root': {
-                        padding: '4px 8px',
-                        marginTop: '4px'
-                      }
-                    }
-                  },
-                  popper: {
-                    sx: {
-                      '& .MuiPaper-root': {
-                        minWidth: '280px',
-                        maxWidth: '300px'
-                      }
-                    }
-                  }
-                }}
-                sx={{
-                  '& .MuiInputBase-root': {
-                    fontSize: '0.875rem'
-                  }
-                }}
-              />
-            </LocalizationProvider>
+              format="MMMM YYYY"
+              slotProps={{
+                textField: {
+                  fullWidth: true,
+                  size: 'small',
+                  helperText: "Seleccione el mes y año"
+                },
+                actionBar: {
+                  actions: ['today']
+                }
+              }}
+            />
           </Box>
         </DialogContent>
         <DialogActions>
@@ -2285,7 +1889,7 @@ export default function PendientesImpuestos() {
             variant="contained"
             onClick={handleGenerar}
             disabled={generarMutation.isLoading}
-            startIcon={generarMutation.isLoading ? <CircularProgress size={20} /> : <PlayArrowIcon />}
+            startIcon={generarMutation.isLoading ? <CircularProgress size={20} /> : <SyncIcon />}
             sx={{
               background: 'linear-gradient(135deg, #059669 0%, #10b981 100%)',
               '&:hover': {
@@ -2293,7 +1897,7 @@ export default function PendientesImpuestos() {
               }
             }}
           >
-            Generar
+            Sincronizar
           </Button>
         </DialogActions>
       </Dialog>
@@ -2308,117 +1912,155 @@ export default function PendientesImpuestos() {
       >
         <DialogTitle>Nueva Incidencia</DialogTitle>
         <DialogContent>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
-            <FormControl fullWidth size="small" required>
-              <InputLabel>Propiedad</InputLabel>
-              <Select
-                value={incidenciaForm.propiedadId}
-                label="Propiedad"
-                onChange={(e) => setIncidenciaForm(f => ({ ...f, propiedadId: e.target.value }))}
-              >
-                <MenuItem value="">Seleccione una propiedad</MenuItem>
-                {propiedadesList.map((p) => {
-                  const direccion = `${p.dirCalle || ''} ${p.dirNro || ''}${p.dirPiso ? `, Piso ${p.dirPiso}` : ''}${p.dirDepto ? `, Depto ${p.dirDepto}` : ''}`.trim() || p.direccion || p.nombre || `Propiedad ${p.id}`;
-                  return (
-                    <MenuItem key={p.id} value={p.id}>
-                      {direccion}
+          <Grid container spacing={2} sx={{ pt: 1 }}>
+            {/* Fila 1: Propiedad */}
+            <Grid item xs={12}>
+              <FormControl fullWidth size="small" required>
+                <InputLabel>Propiedad</InputLabel>
+                <Select
+                  value={incidenciaForm.propiedadId}
+                  label="Propiedad"
+                  onChange={(e) => setIncidenciaForm(f => ({ ...f, propiedadId: e.target.value }))}
+                >
+                  <MenuItem value="">Seleccione una propiedad</MenuItem>
+                  {propiedadesList.map((p) => {
+                    const direccion = `${p.dirCalle || ''} ${p.dirNro || ''}${p.dirPiso ? `, Piso ${p.dirPiso}` : ''}${p.dirDepto ? `, Depto ${p.dirDepto}` : ''}`.trim() || p.direccion || p.nombre || `Propiedad ${p.id}`;
+                    return (
+                      <MenuItem key={p.id} value={p.id}>
+                        {direccion}
+                      </MenuItem>
+                    );
+                  })}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            {/* Fila 2: Concepto y Fecha del gasto */}
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Concepto</InputLabel>
+                <Select
+                  value={incidenciaForm.conceptoTipo}
+                  label="Concepto"
+                  onChange={(e) => setIncidenciaForm(f => ({ ...f, conceptoTipo: e.target.value }))}
+                >
+                  <MenuItem value="">Incidencia (por defecto)</MenuItem>
+                  {tiposCargoList.length > 0 && (
+                    <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary' }}>Cargos</MenuItem>
+                  )}
+                  {tiposCargoList.map((tc) => (
+                    <MenuItem key={`cargo-${tc.id}`} value={`cargo-${tc.id}`}>
+                      {tc.nombre || tc.codigo || `Tipo ${tc.id}`}
                     </MenuItem>
-                  );
-                })}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth size="small">
-              <InputLabel>Concepto</InputLabel>
-              <Select
-                value={incidenciaForm.conceptoTipo}
-                label="Concepto"
-                onChange={(e) => setIncidenciaForm(f => ({ ...f, conceptoTipo: e.target.value }))}
-              >
-                <MenuItem value="">Incidencia (por defecto)</MenuItem>
-                {tiposCargoList.length > 0 && (
-                  <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary' }}>Cargos</MenuItem>
-                )}
-                {tiposCargoList.map((tc) => (
-                  <MenuItem key={`cargo-${tc.id}`} value={`cargo-${tc.id}`}>
-                    {tc.nombre || tc.codigo || `Tipo ${tc.id}`}
-                  </MenuItem>
-                ))}
-                {tiposImpuestoList.length > 0 && (
-                  <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary' }}>Impuestos</MenuItem>
-                )}
-                {tiposImpuestoList.map((ti) => (
-                  <MenuItem key={`impuesto-${ti.id}`} value={`impuesto-${ti.id}`}>
-                    {ti.nombre || ti.codigo || `Impuesto ${ti.id}`}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <LocalizationProvider dateAdapter={AdapterDayjs} adapterLocale="es">
+                  ))}
+                  {tiposImpuestoList.length > 0 && (
+                    <MenuItem disabled sx={{ fontSize: '0.75rem', fontWeight: 600, color: 'text.secondary' }}>Impuestos</MenuItem>
+                  )}
+                  {tiposImpuestoList.map((ti) => (
+                    <MenuItem key={`impuesto-${ti.id}`} value={`impuesto-${ti.id}`}>
+                      {ti.nombre || ti.codigo || `Impuesto ${ti.id}`}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6}>
               <DatePicker
                 label="Fecha del gasto"
                 value={incidenciaForm.fechaGasto}
                 onChange={(v) => setIncidenciaForm(f => ({ ...f, fechaGasto: v }))}
-                slotProps={{ textField: { size: 'small', fullWidth: true } }}
+                slotProps={{
+                  textField: { size: 'small', fullWidth: true },
+                  actionBar: { actions: ['clear', 'today'] }
+                }}
               />
-            </LocalizationProvider>
-            <TextField
-              label="Período en que se cobrará"
-              value={periodo ? periodo.replace(/^(\d{4})-(\d{2})$/, '$2-$1') : ''}
-              size="small"
-              fullWidth
-              InputProps={{ readOnly: true }}
-              helperText="Período actual de la pantalla"
-            />
-            <FormControl fullWidth size="small">
-              <InputLabel>Pagado por</InputLabel>
-              <Select
-                value={incidenciaForm.pagadoPorActorId}
-                label="Pagado por"
-                onChange={(e) => setIncidenciaForm(f => ({ ...f, pagadoPorActorId: e.target.value }))}
-              >
-                <MenuItem value="">Sin definir</MenuItem>
-                {actores.filter(a => a.activo).map((actor) => (
-                  <MenuItem key={actor.id} value={actor.id}>
-                    {actor.nombre}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth size="small">
-              <InputLabel>Cobrar a</InputLabel>
-              <Select
-                value={incidenciaForm.quienSoportaCostoId}
-                label="Cobrar a"
-                onChange={(e) => setIncidenciaForm(f => ({ ...f, quienSoportaCostoId: e.target.value }))}
-              >
-                <MenuItem value="">Sin definir</MenuItem>
-                {actores.filter(a => a.activo).map((actor) => (
-                  <MenuItem key={actor.id} value={actor.id}>
-                    {actor.nombre}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <TextField
-              label="Concepto / Descripción"
-              value={incidenciaForm.concepto}
-              onChange={(e) => setIncidenciaForm(f => ({ ...f, concepto: e.target.value }))}
-              size="small"
-              fullWidth
-              multiline
-              minRows={2}
-            />
-            <TextField
-              label="Importe"
-              type="number"
-              value={incidenciaForm.importe}
-              onChange={(e) => setIncidenciaForm(f => ({ ...f, importe: e.target.value }))}
-              size="small"
-              fullWidth
-              inputProps={{ min: 0, step: 0.01 }}
-              required
-            />
-          </Box>
+            </Grid>
+
+            {/* Fila 3: Pagado por y Cobrar a */}
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Pagado por</InputLabel>
+                <Select
+                  value={incidenciaForm.pagadoPorActorId}
+                  label="Pagado por"
+                  onChange={(e) => setIncidenciaForm(f => ({ ...f, pagadoPorActorId: e.target.value }))}
+                >
+                  <MenuItem value="">Sin definir</MenuItem>
+                  {actores.filter(a => a.activo).map((actor) => (
+                    <MenuItem key={actor.id} value={actor.id}>
+                      {actor.nombre}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth size="small">
+                <InputLabel>Cobrar a</InputLabel>
+                <Select
+                  value={incidenciaForm.quienSoportaCostoId}
+                  label="Cobrar a"
+                  onChange={(e) => setIncidenciaForm(f => ({ ...f, quienSoportaCostoId: e.target.value }))}
+                >
+                  <MenuItem value="">Sin definir</MenuItem>
+                  {actores.filter(a => a.activo).map((actor) => (
+                    <MenuItem key={actor.id} value={actor.id}>
+                      {actor.nombre}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            {/* Fila 4: Período e Importe */}
+            <Grid item xs={12} sm={6}>
+              <DatePicker
+                label="Período en que se cobrará"
+                views={['month', 'year']}
+                openTo="month"
+                value={periodo ? dayjs(periodo) : null}
+                onChange={() => { }}
+                readOnly
+                format="MMMM YYYY"
+                slotProps={{
+                  textField: {
+                    size: 'small',
+                    fullWidth: true,
+                    helperText: "Período actual de la pantalla",
+                    InputProps: { readOnly: true }
+                  }
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                label="Importe"
+                type="number"
+                value={incidenciaForm.importe}
+                onChange={(e) => setIncidenciaForm(f => ({ ...f, importe: e.target.value }))}
+                size="small"
+                fullWidth
+                inputProps={{ min: 0, step: 0.01 }}
+                InputProps={{
+                  startAdornment: <InputAdornment position="start">$</InputAdornment>
+                }}
+                required
+              />
+            </Grid>
+
+            {/* Fila 5: Observaciones */}
+            <Grid item xs={12}>
+              <TextField
+                label="Observaciones"
+                value={incidenciaForm.concepto}
+                onChange={(e) => setIncidenciaForm(f => ({ ...f, concepto: e.target.value }))}
+                size="small"
+                fullWidth
+                multiline
+                rows={2}
+              />
+            </Grid>
+          </Grid>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setIncidenciasDialogOpen(false)} disabled={crearIncidenciaMutation.isPending}>
@@ -2438,6 +2080,7 @@ export default function PendientesImpuestos() {
       {/* Dialog de progreso */}
       <Dialog
         open={progresoDialog}
+        closeAfterTransition={false}
         maxWidth="sm"
         fullWidth
         PaperProps={{
@@ -2460,7 +2103,7 @@ export default function PendientesImpuestos() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog confirmar importe 0 */}
+      {/* Dialog confirmar importe 0 (single o batch) */}
       <Dialog
         open={confirmImporteCeroOpen}
         onClose={() => { setConfirmImporteCeroOpen(false); setConfirmImporteCeroPayload(null); }}
@@ -2471,7 +2114,9 @@ export default function PendientesImpuestos() {
         <DialogTitle>Confirmar importe</DialogTitle>
         <DialogContent>
           <Typography sx={{ pt: 0.5 }}>
-            ¿Está seguro que desea guardar este ítem con importe 0?
+            {confirmImporteCeroPayload?.batch && confirmImporteCeroPayload?.items?.length > 1
+              ? `Hay ${confirmImporteCeroPayload.items.length} ítems con importe 0. ¿Desea guardar todos?`
+              : '¿Está seguro que desea guardar este ítem con importe 0?'}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
@@ -2483,15 +2128,19 @@ export default function PendientesImpuestos() {
             onClick={async () => {
               if (!confirmImporteCeroPayload) return;
               try {
-                await completarMutation.mutateAsync(confirmImporteCeroPayload);
+                if (confirmImporteCeroPayload.batch && Array.isArray(confirmImporteCeroPayload.items)) {
+                  await batchMutation.mutateAsync(confirmImporteCeroPayload.items);
+                } else {
+                  await completarMutation.mutateAsync(confirmImporteCeroPayload);
+                }
                 setConfirmImporteCeroOpen(false);
                 setConfirmImporteCeroPayload(null);
               } catch {
-                // Error ya se muestra en snackbar; el diálogo queda abierto para reintentar
+                // Error ya se muestra en snackbar
               }
             }}
-            disabled={completarMutation.isLoading}
-            startIcon={completarMutation.isLoading ? <CircularProgress size={20} color="inherit" /> : null}
+            disabled={completarMutation.isLoading || batchMutation.isPending}
+            startIcon={(completarMutation.isLoading || batchMutation.isPending) ? <CircularProgress size={20} color="inherit" /> : null}
           >
             Confirmar
           </Button>

@@ -1,7 +1,5 @@
-import { PrismaClient } from '@prisma/client';
+import prisma from '../db/prisma.js';
 import { scrapeEpeFacturas } from '../services/epeScraper.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Normaliza un número de cliente para matching (quita ceros a la izquierda y espacios)
@@ -91,8 +89,9 @@ export const autocompletarEpe = async (req, res) => {
 
     console.log(`[EPE] Encontrados ${items.length} items de LUZ para el período ${periodo}`);
 
-    // 3. Construir mapa nroClienteNormalizado -> liquidacionItem
+    // 3. Construir mapa nroClienteNormalizado -> liquidacionItem y lista de números CRUDOS para la API (la API puede esperar el formato guardado, ej. 001752960)
     const nroClienteToItemMap = new Map();
+    const nroClientesRawParaApi = [];
     const warnings = [];
     const itemsSinNroCliente = [];
 
@@ -122,52 +121,59 @@ export const autocompletarEpe = async (req, res) => {
         continue;
       }
 
-      const nroClienteNormalizado = normalizarNroCliente(nroClienteCampo.valor);
-      console.log(`[EPE] N° de cliente encontrado para item ${item.id}: ${nroClienteCampo.valor} -> normalizado: ${nroClienteNormalizado}`);
+      const valorCrudo = String(nroClienteCampo.valor).trim();
+      const nroClienteNormalizado = normalizarNroCliente(valorCrudo);
+      console.log(`[EPE] N° de cliente encontrado para item ${item.id}: ${valorCrudo} -> normalizado: ${nroClienteNormalizado}`);
       nroClienteToItemMap.set(nroClienteNormalizado, item);
+      nroClientesRawParaApi.push(valorCrudo);
     }
 
-    // 4. Preparar lista de números de cliente a filtrar (solo procesar los que están en la BD)
-    const nroClientesAFiltrar = Array.from(nroClienteToItemMap.keys());
-    console.log(`[EPE] Filtrando suministros: solo procesar ${nroClientesAFiltrar.length} suministros de la base de datos`);
-    
-    // 5. Ejecutar scraper EPE
+    // 4. Pasar a la API los números tal como están en BD (ej. 001752960), no normalizados; el matching luego usa normalizado
+    console.log(`[EPE] Filtrando suministros: solo procesar ${nroClientesRawParaApi.length} suministros de la base de datos`);
+
+    if (nroClientesRawParaApi.length === 0) {
+      return res.json({
+        periodo,
+        actualizados: 0,
+        sinFacturaEnPeriodo: [],
+        sinMatchNroCliente: [],
+        warnings,
+        errores: []
+      });
+    }
+
+    // 5. Ejecutar scraper EPE (pasamos números crudos para que la API reciba el formato esperado, ej. 001752960)
     console.log('[EPE] Iniciando scraping...');
     let cuotasEpe = [];
-    
     try {
       cuotasEpe = await scrapeEpeFacturas(
         tipoImpuestoLuz.usuario,
         tipoImpuestoLuz.password,
         inicioPeriodo,
         finPeriodo,
-        nroClientesAFiltrar
+        nroClientesRawParaApi
       );
       console.log(`[EPE] Scraping completado. ${cuotasEpe.length} cuotas obtenidas.`);
     } catch (error) {
-      console.error('[EPE] Error en scraping:', error);
-      return res.status(500).json({
-        error: 'Error al obtener datos de EPE: ' + error.message,
+      const errMsg = error?.message || String(error);
+      console.error('[EPE] Error en scraping:', errMsg, error?.stack);
+      // Devolver 200 con errores para no cortar el flujo de "Generar impuestos"; el frontend puede mostrar aviso
+      return res.json({
         periodo,
         actualizados: 0,
         sinFacturaEnPeriodo: [],
         sinMatchNroCliente: [],
         warnings,
-        errores: [error.message]
+        errores: [errMsg]
       });
     }
 
-    // 6. Hacer matching y actualizar items
-    const actualizados = [];
+    // 6. Hacer matching y actualizar items en una sola transacción ACID
     const sinFacturaEnPeriodo = [];
     const sinMatchNroCliente = [];
-    const errores = [];
 
-    // Obtener estado COMPLETADO
     const estadoCompletado = await prisma.estadoItemLiquidacion.findFirst({
-      where: {
-        codigo: 'COMPLETADO'
-      }
+      where: { codigo: 'COMPLETADO' }
     });
 
     if (!estadoCompletado) {
@@ -176,42 +182,62 @@ export const autocompletarEpe = async (req, res) => {
       });
     }
 
-    // Procesar cada cuota obtenida de EPE
+    const completadoAt = new Date();
+    const completadoById = req.user?.id || null;
+
+    // Reunir solo cuotas que tienen item en BD y armar las operaciones de update
+    const operaciones = [];
+    const idsActualizados = [];
+
+    const toDate = (v) => (v instanceof Date ? v : v != null ? new Date(v) : null);
+
     for (const cuota of cuotasEpe) {
-      try {
-        const nroClienteNormalizado = normalizarNroCliente(cuota.nroCliente);
-        const item = nroClienteToItemMap.get(nroClienteNormalizado);
-        
-        if (!item) {
-          sinMatchNroCliente.push(cuota.nroCliente);
-          continue;
-        }
-
-        // Actualizar LiquidacionItem
-        const importeActual = item.importe ? parseFloat(item.importe) : null;
-        const importeNuevo = cuota.importe;
-
-        await prisma.liquidacionItem.update({
+      const nroClienteNormalizado = normalizarNroCliente(cuota.nroCliente);
+      const item = nroClienteToItemMap.get(nroClienteNormalizado);
+      if (!item) {
+        sinMatchNroCliente.push(cuota.nroCliente);
+        continue;
+      }
+      const vencimientoDate = toDate(cuota.vencimiento);
+      if (!vencimientoDate || isNaN(vencimientoDate.getTime())) {
+        console.warn(`[EPE] Cuota con vencimiento inválido omitida:`, cuota);
+        continue;
+      }
+      idsActualizados.push(item.id);
+      operaciones.push(
+        prisma.liquidacionItem.update({
           where: { id: item.id },
           data: {
-            importeAnterior: importeActual && importeActual !== importeNuevo ? importeActual : item.importeAnterior,
-            importe: importeNuevo,
-            vencimiento: cuota.vencimiento,
+            importe: cuota.importe,
+            vencimiento: vencimientoDate,
             refExterna: cuota.refExterna || item.refExterna,
             estadoItemId: estadoCompletado.id,
-            completadoAt: new Date(),
-            completadoById: req.user?.id || null
+            completadoAt,
+            completadoById
           }
+        })
+      );
+    }
+
+    if (operaciones.length > 0) {
+      try {
+        await prisma.$transaction(operaciones);
+        console.log(`[EPE] ${operaciones.length} items actualizados en transacción.`);
+      } catch (txError) {
+        console.error('[EPE] Error en transacción:', txError?.message || txError, txError?.stack);
+        return res.status(500).json({
+          error: 'Error al guardar datos de EPE: ' + (txError?.message || String(txError)),
+          periodo,
+          actualizados: 0,
+          sinFacturaEnPeriodo: [],
+          sinMatchNroCliente: [],
+          warnings,
+          errores: [txError?.message || String(txError)]
         });
-
-        actualizados.push(item.id);
-        console.log(`[EPE] Item ${item.id} actualizado con importe ${importeNuevo} y vencimiento ${cuota.vencimiento}`);
-
-      } catch (error) {
-        console.error(`[EPE] Error al procesar cuota para cliente ${cuota.nroCliente}:`, error);
-        errores.push(`Error al procesar cliente ${cuota.nroCliente}: ${error.message}`);
       }
     }
+
+    const actualizados = idsActualizados;
 
     // Identificar items que tienen N° de cliente pero no se encontró cuota en el período
     for (const [nroClienteNormalizado, item] of nroClienteToItemMap.entries()) {
@@ -221,14 +247,13 @@ export const autocompletarEpe = async (req, res) => {
       }
     }
 
-    // 6. Devolver resultado
     res.json({
       periodo,
       actualizados: actualizados.length,
       sinFacturaEnPeriodo,
       sinMatchNroCliente,
       warnings,
-      errores
+      errores: []
     });
 
   } catch (error) {
