@@ -11,7 +11,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isProduction ? 5 : 200,
-  message: { error: 'Demasiados intentos de inicio de sesión. Por favor, inténtelo de nuevo después de 15 minutos.' }
+  message: { error: 'Demasiados intentos de inicio de sesión. Por favor, inténtelo de nuevo después de 15 minutos.' },
+  validate: { xForwardedForHeader: false }
 });
 
 router.post('/login', loginLimiter, login);

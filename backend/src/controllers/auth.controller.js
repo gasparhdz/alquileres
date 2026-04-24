@@ -10,9 +10,11 @@ const REFRESH_TOKEN_EXPIRY_MS = REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60 * 1000;
 
 // Configuración de cookies
 const isProduction = process.env.NODE_ENV === 'production';
+const cookieSecure =
+  isProduction && process.env.COOKIE_SECURE !== 'false';
 const COOKIE_OPTIONS = {
   httpOnly: true,
-  secure: isProduction,
+  secure: cookieSecure,
   sameSite: isProduction ? 'strict' : 'lax',
   path: '/'
 };

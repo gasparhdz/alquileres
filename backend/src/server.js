@@ -12,7 +12,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isProduction ? 1000 : 50000,
-  message: { error: 'Demasiadas peticiones. Intente de nuevo más tarde.' }
+  message: { error: 'Demasiadas peticiones. Intente de nuevo más tarde.' },
+  validate: { xForwardedForHeader: false }
 });
 
 // Importar rutas
@@ -49,12 +50,25 @@ dotenv.config();
 
 const app = express();
 
+// Tras Nginx: req.ip y rate-limit usan X-Forwarded-For (no usar `true`: express-rate-limit lo rechaza)
+const trustHops = Number(process.env.TRUST_PROXY_HOPS);
+app.set('trust proxy', Number.isFinite(trustHops) && trustHops > 0 ? trustHops : 1);
+
+const extraAllowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 // Middlewares
 app.use(cors({
   origin: function (origin, callback) {
     // Permitir requests sin origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
-    
+
+    if (extraAllowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
     // Permitir localhost y cualquier IP de la red local
     const allowedOrigins = [
       'http://localhost:5173',
@@ -62,18 +76,18 @@ app.use(cors({
       /^http:\/\/10\.\d+\.\d+\.\d+:5173$/,
       /^http:\/\/172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+:5173$/
     ];
-    
+
     const isAllowed = allowedOrigins.some(allowed => {
       if (typeof allowed === 'string') {
         return origin === allowed;
       }
       return allowed.test(origin);
     });
-    
+
     if (isAllowed || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(null, false);
     }
   },
   credentials: true // Necesario para cookies HttpOnly
