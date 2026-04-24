@@ -326,14 +326,24 @@ export default function Contratos() {
     returnToRef.current = url || location.state.returnTo;
   }
   const returnTo = location.state?.from ?? getReturnUrl(location.state) ?? location.state?.returnTo ?? returnToRef.current ?? null;
+  const shouldNavigateToReturn = useMemo(() => {
+    if (!returnTo) return false;
+    try {
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost';
+      const returnUrl = new URL(returnTo, origin);
+      return returnUrl.pathname !== location.pathname;
+    } catch {
+      return returnTo !== location.pathname;
+    }
+  }, [returnTo, location.pathname]);
 
   const handleCloseView = useCallback(() => {
-    if (returnTo) {
+    setViewOpen(false);
+    setSelectedContrato(null);
+    if (shouldNavigateToReturn) {
       navigate(returnTo);
-    } else {
-      setViewOpen(false);
     }
-  }, [returnTo, navigate]);
+  }, [shouldNavigateToReturn, returnTo, navigate]);
 
   const queryClient = useQueryClient();
 
@@ -766,7 +776,7 @@ export default function Contratos() {
       setSnackbarOpen(true);
 
       // Navegar de vuelta a la ruta de origen si existe (ej: Dashboard)
-      if (returnTo) {
+      if (shouldNavigateToReturn) {
         navigate(returnTo);
       }
     },
@@ -1800,7 +1810,7 @@ export default function Contratos() {
         open={open}
         onClose={() => {
           setOpen(false);
-          if (returnTo) navigate(returnTo);
+          if (shouldNavigateToReturn) navigate(returnTo);
         }}
         maxWidth="md"
         fullWidth
@@ -2295,7 +2305,7 @@ export default function Contratos() {
                   onCloseNuevoAjuste={() => {
                     setOpenNuevoAjusteModal(false);
                     // Solo cerrar todo y volver al origen si vinimos de otra página (ej. Dashboard); si estamos en Contratos, quedarse en Editar Contrato
-                    if (returnTo && returnTo !== location.pathname) {
+                    if (shouldNavigateToReturn) {
                       setOpen(false);
                       navigate(returnTo);
                     }
@@ -2308,7 +2318,7 @@ export default function Contratos() {
             <Button onClick={() => {
               setOpen(false);
               resetForm();
-              if (returnTo) {
+              if (shouldNavigateToReturn) {
                 navigate(returnTo);
               }
             }}>Cancelar</Button>

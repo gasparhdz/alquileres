@@ -2,6 +2,7 @@
 import { PrismaClient } from '@prisma/client'
 import seedUsuarioAdmin from './seedUsuarioAdmin.js'
 import seedParametros from './seedParametros.js'
+import seedDatosReales from './seedDatosReales.js'
 
 const prisma = new PrismaClient()
 
@@ -11,6 +12,7 @@ async function main() {
     
     await seedUsuarioAdmin(prisma)
     await seedParametros(prisma)
+    await seedDatosReales(prisma)
     
     console.log('\n✅ Seeds finalizados exitosamente!')
   } catch (error) {

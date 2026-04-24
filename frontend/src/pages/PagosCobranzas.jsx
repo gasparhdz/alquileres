@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   Box,
@@ -68,6 +68,64 @@ const formatCurrency = (value) => {
     maximumFractionDigits: 2
   })}`;
 };
+
+const getEstadoCuentaDetalle = (tipo, saldo) => {
+  if (tipo === 'inquilino') {
+    if (saldo > 0) return { label: 'Deuda pendiente', color: 'error' };
+    if (saldo < 0) return { label: 'Saldo a favor', color: 'info' };
+    return { label: 'Al día', color: 'success' };
+  }
+
+  if (saldo > 0) return { label: 'Saldo a pagar', color: 'success' };
+  if (saldo < 0) return { label: 'Saldo a cobrar', color: 'error' };
+  return { label: 'Al día', color: 'success' };
+};
+
+function ResumenCuentaHistorial({ tipo = 'inquilino', nombre, propiedadLabel, propiedadValor, saldo }) {
+  const estado = getEstadoCuentaDetalle(tipo, saldo);
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        mb: 2,
+        borderRadius: 2,
+        bgcolor: 'grey.50'
+      }}
+    >
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        spacing={2}
+        alignItems={{ xs: 'flex-start', md: 'center' }}
+        justifyContent="space-between"
+      >
+        <Box>
+          <Typography variant="h6" sx={{ mb: 0.5 }}>
+            {nombre}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            <strong>{propiedadLabel}:</strong> {propiedadValor || '-'}
+          </Typography>
+        </Box>
+        <Box sx={{ textAlign: { xs: 'left', md: 'right' } }}>
+          <Chip
+            label={estado.label}
+            color={estado.color}
+            size="small"
+            sx={{ mb: 1, fontWeight: 600 }}
+          />
+          <Typography variant="body2" color="text.secondary">
+            Saldo actual
+          </Typography>
+          <Typography variant="h6" fontWeight={700}>
+            {formatCurrency(Math.abs(saldo || 0))}
+          </Typography>
+        </Box>
+      </Stack>
+    </Paper>
+  );
+}
 
 // ============================================
 // EXPORTAR A EXCEL - Estado de Cuenta
@@ -263,6 +321,23 @@ function HistorialBottomSheet({ open, onClose, contrato, tipo = 'inquilino' }) {
   const nombreEntidad = tipo === 'inquilino'
     ? (contrato?.inquilino?.razonSocial || `${contrato?.inquilino?.apellido || ''}, ${contrato?.inquilino?.nombre || ''}`.trim())
     : (contrato?.propietario?.razonSocial || `${contrato?.propietario?.apellido || ''}, ${contrato?.propietario?.nombre || ''}`.trim());
+  const propiedadValor = tipo === 'inquilino'
+    ? [
+      contrato?.propiedad?.dirCalle,
+      contrato?.propiedad?.dirNro,
+      contrato?.propiedad?.dirPiso ? `${contrato.propiedad.dirPiso}°` : null,
+      contrato?.propiedad?.dirDepto ? `"${contrato.propiedad.dirDepto}"` : null,
+      contrato?.propiedad?.localidad?.nombre
+    ].filter(Boolean).join(' ') || '-'
+    : (
+      (contrato?.propiedades?.length > 0
+        ? contrato.propiedades.map((p) => [p.direccion, p.localidad].filter(Boolean).join(', ')).join(' / ')
+        : [contrato?.propiedad?.dirCalle, contrato?.propiedad?.localidad?.nombre].filter(Boolean).join(', '))
+      || '-'
+    );
+  const saldoActual = tipo === 'inquilino'
+    ? (contrato?.saldoDeudor || 0)
+    : (contrato?.saldoAPagar || 0);
 
   return (
     <SwipeableDrawer
@@ -312,6 +387,14 @@ function HistorialBottomSheet({ open, onClose, contrato, tipo = 'inquilino' }) {
             </IconButton>
           </Box>
         </Box>
+
+        <ResumenCuentaHistorial
+          tipo={tipo}
+          nombre={nombreEntidad}
+          propiedadLabel={tipo === 'inquilino' ? 'Propiedad' : 'Propiedades'}
+          propiedadValor={propiedadValor}
+          saldo={saldoActual}
+        />
 
         <Divider sx={{ mb: 2, flexShrink: 0 }} />
 
@@ -534,7 +617,6 @@ function HistorialTable({ movimientos, tipo = 'inquilino' }) {
 // ============================================
 function DesktopFilaInquilino({ contrato, onCobrar, onReintegrar }) {
   const [open, setOpen] = useState(false);
-  const queryClient = useQueryClient();
 
   const { data: movimientos, isLoading: loadingMov } = useQuery({
     queryKey: ['movimientos-inquilino', contrato.id],
@@ -542,6 +624,7 @@ function DesktopFilaInquilino({ contrato, onCobrar, onReintegrar }) {
     enabled: open
   });
 
+  /*
   const conciliarMutation = useMutation({
     mutationFn: () => api.post(`/contratos/${contrato.id}/conciliar-liquidaciones`).then(r => r.data),
     onSuccess: (data) => {
@@ -556,6 +639,7 @@ function DesktopFilaInquilino({ contrato, onCobrar, onReintegrar }) {
       alert(err.response?.data?.error || 'Error al conciliar liquidaciones.');
     }
   });
+  */
 
   const inquilino = contrato.inquilino;
   const propiedad = contrato.propiedad;
@@ -653,6 +737,13 @@ function DesktopFilaInquilino({ contrato, onCobrar, onReintegrar }) {
           Historial de Movimientos - {nombreInquilino}
         </DialogTitle>
         <DialogContent dividers sx={{ overflowX: 'auto' }}>
+          <ResumenCuentaHistorial
+            tipo="inquilino"
+            nombre={nombreInquilino}
+            propiedadLabel="Propiedad"
+            propiedadValor={direccion}
+            saldo={saldoDeudor}
+          />
           {loadingMov ? (
             <Box sx={{ py: 3, textAlign: 'center' }}>
               <CircularProgress size={24} />
@@ -662,16 +753,6 @@ function DesktopFilaInquilino({ contrato, onCobrar, onReintegrar }) {
           )}
         </DialogContent>
         <DialogActions>
-          <RequirePermission codigo="movimiento.inquilinos.crear">
-            <Button
-              variant="outlined"
-              color="primary"
-              onClick={() => conciliarMutation.mutate()}
-              disabled={conciliarMutation.isPending}
-            >
-              {conciliarMutation.isPending ? 'Conciliando...' : 'Conciliar liquidaciones'}
-            </Button>
-          </RequirePermission>
           <Button onClick={() => setOpen(false)}>Cerrar</Button>
         </DialogActions>
       </Dialog>
@@ -809,6 +890,13 @@ function DesktopFilaPropietario({ contrato, onPagar, onCobrar }) {
           Historial de Movimientos - {nombrePropietario}
         </DialogTitle>
         <DialogContent dividers sx={{ overflowX: 'auto' }}>
+          <ResumenCuentaHistorial
+            tipo="propietario"
+            nombre={nombrePropietario}
+            propiedadLabel="Propiedades"
+            propiedadValor={propiedadesTexto}
+            saldo={saldoAPagar}
+          />
           {loadingMov ? (
             <Box sx={{ py: 3, textAlign: 'center' }}>
               <CircularProgress size={24} />

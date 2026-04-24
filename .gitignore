@@ -34,7 +34,8 @@ Thumbs.db
 # Screenshots de depuración (scrapers SIAT, ASSA, EPE, Litoral Gas, etc.)
 *-debug*.png
 siat-*.png
-assa-*.png
+tgi-*.png
+aguas-*.png
 epe-*.png
 litoralgas-*.png
 santafe-*.png

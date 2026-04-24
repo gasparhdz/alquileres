@@ -73,6 +73,12 @@ export default async function seedUsuarioAdmin(prisma) {
     { codigo: "propietarios.editar", nombre: "Editar propietarios", descripcion: "Permite editar propietarios existentes" },
     { codigo: "propietarios.eliminar", nombre: "Eliminar propietarios", descripcion: "Permite eliminar propietarios" },
 
+    // Consorcios
+    { codigo: "consorcios.ver", nombre: "Ver consorcios", descripcion: "Permite ver el listado de consorcios" },
+    { codigo: "consorcios.crear", nombre: "Crear consorcios", descripcion: "Permite crear consorcios" },
+    { codigo: "consorcios.editar", nombre: "Editar consorcios", descripcion: "Permite editar consorcios" },
+    { codigo: "consorcios.eliminar", nombre: "Eliminar consorcios", descripcion: "Permite eliminar consorcios" },
+
     // Propiedades
     { codigo: "propiedades.ver", nombre: "Ver propiedades", descripcion: "Permite ver el listado de propiedades" },
     { codigo: "propiedades.crear", nombre: "Crear propiedades", descripcion: "Permite crear nuevas propiedades" },

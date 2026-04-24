@@ -22,10 +22,10 @@ import {
   getBoletaInquilino,
   crearIncidencia
 } from '../controllers/liquidacion.controller.js';
-import { autocompletarAssa } from '../controllers/assa.controller.js';
+import { autocompletarAguas, autocompletarAssa } from '../controllers/aguas.controller.js';
 import { autocompletarEpe } from '../controllers/epe.controller.js';
 import { autocompletarLitoralgas } from '../controllers/litoralgas.controller.js';
-import { autocompletarSiat } from '../controllers/siat.controller.js';
+import { autocompletarSiat, autocompletarTgi } from '../controllers/siat.controller.js';
 import { autocompletarSantafeEInBoletas, parseTestSantafeEInBoletas } from '../controllers/santafe.controller.js';
 import { authenticateToken } from '../middlewares/auth.middleware.js';
 import { requirePermission } from '../middlewares/rbac.middleware.js';
@@ -45,9 +45,11 @@ router.post('/items/:id/completar', requirePermission('impuestos.editar'), compl
 router.post('/items/:id/reabrir', requirePermission('impuestos.editar'), reabrirItem);
 
 // Scrapers / Autocompletado
+router.post('/impuestos/aguas/autocompletar', requirePermission('impuestos.editar'), autocompletarAguas);
 router.post('/impuestos/assa/autocompletar', requirePermission('impuestos.editar'), autocompletarAssa);
 router.post('/impuestos/epe/autocompletar', requirePermission('impuestos.editar'), autocompletarEpe);
 router.post('/impuestos/litoralgas/autocompletar', requirePermission('impuestos.editar'), autocompletarLitoralgas);
+router.post('/impuestos/tgi/autocompletar', requirePermission('impuestos.editar'), autocompletarTgi);
 router.post('/impuestos/siat/autocompletar', requirePermission('impuestos.editar'), autocompletarSiat);
 router.post('/impuestos/santafe-ein-boletas/autocompletar', requirePermission('impuestos.editar'), autocompletarSantafeEInBoletas);
 router.post('/impuestos/santafe-ein-boletas/parse-test', requirePermission('impuestos.editar'), parseTestSantafeEInBoletas);
@@ -70,4 +72,3 @@ router.post('/:id/cobrar', requirePermission('liquidaciones.editar'), cobrarLiqu
 router.delete('/:id', requirePermission('liquidaciones.eliminar'), deleteLiquidacion);
 
 export default router;
-

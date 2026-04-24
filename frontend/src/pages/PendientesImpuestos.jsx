@@ -58,6 +58,8 @@ import TablaExpensas from '../components/Pendientes/TablaExpensas';
 import dayjs from 'dayjs';
 import 'dayjs/locale/es';
 
+const AGUAS_DESHABILITADO_MSG = 'El autocompletado de Aguas Santafesinas esta temporalmente deshabilitado.';
+
 // Función helper para convertir MM-AAAA a YYYY-MM (para enviar al backend)
 const periodoToBackend = (periodo) => {
   if (!periodo) return null;
@@ -154,7 +156,7 @@ export default function PendientesImpuestos() {
   const [errorMessage, setErrorMessage] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarSeverity, setSnackbarSeverity] = useState('success');
-  const [confirmarAutocompletar, setConfirmarAutocompletar] = useState(null); // { tipo: 'assa'|'epe'|'litoralgas'|'siat', periodo: string }
+  const [confirmarAutocompletar, setConfirmarAutocompletar] = useState(null); // { tipo: 'aguas'|'epe'|'litoralgas'|'siat', periodo: string }
 
   const [incidenciasDialogOpen, setIncidenciasDialogOpen] = useState(false);
   const [incidenciaForm, setIncidenciaForm] = useState({
@@ -642,7 +644,7 @@ export default function PendientesImpuestos() {
   // Función para ejecutar todos los scrapers en secuencia
   const ejecutarScrapers = async (periodoFormato, setMensajeProgreso) => {
     const resultados = {
-      assa: null,
+      aguas: null,
       epe: null,
       litoralgas: null,
       siat: null,
@@ -651,17 +653,11 @@ export default function PendientesImpuestos() {
     const errores = [];
 
     try {
-      // ASSA
-      try {
-        setMensajeProgreso('Sincronizando con Aguas Santafesinas...');
-        console.log('[Generar] Ejecutando scraper ASSA...');
-        const resAssa = await api.post('/liquidaciones/impuestos/assa/autocompletar', { periodo: periodoFormato });
-        resultados.assa = resAssa.data;
-        console.log('[Generar] ASSA completado:', resultados.assa);
-      } catch (error) {
-        console.error('[Generar] Error en ASSA:', error);
-        errores.push(`ASSA: ${error.response?.data?.error || error.message}`);
-      }
+      resultados.aguas = {
+        actualizados: 0,
+        deshabilitado: true
+      };
+      errores.push(`Aguas Santafesinas: ${AGUAS_DESHABILITADO_MSG}`);
 
       // EPE
       try {
@@ -688,16 +684,16 @@ export default function PendientesImpuestos() {
         errores.push(`Litoralgas: ${error.response?.data?.error || error.message}`);
       }
 
-      // SIAT
+      // TGI
       try {
         setMensajeProgreso('Sincronizando con TGI...');
-        console.log('[Generar] Ejecutando scraper SIAT...');
-        const resSiat = await api.post('/liquidaciones/impuestos/siat/autocompletar', { periodo: periodoFormato });
-        resultados.siat = resSiat.data;
-        console.log('[Generar] SIAT completado:', resultados.siat);
+        console.log('[Generar] Ejecutando scraper TGI...');
+        const resTgi = await api.post('/liquidaciones/impuestos/tgi/autocompletar', { periodo: periodoFormato });
+        resultados.siat = resTgi.data;
+        console.log('[Generar] TGI completado:', resultados.siat);
       } catch (error) {
-        console.error('[Generar] Error en SIAT:', error);
-        errores.push(`SIAT: ${error.response?.data?.error || error.message}`);
+        console.error('[Generar] Error en TGI:', error);
+        errores.push(`TGI: ${error.response?.data?.error || error.message}`);
       }
 
       // API (Santa Fe e-in-boletas). Solo períodos 02, 04, 06 de 2026.
@@ -750,7 +746,7 @@ export default function PendientesImpuestos() {
 
       // Resumen de scrapers
       const totalActualizados =
-        (data.scrapers?.assa?.actualizados || 0) +
+        (data.scrapers?.aguas?.actualizados || 0) +
         (data.scrapers?.epe?.actualizados || 0) +
         (data.scrapers?.litoralgas?.actualizados || 0) +
         (data.scrapers?.siat?.actualizados || 0) +
@@ -760,10 +756,10 @@ export default function PendientesImpuestos() {
 
       if (totalActualizados > 0) {
         mensaje += `\n\nAutocompletado de importes:\n• Total items actualizados: ${totalActualizados}`;
-        if (data.scrapers?.assa?.actualizados) mensaje += `\n  - ASSA: ${data.scrapers.assa.actualizados}`;
+        if (data.scrapers?.aguas?.actualizados) mensaje += `\n  - Aguas Santafesinas: ${data.scrapers.aguas.actualizados}`;
         if (data.scrapers?.epe?.actualizados) mensaje += `\n  - EPE: ${data.scrapers.epe.actualizados}`;
         if (data.scrapers?.litoralgas?.actualizados) mensaje += `\n  - Litoralgas: ${data.scrapers.litoralgas.actualizados}`;
-        if (data.scrapers?.siat?.actualizados) mensaje += `\n  - SIAT: ${data.scrapers.siat.actualizados}`;
+        if (data.scrapers?.siat?.actualizados) mensaje += `\n  - TGI: ${data.scrapers.siat.actualizados}`;
         if (data.scrapers?.santafe?.actualizados) mensaje += `\n  - API: ${data.scrapers.santafe.actualizados}`;
       }
 
@@ -798,10 +794,10 @@ export default function PendientesImpuestos() {
     }
   });
 
-  // Mutation para autocompletar desde ASSA
-  const autocompletarAssaMutation = useMutation({
-    mutationFn: (periodoAssa) =>
-      api.post('/liquidaciones/impuestos/assa/autocompletar', { periodo: periodoAssa }),
+  // Mutation para autocompletar desde Aguas Santafesinas
+  const autocompletarAguasMutation = useMutation({
+    mutationFn: (periodoAguas) =>
+      api.post('/liquidaciones/impuestos/aguas/autocompletar', { periodo: periodoAguas }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
@@ -814,14 +810,14 @@ export default function PendientesImpuestos() {
         errores: data.data?.errores || []
       };
 
-      let mensaje = `Autocompletado ASSA completado:\n• Items actualizados: ${resumen.actualizados}`;
+      let mensaje = `Autocompletado Aguas Santafesinas completado:\n• Items actualizados: ${resumen.actualizados}`;
 
       if (resumen.sinFacturaEnPeriodo.length > 0) {
         mensaje += `\n• Puntos sin factura en período: ${resumen.sinFacturaEnPeriodo.join(', ')}`;
       }
 
       if (resumen.sinMatchPunto.length > 0) {
-        mensaje += `\n• Puntos en ASSA sin configurar: ${resumen.sinMatchPunto.join(', ')}`;
+        mensaje += `\n• Puntos en Aguas Santafesinas sin configurar: ${resumen.sinMatchPunto.join(', ')}`;
       }
 
       if (resumen.warnings.length > 0) {
@@ -841,7 +837,7 @@ export default function PendientesImpuestos() {
     },
     onError: (error) => {
       setConfirmarAutocompletar(null);
-      setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde ASSA');
+      setErrorMessage(error.response?.data?.error || AGUAS_DESHABILITADO_MSG);
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     }
@@ -896,7 +892,12 @@ export default function PendientesImpuestos() {
     }
   });
 
-  const handleAutocompletarAssa = () => {
+  const handleAutocompletarAguas = () => {
+    setErrorMessage(AGUAS_DESHABILITADO_MSG);
+    setSnackbarSeverity('info');
+    setSnackbarOpen(true);
+    return;
+
     if (!periodo) {
       setErrorMessage('Debe seleccionar un período');
       setSnackbarSeverity('error');
@@ -905,16 +906,16 @@ export default function PendientesImpuestos() {
     }
 
     // Convertir YYYY-MM a MM-YYYY para el backend
-    const periodoAssa = formatPeriodo(periodo);
+    const periodoAguas = formatPeriodo(periodo);
 
-    if (!/^\d{2}-\d{4}$/.test(periodoAssa)) {
+    if (!/^\d{2}-\d{4}$/.test(periodoAguas)) {
       setErrorMessage('El período debe tener el formato MM-YYYY');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
       return;
     }
 
-    setConfirmarAutocompletar({ tipo: 'assa', periodo: periodoAssa });
+    setConfirmarAutocompletar({ tipo: 'aguas', periodo: periodoAguas });
   };
 
   const handleAutocompletarEpe = () => {
@@ -1008,10 +1009,10 @@ export default function PendientesImpuestos() {
     setConfirmarAutocompletar({ tipo: 'litoralgas', periodo: periodoLitoralgas });
   };
 
-  // Mutation para autocompletar desde SIAT (TGI)
+  // Mutation para autocompletar desde TGI
   const autocompletarSiatMutation = useMutation({
     mutationFn: (periodoSiat) =>
-      api.post('/liquidaciones/impuestos/siat/autocompletar', { periodo: periodoSiat }),
+      api.post('/liquidaciones/impuestos/tgi/autocompletar', { periodo: periodoSiat }),
     onSuccess: (data) => {
       queryClient.invalidateQueries(['impuestos-pendientes']);
       queryClient.invalidateQueries(['liquidaciones']);
@@ -1025,7 +1026,7 @@ export default function PendientesImpuestos() {
         errores: data.data?.errores || []
       };
 
-      let mensaje = `Autocompletado TGI (SIAT) completado:\n• Items procesados: ${resumen.totalItems}\n• Items actualizados: ${resumen.actualizados}`;
+      let mensaje = `Autocompletado TGI completado:\n• Items procesados: ${resumen.totalItems}\n• Items actualizados: ${resumen.actualizados}`;
 
       if (resumen.sinCredencialesPropiedad.length > 0) {
         mensaje += `\n• Propiedades sin credenciales (CTA/COD_GES): ${resumen.sinCredencialesPropiedad.join(', ')}`;
@@ -1052,7 +1053,7 @@ export default function PendientesImpuestos() {
     },
     onError: (error) => {
       setConfirmarAutocompletar(null);
-      setErrorMessage(error.response?.data?.error || 'Error al autocompletar desde SIAT');
+      setErrorMessage(error.response?.data?.error || 'Error al autocompletar TGI');
       setSnackbarSeverity('error');
       setSnackbarOpen(true);
     }
@@ -1476,13 +1477,14 @@ export default function PendientesImpuestos() {
 
 
 
-  const autocompletarTitles = { assa: 'Autocompletar AGUA (ASSA)', epe: 'Autocompletar LUZ (EPE)', litoralgas: 'Autocompletar GAS (Litoralgas)', siat: 'Autocompletar TGI (SIAT)' };
+  const autocompletarTitles = { aguas: 'Autocompletado de AGUA no disponible', epe: 'Autocompletar LUZ (EPE)', litoralgas: 'Autocompletar GAS (Litoralgas)', siat: 'Autocompletar TGI' };
   const autocompletarMessages = {
-    assa: (p) => `¿Desea autocompletar los importes de AGUA desde ASSA para el período ${p}?`,
+    aguas: (p) => `¿Desea autocompletar los importes de AGUA desde Aguas Santafesinas para el período ${p}?`,
     epe: (p) => `¿Desea autocompletar los importes de LUZ desde EPE para el período ${p}?`,
     litoralgas: (p) => `¿Desea autocompletar los importes de GAS desde Litoralgas para el período ${p}?`,
     siat: (p) => `¿Desea autocompletar los importes de TGI desde SIAT Rosario para el período ${p}?`
   };
+  autocompletarMessages.aguas = () => AGUAS_DESHABILITADO_MSG;
 
   return (
     <Box sx={{ maxWidth: '100%', overflowX: 'hidden' }}>
@@ -1493,11 +1495,16 @@ export default function PendientesImpuestos() {
         message={confirmarAutocompletar ? autocompletarMessages[confirmarAutocompletar.tipo]?.(confirmarAutocompletar.periodo) : ''}
         confirmLabel="Autocompletar"
         confirmColor="primary"
-        loading={autocompletarAssaMutation.isPending || autocompletarEpeMutation.isPending || autocompletarLitoralgasMutation.isPending || autocompletarSiatMutation.isPending}
+        loading={autocompletarAguasMutation.isPending || autocompletarEpeMutation.isPending || autocompletarLitoralgasMutation.isPending || autocompletarSiatMutation.isPending}
         onConfirm={() => {
           if (!confirmarAutocompletar) return;
           const { tipo, periodo } = confirmarAutocompletar;
-          if (tipo === 'assa') autocompletarAssaMutation.mutate(periodo);
+          if (tipo === 'aguas') {
+            setConfirmarAutocompletar(null);
+            setErrorMessage(AGUAS_DESHABILITADO_MSG);
+            setSnackbarSeverity('info');
+            setSnackbarOpen(true);
+          }
           else if (tipo === 'epe') autocompletarEpeMutation.mutate(periodo);
           else if (tipo === 'litoralgas') autocompletarLitoralgasMutation.mutate(periodo);
           else if (tipo === 'siat') autocompletarSiatMutation.mutate(periodo);
@@ -2165,4 +2172,3 @@ export default function PendientesImpuestos() {
     </Box>
   );
 }
-

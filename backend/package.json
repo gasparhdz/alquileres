@@ -13,8 +13,14 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "prisma:seed": "node prisma/seed/index.js",
+    "prisma:seed:base": "node prisma/seed/runSeedBase.js",
+    "prisma:seed:datos-reales": "node prisma/seed/runSeedDatosReales.js",
+    "db:truncate-seed": "powershell -ExecutionPolicy Bypass -File .\\scripts\\truncate-tablas-seed.ps1",
+    "seed:export-datos-reales": "node scripts/export-datos-reales-seed.js",
     "truncate": "node prisma/seed/index.js",
-    "compare-seed": "node scripts/compare-seed-with-db.js"
+    "compare-seed": "node scripts/compare-seed-with-db.js",
+    "test:aguas": "node test-aguas-api.mjs",
+    "test:aguas:manual": "node test-aguas-api.mjs --manual"
   },
   "prisma": {
     "seed": "node prisma/seed/index.js"
