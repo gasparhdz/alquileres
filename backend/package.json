@@ -18,9 +18,7 @@
     "db:truncate-seed": "powershell -ExecutionPolicy Bypass -File .\\scripts\\truncate-tablas-seed.ps1",
     "seed:export-datos-reales": "node scripts/export-datos-reales-seed.js",
     "truncate": "node prisma/seed/index.js",
-    "compare-seed": "node scripts/compare-seed-with-db.js",
-    "test:aguas": "node test-aguas-api.mjs",
-    "test:aguas:manual": "node test-aguas-api.mjs --manual"
+    "compare-seed": "node scripts/compare-seed-with-db.js"
   },
   "prisma": {
     "seed": "node prisma/seed/index.js"
